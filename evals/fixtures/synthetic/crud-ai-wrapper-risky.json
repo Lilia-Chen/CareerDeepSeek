@@ -1,0 +1,33 @@
+{
+  "id": "synthetic-crud-ai-wrapper-risky",
+  "title": "AI Full Stack Developer",
+  "company": "Synthetic Growth Apps",
+  "source": "synthetic",
+  "summary": "Build dashboards and simple prompt wrappers around third-party APIs with unclear engineering ownership.",
+  "scores": {
+    "agent_systems_relevance": 1,
+    "memory_retrieval_context_relevance": 0,
+    "runtime_infrastructure_relevance": 1,
+    "eval_observability_reliability_relevance": 0,
+    "engineering_depth": 1,
+    "product_domain_interest": 1,
+    "visa_location_feasibility": 2,
+    "growth_upside": 1,
+    "risk_level": 4,
+    "application_cost": 3
+  },
+  "evidence": [
+    "Responsibilities are mostly dashboard work.",
+    "No evidence of memory, retrieval, observability, runtime, or eval work.",
+    "Company description suggests thin API wrapper risk."
+  ],
+  "riskFlags": [
+    "thin_ai_wrapper",
+    "low_engineering_depth"
+  ],
+  "missingInfo": [
+    "No clear team information.",
+    "No evidence of visa support."
+  ]
+}
+

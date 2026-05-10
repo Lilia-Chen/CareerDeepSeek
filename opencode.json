@@ -1,0 +1,74 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "instructions": [
+    "AGENTS.md",
+    "docs/privacy-model.md",
+    "docs/browser-use-policy.md"
+  ],
+  "permission": {
+    "edit": "ask",
+    "bash": "ask"
+  },
+  "command": {
+    "eval": {
+      "description": "Run the offline synthetic opportunity eval suite.",
+      "template": "Run `npm run eval`, inspect mismatches, and report scoring regressions without changing files unless asked.",
+      "agent": "scorer"
+    },
+    "review-opportunity": {
+      "description": "Score a pasted or fixture-based opportunity against the rubric.",
+      "template": "Review the opportunity in $ARGUMENTS using config/scoring-rubric.json. Record evidence, risk flags, missing information, score, and decision. Do not browse unless the user explicitly authorizes a visible browser session.",
+      "agent": "scorer"
+    }
+  },
+  "agent": {
+    "planner": {
+      "mode": "primary",
+      "description": "Planning-only agent for DeepJobSeek architecture and workflow changes.",
+      "prompt": "{file:.opencode/prompts/planner.md}",
+      "permission": {
+        "edit": "ask",
+        "bash": "ask",
+        "task": {
+          "*": "deny",
+          "scorer": "allow",
+          "reviewer": "allow"
+        }
+      }
+    },
+    "scorer": {
+      "mode": "subagent",
+      "description": "Scores job opportunities using the public rubric and synthetic fixtures.",
+      "prompt": "{file:.opencode/prompts/scorer.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "ask",
+        "webfetch": "deny",
+        "websearch": "deny"
+      }
+    },
+    "reviewer": {
+      "mode": "subagent",
+      "description": "Reviews scoring results, privacy boundaries, and proposed prompt or rubric changes.",
+      "prompt": "{file:.opencode/prompts/reviewer.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "ask",
+        "webfetch": "deny",
+        "websearch": "deny"
+      }
+    }
+  },
+  "watcher": {
+    "ignore": [
+      "node_modules/**",
+      "evals/reports/**",
+      "data/**",
+      "private/**",
+      "screenshots/**",
+      "raw-pages/**"
+    ]
+  }
+}
+

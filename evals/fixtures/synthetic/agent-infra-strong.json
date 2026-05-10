@@ -1,0 +1,28 @@
+{
+  "id": "synthetic-agent-infra-strong",
+  "title": "Agent Infrastructure Engineer",
+  "company": "Synthetic Systems Lab",
+  "source": "synthetic",
+  "summary": "Build runtime infrastructure, evaluation pipelines, tracing, and reliability tooling for production AI agents.",
+  "scores": {
+    "agent_systems_relevance": 5,
+    "memory_retrieval_context_relevance": 5,
+    "runtime_infrastructure_relevance": 5,
+    "eval_observability_reliability_relevance": 5,
+    "engineering_depth": 5,
+    "product_domain_interest": 5,
+    "visa_location_feasibility": 5,
+    "growth_upside": 5,
+    "risk_level": 0,
+    "application_cost": 0
+  },
+  "evidence": [
+    "Role centers on agent runtime infrastructure.",
+    "Role mentions evaluation and tracing as core responsibilities.",
+    "Engineering depth is high because ownership includes production reliability."
+  ],
+  "riskFlags": [],
+  "missingInfo": [
+    "Team size is not fully confirmed."
+  ]
+}

@@ -1,0 +1,106 @@
+{
+  "version": "0.1.0",
+  "maxScore": 100,
+  "dimensions": [
+    {
+      "id": "agent_systems_relevance",
+      "label": "Agent systems relevance",
+      "weight": 15,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "memory_retrieval_context_relevance",
+      "label": "Memory, retrieval, and context relevance",
+      "weight": 12,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "runtime_infrastructure_relevance",
+      "label": "Runtime and infrastructure relevance",
+      "weight": 12,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "eval_observability_reliability_relevance",
+      "label": "Eval, observability, and reliability relevance",
+      "weight": 12,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "engineering_depth",
+      "label": "Engineering depth",
+      "weight": 12,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "product_domain_interest",
+      "label": "Product and domain interest",
+      "weight": 8,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "visa_location_feasibility",
+      "label": "Visa and location feasibility",
+      "weight": 10,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "growth_upside",
+      "label": "Growth upside",
+      "weight": 8,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "risk_level",
+      "label": "Risk level",
+      "weight": -10,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "id": "application_cost",
+      "label": "Application cost",
+      "weight": -5,
+      "min": 0,
+      "max": 5
+    }
+  ],
+  "decisionThresholds": [
+    {
+      "decision": "apply_now",
+      "minScore": 80
+    },
+    {
+      "decision": "network_first",
+      "minScore": 65
+    },
+    {
+      "decision": "research_more",
+      "minScore": 50
+    },
+    {
+      "decision": "keep_warm",
+      "minScore": 35
+    },
+    {
+      "decision": "skip",
+      "minScore": 0
+    }
+  ],
+  "hardBlockers": [
+    "visa_impossible",
+    "auto_apply_required",
+    "unpaid_or_unclear_compensation",
+    "platform_policy_violation_required",
+    "obvious_scam_signal"
+  ]
+}
+

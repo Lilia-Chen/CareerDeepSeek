@@ -1,0 +1,16 @@
+{
+  "name": "deepjobseek",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Human-in-the-loop job search workbench with offline fit-scoring evals.",
+  "scripts": {
+    "test": "node --test",
+    "eval": "node scripts/run-eval.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
+
