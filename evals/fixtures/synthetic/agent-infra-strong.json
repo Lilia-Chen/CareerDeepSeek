@@ -3,23 +3,24 @@
   "title": "Agent Infrastructure Engineer",
   "company": "Synthetic Systems Lab",
   "source": "synthetic",
-  "summary": "Build runtime infrastructure, evaluation pipelines, tracing, and reliability tooling for production AI agents.",
+  "summary": "Build runtime infrastructure, evaluation pipelines, tracing, and reliability tooling for a B2B production AI agent platform at an engineering-led growth company.",
   "scores": {
-    "agent_systems_relevance": 5,
-    "memory_retrieval_context_relevance": 5,
-    "runtime_infrastructure_relevance": 5,
-    "eval_observability_reliability_relevance": 5,
-    "engineering_depth": 5,
-    "product_domain_interest": 5,
-    "visa_location_feasibility": 5,
-    "growth_upside": 5,
-    "risk_level": 0,
-    "application_cost": 0
+    "stage_hiring_pressure": 5,
+    "team_composition": 5,
+    "operating_model": 5,
+    "culture_work_style": 4,
+    "technical_relevance": 5,
+    "coding_ownership": 5,
+    "visa_location": 5,
+    "interview_signal": 5
   },
   "evidence": [
+    "Company is a growth-stage B2B platform expanding its engineering team.",
+    "Founding team and early engineers have visible AI infrastructure backgrounds.",
     "Role centers on agent runtime infrastructure.",
     "Role mentions evaluation and tracing as core responsibilities.",
-    "Engineering depth is high because ownership includes production reliability."
+    "Engineering depth is high because ownership includes production reliability.",
+    "Interview process includes coding and system design."
   ],
   "riskFlags": [],
   "missingInfo": [

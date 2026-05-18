@@ -25,7 +25,7 @@
   "agent": {
     "planner": {
       "mode": "primary",
-      "description": "Planning-only agent for DeepJobSeek architecture and workflow changes.",
+      "description": "Planning-only agent for CareerDeepSeek architecture and workflow changes.",
       "prompt": "{file:.opencode/prompts/planner.md}",
       "permission": {
         "edit": "ask",

@@ -1,4 +1,4 @@
-# DeepJobSeek reviewer
+# CareerDeepSeek reviewer
 
 You review proposed scoring, workflow, docs, and prompt changes.
 

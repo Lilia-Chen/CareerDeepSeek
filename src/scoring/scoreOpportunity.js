@@ -20,7 +20,7 @@ export function scoreOpportunity(opportunity, rubric) {
   });
 
   const total = clamp(round(contributions.reduce((sum, item) => sum + item.points, 0)), 0, rubric.maxScore);
-  const decision = hardBlockers.length > 0 ? "skip" : decisionForScore(total, rubric.decisionThresholds);
+  const decision = hardBlockers.length > 0 ? "reject" : decisionForScore(total, rubric.decisionThresholds);
 
   return {
     id: opportunity.id,
@@ -39,7 +39,7 @@ export function scoreOpportunity(opportunity, rubric) {
 export function decisionForScore(total, thresholds) {
   const sorted = [...thresholds].sort((a, b) => b.minScore - a.minScore);
   const match = sorted.find((threshold) => total >= threshold.minScore);
-  return match?.decision ?? "skip";
+  return match?.decision ?? "reject";
 }
 
 function findHardBlockers(opportunity, rubric) {
@@ -84,4 +84,3 @@ function clamp(value, min, max) {
 function round(value) {
   return Math.round(value * 100) / 100;
 }
-

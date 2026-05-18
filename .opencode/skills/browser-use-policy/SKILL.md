@@ -1,11 +1,11 @@
 ---
 name: browser-use-policy
-description: Use before any browser-use or external platform interaction in DeepJobSeek.
+description: Use before any browser-use or external platform interaction in CareerDeepSeek.
 ---
 
 # Browser-use Policy
 
-DeepJobSeek uses visible browser / computer-use only.
+CareerDeepSeek uses visible browser / computer-use only.
 
 Allowed:
 
@@ -14,7 +14,7 @@ Allowed:
 - Current-page visible text.
 - Screenshots for supervised understanding.
 - Draft generation.
-- Private CRM writes to `DEEPJOBSEEK_DATA_DIR`.
+- Private CRM writes to `CAREERDEEPSEEK_DATA_DIR`.
 
 Forbidden:
 

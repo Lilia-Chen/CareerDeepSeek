@@ -1,14 +1,14 @@
-# DeepJobSeek Agent Instructions
+# CareerDeepSeek Agent Instructions
 
 ## Purpose
 
-DeepJobSeek is a public code repository for a human-in-the-loop job search workbench. It evaluates AI engineering opportunities, records evidence, drafts outreach, and supports offline eval-driven improvement.
+CareerDeepSeek is a public code repository for a human-in-the-loop job search workbench. It evaluates AI engineering opportunities, records evidence, drafts outreach, and supports offline eval-driven improvement.
 
 ## Hard Boundary
 
 This repository must remain safe to publish publicly.
 
-Never write real personal assets, job leads, contacts, recruiter messages, CVs, cover letters, screenshots, raw page text, or private CRM records inside this repo. Use a repo-external data directory configured by `DEEPJOBSEEK_DATA_DIR`.
+Never write real personal assets, job leads, contacts, recruiter messages, CVs, cover letters, screenshots, raw page text, or private CRM records inside this repo. Use a repo-external data directory configured by `CAREERDEEPSEEK_DATA_DIR`.
 
 ## Workflow Precedence
 

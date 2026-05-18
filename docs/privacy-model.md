@@ -1,6 +1,6 @@
 # Privacy Model
 
-DeepJobSeek is intended to be a public repository.
+CareerDeepSeek is intended to be a public repository.
 
 ## Public
 
@@ -31,12 +31,12 @@ The following must not be committed:
 
 ## Data root
 
-Use `DEEPJOBSEEK_DATA_DIR` for private data.
+Use `CAREERDEEPSEEK_DATA_DIR` for private data.
 
 Recommended local path:
 
 ```txt
-../DeepJobSeek-data
+../CareerDeepSeek-data
 ```
 
 The repo must work without this directory for public tests and synthetic evals.

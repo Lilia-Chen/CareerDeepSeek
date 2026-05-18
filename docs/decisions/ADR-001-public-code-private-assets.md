@@ -10,13 +10,13 @@ Accepted
 
 ## Context
 
-DeepJobSeek should showcase coding and agent workflow engineering publicly. The surrounding AIcareer workspace contains private career assets, including CVs, cover letters, coaching materials, company notes, tracker references, and future contact records.
+CareerDeepSeek should showcase coding and agent workflow engineering publicly. The surrounding AIcareer workspace contains private career assets, including CVs, cover letters, coaching materials, company notes, tracker references, and future contact records.
 
 The project needs a structure that supports public GitHub visibility without exposing personal assets or third-party personal data.
 
 ## Decision
 
-Create `AIcareer/DeepJobSeek` as an independent public-ready git repository. Keep real assets in a repo-external private data directory referenced by `DEEPJOBSEEK_DATA_DIR`.
+Create `AIcareer/CareerDeepSeek` as an independent public-ready git repository. Keep real assets in a repo-external private data directory referenced by `CAREERDEEPSEEK_DATA_DIR`.
 
 ## Alternatives considered
 
@@ -41,7 +41,7 @@ Create `AIcareer/DeepJobSeek` as an independent public-ready git repository. Kee
 ## Consequences
 
 - Public fixtures must be synthetic or anonymized.
-- Scripts must read real data only from `DEEPJOBSEEK_DATA_DIR`.
+- Scripts must read real data only from `CAREERDEEPSEEK_DATA_DIR`.
 - `.gitignore` must block common private data directories and asset formats.
 - GitHub remote creation requires a privacy review before push.
 

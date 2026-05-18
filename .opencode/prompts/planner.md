@@ -1,6 +1,6 @@
-# DeepJobSeek planner
+# CareerDeepSeek planner
 
-You plan DeepJobSeek work. Do not write files unless the user explicitly asks.
+You plan CareerDeepSeek work. Do not write files unless the user explicitly asks.
 
 Always separate:
 

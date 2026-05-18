@@ -1,106 +1,109 @@
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "maxScore": 100,
   "dimensions": [
     {
-      "id": "agent_systems_relevance",
-      "label": "Agent systems relevance",
+      "id": "stage_hiring_pressure",
+      "label": "Stage & hiring pressure",
       "weight": 15,
       "min": 0,
-      "max": 5
+      "max": 5,
+      "description": "Series A-C expanding eng team = 5; pre-revenue seed no eng org = 1; idea stage = 0"
     },
     {
-      "id": "memory_retrieval_context_relevance",
-      "label": "Memory, retrieval, and context relevance",
+      "id": "team_composition",
+      "label": "Team composition",
       "weight": 12,
       "min": 0,
-      "max": 5
+      "max": 5,
+      "description": "Strong eng founders + visible full-stack/infra/AI people = 5; non-technical team building tech = 0"
     },
     {
-      "id": "runtime_infrastructure_relevance",
-      "label": "Runtime and infrastructure relevance",
+      "id": "operating_model",
+      "label": "Operating model",
       "weight": 12,
       "min": 0,
-      "max": 5
+      "max": 5,
+      "description": "Own product, complex data, B2B, productization ambition = 5; prompt studio / content mill = 0"
     },
     {
-      "id": "eval_observability_reliability_relevance",
-      "label": "Eval, observability, and reliability relevance",
-      "weight": 12,
-      "min": 0,
-      "max": 5
-    },
-    {
-      "id": "engineering_depth",
-      "label": "Engineering depth",
-      "weight": 12,
-      "min": 0,
-      "max": 5
-    },
-    {
-      "id": "product_domain_interest",
-      "label": "Product and domain interest",
-      "weight": 8,
-      "min": 0,
-      "max": 5
-    },
-    {
-      "id": "visa_location_feasibility",
-      "label": "Visa and location feasibility",
+      "id": "culture_work_style",
+      "label": "Culture & work style",
       "weight": 10,
       "min": 0,
-      "max": 5
+      "max": 5,
+      "description": "Builder culture, eng ownership, young but organized = 5; exploitative or chaotic = 0"
     },
     {
-      "id": "growth_upside",
-      "label": "Growth upside",
+      "id": "technical_relevance",
+      "label": "Technical relevance",
+      "weight": 18,
+      "min": 0,
+      "max": 5,
+      "description": "AI/data systems, agent infra, retrieval, eval, runtime = 5; demo/prompt tuning only = 1; no tech depth = 0"
+    },
+    {
+      "id": "coding_ownership",
+      "label": "Coding ownership",
+      "weight": 15,
+      "min": 0,
+      "max": 5,
+      "description": "Mostly coding + system design with standards = 5; title is engineer but actually consultant = 0"
+    },
+    {
+      "id": "visa_location",
+      "label": "Visa & location feasibility",
+      "weight": 10,
+      "min": 0,
+      "max": 5,
+      "description": "UK base, sponsors, no clearance limits = 5; no sponsor no path = 0 (hard blocker)"
+    },
+    {
+      "id": "interview_signal",
+      "label": "Interview signal",
       "weight": 8,
       "min": 0,
-      "max": 5
-    },
-    {
-      "id": "risk_level",
-      "label": "Risk level",
-      "weight": -10,
-      "min": 0,
-      "max": 5
-    },
-    {
-      "id": "application_cost",
-      "label": "Application cost",
-      "weight": -5,
-      "min": 0,
-      "max": 5
+      "max": 5,
+      "description": "Coding + system design + case study = 5; only behavioral/consulting = 1; no info = 3"
     }
   ],
   "decisionThresholds": [
     {
-      "decision": "apply_now",
-      "minScore": 80
+      "decision": "strong_fit",
+      "label": "Strong Fit",
+      "minScore": 75,
+      "action": "Prioritize: apply, find referral, customize materials"
     },
     {
-      "decision": "network_first",
-      "minScore": 65
+      "decision": "worth_pursuing",
+      "label": "Worth Pursuing",
+      "minScore": 60,
+      "action": "Apply with moderate customization"
     },
     {
-      "decision": "research_more",
-      "minScore": 50
+      "decision": "watch",
+      "label": "Watch",
+      "minScore": 45,
+      "action": "Monitor hiring and funding, don't proactively apply"
     },
     {
-      "decision": "keep_warm",
-      "minScore": 35
+      "decision": "low_priority",
+      "label": "Low Priority",
+      "minScore": 30,
+      "action": "Only if no other options"
     },
     {
-      "decision": "skip",
-      "minScore": 0
+      "decision": "reject",
+      "label": "Reject",
+      "minScore": 0,
+      "action": "Do not spend time"
     }
   ],
   "hardBlockers": [
     "visa_impossible",
+    "requires_uk_sc_dv_clearance",
     "auto_apply_required",
     "unpaid_or_unclear_compensation",
-    "platform_policy_violation_required",
     "obvious_scam_signal"
   ]
 }
-

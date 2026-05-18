@@ -1,6 +1,6 @@
 # Browser-use Policy
 
-DeepJobSeek is not a crawler.
+CareerDeepSeek is not a crawler.
 
 ## Allowed
 
@@ -10,7 +10,7 @@ DeepJobSeek is not a crawler.
 - Reading visible current-page text.
 - Screenshot-assisted understanding.
 - Drafting summaries and messages for user approval.
-- Writing local private CRM records to `DEEPJOBSEEK_DATA_DIR`.
+- Writing local private CRM records to `CAREERDEEPSEEK_DATA_DIR`.
 
 ## Forbidden
 

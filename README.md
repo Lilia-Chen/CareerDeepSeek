@@ -1,6 +1,6 @@
-# DeepJobSeek
+# CareerDeepSeek
 
-DeepJobSeek is a human-in-the-loop job search workbench for evaluating AI engineering opportunities, drafting outreach, and improving targeting through offline evals.
+CareerDeepSeek is a human-in-the-loop job search workbench for evaluating AI engineering opportunities, drafting outreach, and improving targeting through offline evals.
 
 The repository is designed to be public. Real job leads, contacts, CVs, cover letters, screenshots, recruiter messages, and browsing evidence must stay outside this repo.
 
@@ -34,7 +34,7 @@ Optional private data directory:
 cp .env.example .env
 ```
 
-Set `DEEPJOBSEEK_DATA_DIR` to a repo-external path such as `../DeepJobSeek-data`.
+Set `CAREERDEEPSEEK_DATA_DIR` to a repo-external path such as `../CareerDeepSeek-data`.
 
 ## Project layout
 
@@ -53,5 +53,5 @@ templates/       Public templates with placeholders only
 
 Public repo contains the engine. Private local data contains the fuel.
 
-Do not store real assets under this repository. Use `DEEPJOBSEEK_DATA_DIR` for all real CRM data, drafts, evidence, screenshots, and browsing outputs.
+Do not store real assets under this repository. Use `CAREERDEEPSEEK_DATA_DIR` for all real CRM data, drafts, evidence, screenshots, and browsing outputs.
 

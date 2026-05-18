@@ -1,9 +1,8 @@
 {
   "synthetic-agent-infra-strong": {
-    "decision": "apply_now"
+    "decision": "strong_fit"
   },
   "synthetic-crud-ai-wrapper-risky": {
-    "decision": "skip"
+    "decision": "reject"
   }
 }
-

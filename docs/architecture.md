@@ -1,6 +1,6 @@
 # Architecture
 
-DeepJobSeek starts as a local-first eval and workflow repository.
+CareerDeepSeek starts as a local-first eval and workflow repository.
 
 ## Components
 
@@ -20,7 +20,7 @@ synthetic fixture or user-provided opportunity
   -> eval comparison or private CRM write
 ```
 
-Real opportunity records must be written only to `DEEPJOBSEEK_DATA_DIR`.
+Real opportunity records must be written only to `CAREERDEEPSEEK_DATA_DIR`.
 
 ## First implementation boundary
 
