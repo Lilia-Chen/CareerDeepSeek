@@ -5,7 +5,7 @@ description: Use when scoring job opportunities against CareerDeepSeek's AI agen
 
 # Job Fit Scoring
 
-Use `config/scoring-rubric.json` as the source of truth.
+Use `docs/scoring-rubric.md` as the source of truth. `config/scoring-rubric.json` is generated from the Markdown file for runtime and eval use.
 
 Process:
 

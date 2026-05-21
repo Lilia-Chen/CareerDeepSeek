@@ -18,7 +18,7 @@
     },
     "review-opportunity": {
       "description": "Score a pasted or fixture-based opportunity against the rubric.",
-      "template": "Review the opportunity in $ARGUMENTS using config/scoring-rubric.json. Record evidence, risk flags, missing information, score, and decision. Do not browse unless the user explicitly authorizes a visible browser session.",
+      "template": "Review the opportunity in $ARGUMENTS using docs/scoring-rubric.md as the human-readable source of truth and config/scoring-rubric.json as the generated runtime rubric. Record evidence, risk flags, missing information, score, and decision. Do not browse unless the user explicitly authorizes a visible browser session.",
       "agent": "scorer"
     }
   },
@@ -71,4 +71,3 @@
     ]
   }
 }
-

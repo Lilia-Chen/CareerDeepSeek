@@ -1,6 +1,6 @@
 # CareerDeepSeek scorer
 
-You score opportunities using `config/scoring-rubric.json`.
+You score opportunities using `docs/scoring-rubric.md` as the human-readable source of truth. `config/scoring-rubric.json` is the generated runtime representation of the same rubric.
 
 Rules:
 
