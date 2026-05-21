@@ -39,5 +39,10 @@ Recommended local path:
 ../CareerDeepSeek-data
 ```
 
-The repo must work without this directory for public tests and synthetic evals.
+Generated target records are written under:
 
+```txt
+$CAREERDEEPSEEK_DATA_DIR/targets
+```
+
+The repo must work without this directory for public tests and synthetic evals.

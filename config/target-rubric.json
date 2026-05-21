@@ -1,0 +1,154 @@
+{
+  "version": "0.1.0",
+  "maxScore": 100,
+  "dimensions": [
+    {
+      "id": "stage_hiring_pressure",
+      "label": "Stage & Hiring Pressure",
+      "weight": 15,
+      "min": 0,
+      "max": 5,
+      "description": "Clear growth or expansion signal, active technical hiring, and enough funding, revenue, or customer pressure to support engineering headcount.",
+      "levels": {
+        "0": "No credible company, team, or hiring capacity signal.",
+        "1": "Speculative team, unclear budget, or mostly founder-only activity.",
+        "2": "Early or unstable company with weak evidence of engineering hiring capacity.",
+        "3": "Company looks viable, but current hiring pressure is unknown.",
+        "4": "Healthy company with visible technical hiring, but urgency or headcount expansion is less clear.",
+        "5": "Clear growth or expansion signal, active technical hiring, and enough funding, revenue, or customer pressure to support engineering headcount."
+      }
+    },
+    {
+      "id": "team_composition",
+      "label": "Team Composition",
+      "weight": 15,
+      "min": 0,
+      "max": 5,
+      "description": "Engineering-led team with visible founders or early engineers in AI systems, infrastructure, data, research, or strong product engineering.",
+      "levels": {
+        "0": "No visible technical team behind a technical claim.",
+        "1": "Very little visible technical talent, or engineering appears outsourced.",
+        "2": "Business, consulting, sales, or operations appear to dominate; engineering may be secondary.",
+        "3": "Technical team exists, but technical leadership or depth is not yet clear.",
+        "4": "Clear technical leadership and enough visible engineers to support serious system-building.",
+        "5": "Engineering-led team with visible founders or early engineers in AI systems, infrastructure, data, research, or strong product engineering."
+      }
+    },
+    {
+      "id": "technical_closure",
+      "label": "Technical Closure",
+      "weight": 20,
+      "min": 0,
+      "max": 5,
+      "description": "Company appears to own meaningful system layers: product, data, retrieval, eval, runtime, model, infrastructure, or production feedback loop.",
+      "levels": {
+        "0": "No meaningful technical closure.",
+        "1": "Thin wrapper, prompt studio, or demo-heavy product with weak durable engineering asset signal.",
+        "2": "Mainly integration, implementation, or services around third-party platforms.",
+        "3": "Product has real technical content, but closure vs. wrapper/delivery model needs more evidence.",
+        "4": "Strong in-house engineering exists, but one important technical layer or long-term moat is still uncertain.",
+        "5": "Company appears to own meaningful system layers: product, data, retrieval, eval, runtime, model, infrastructure, or production feedback loop."
+      }
+    },
+    {
+      "id": "domain_alignment",
+      "label": "Domain Alignment",
+      "weight": 20,
+      "min": 0,
+      "max": 5,
+      "description": "Directly matches AI agent systems, agent infrastructure, memory/retrieval, eval, runtime, observability, AI tooling, or production AI workflows.",
+      "levels": {
+        "0": "No meaningful alignment with the target direction.",
+        "1": "Weak fit with only surface-level AI branding.",
+        "2": "Some technical relevance, but mostly outside the target direction.",
+        "3": "General AI/data/product engineering fit, but not clearly close to agent systems or infrastructure.",
+        "4": "Strong adjacent fit: workflow automation, data infrastructure, LLMOps/MLOps, voice AI infrastructure, or full-stack AI product engineering.",
+        "5": "Directly matches AI agent systems, agent infrastructure, memory/retrieval, eval, runtime, observability, AI tooling, or production AI workflows."
+      }
+    },
+    {
+      "id": "culture_ownership_signal",
+      "label": "Culture & Ownership Signal",
+      "weight": 10,
+      "min": 0,
+      "max": 5,
+      "description": "Public signals show engineering ownership, technical taste, high standards, and room for individual judgment.",
+      "levels": {
+        "0": "Clear chaos, exploitation, or bad-faith culture signal.",
+        "1": "High-agency language likely means unclear scope, low support, or exploitative pace.",
+        "2": "Signals suggest delivery pressure, sales-led priority churn, or weak technical decision rights.",
+        "3": "Culture is not clearly bad, but ownership and engineering quality are unknown.",
+        "4": "Builder culture or strong technical voice is visible, with manageable unknowns.",
+        "5": "Public signals show engineering ownership, technical taste, high standards, and room for individual judgment."
+      }
+    },
+    {
+      "id": "right_to_work_location",
+      "label": "Right to Work & Location",
+      "weight": 10,
+      "min": 0,
+      "max": 5,
+      "description": "Location and employment setup clearly match a viable right-to-work path.",
+      "levels": {
+        "0": "No viable right-to-work path.",
+        "1": "Company likely cannot support the needed path, but a personal alternative may exist.",
+        "2": "Feasibility is weak and would require non-standard sponsorship, relocation, or contract conversion.",
+        "3": "Location looks plausible, but right-to-work route is unknown.",
+        "4": "Likely feasible, but entity, remote setup, sponsorship, or start timing needs confirmation.",
+        "5": "Location and employment setup clearly match a viable right-to-work path."
+      }
+    },
+    {
+      "id": "reachability_signal",
+      "label": "Reachability Signal",
+      "weight": 10,
+      "min": 0,
+      "max": 5,
+      "description": "Clear reachable surface exists: engineering founders, hiring managers, recruiters, OSS/community presence, events, or warm network paths.",
+      "levels": {
+        "0": "No practical way to monitor or reach the target.",
+        "1": "Hard to identify anyone relevant, and no hiring or community surface is visible.",
+        "2": "Few visible people or weak contact surface.",
+        "3": "Reachability unknown; company can be watched but needs contact research.",
+        "4": "Some reachable people or community surfaces are visible.",
+        "5": "Clear reachable surface exists: engineering founders, hiring managers, recruiters, OSS/community presence, events, or warm network paths."
+      }
+    }
+  ],
+  "decisionThresholds": [
+    {
+      "decision": "priority_target",
+      "label": "Priority Target",
+      "minScore": 75,
+      "action": "Track actively, identify people, monitor roles, and prepare tailored positioning."
+    },
+    {
+      "decision": "qualified_watch",
+      "label": "Qualified Watch",
+      "minScore": 60,
+      "action": "Keep on watchlist and refresh evidence periodically."
+    },
+    {
+      "decision": "research_more",
+      "label": "Research More",
+      "minScore": 45,
+      "action": "Gather missing evidence before deciding."
+    },
+    {
+      "decision": "low_priority",
+      "label": "Low Priority",
+      "minScore": 30,
+      "action": "Do not actively pursue unless new evidence appears."
+    },
+    {
+      "decision": "reject",
+      "label": "Reject",
+      "minScore": 0,
+      "action": "Do not spend time."
+    }
+  ],
+  "hardBlockers": [
+    "right_to_work_impossible",
+    "obvious_scam_signal"
+  ]
+}
