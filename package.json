@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "Human-in-the-loop job search workbench with offline fit-scoring evals.",
+  "description": "Bounded visible-browser job search agent with offline fit-scoring evals.",
   "scripts": {
     "generate:rubric": "node scripts/generate-rubric.js",
     "generate:target-rubric": "node scripts/generate-target-rubric.js",
+    "demo:discovery": "node scripts/run-synthetic-discovery.js",
     "test": "node --test",
     "eval": "node scripts/run-eval.js"
   },

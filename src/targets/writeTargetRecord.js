@@ -5,7 +5,7 @@ import { resolvePrivateDataDir } from "../privateData/dataDir.js";
 export async function writeTargetRecord(scoredTarget, options = {}) {
   assertScoredTarget(scoredTarget);
 
-  const dataDir = options.dataDir ?? resolvePrivateDataDir(options.env);
+  const dataDir = resolvePrivateDataDir(options.env, { dataDir: options.dataDir });
   const targetDir = join(dataDir, "targets");
   const outputPath = join(targetDir, `${scoredTarget.id}.json`);
   const now = new Date().toISOString();

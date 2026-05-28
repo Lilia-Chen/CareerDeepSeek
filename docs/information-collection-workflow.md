@@ -1,0 +1,308 @@
+# Information Collection Workflow
+
+CareerDeepSeek collects job-search intelligence through bounded visible-browser sessions. The agent should behave like a careful human researcher using a real browser: search, click, read visible pages, extract short evidence, classify candidates, score them, and write structured private records.
+
+It must not become a raw scraper, crawler, hidden API client, CAPTCHA bypass tool, or auto-application system.
+
+## Goal
+
+Automate the collection loop for AI engineering targets and opportunities:
+
+```txt
+bounded browser session
+  -> visual state observation
+  -> visual action planning
+  -> LLM structured action output
+  -> policy-checked browser/computer action
+  -> progress verification
+  -> page observation
+  -> LLM evidence extraction
+  -> candidate classification
+  -> rubric scoring
+  -> private record and review queue write
+```
+
+## Required Tools
+
+### Computer-Use Adapter
+
+The core MVP expects a computer-use adapter with two methods:
+
+```txt
+observe() -> VisualState
+act(action) -> ActionResult
+```
+
+`observe()` returns the current visual state of the browser or computer surface. `act(action)` executes one policy-checked action such as clicking a coordinate-grounded element, typing text, pressing a key, scrolling, waiting, opening a URL, or stopping.
+
+The repository includes a mock adapter for tests. A real adapter can later wrap Codex Browser, browser-use, Playwright with visible mode, or another visible computer-use runtime as long as it obeys the same contract.
+
+### LLM Adapter
+
+The MVP expects an LLM adapter with one method:
+
+```txt
+generateJson(request) -> object
+```
+
+The model never receives permission to execute actions directly. It only returns structured JSON to deterministic code.
+
+The current MVP calls the model for two tasks:
+
+- `plan_visual_action` - choose one next visual action from the current state.
+- `extract_page_observation` - convert the final visual state into short evidence and candidate fields.
+
+The deterministic workflow still owns:
+
+- action policy checks
+- stop-condition checks
+- progress verification
+- scoring
+- file writes
+
+### Visual State
+
+A visual state is the agent's grounded view of the current surface:
+
+```json
+{
+  "sessionId": "agent-discovery-2026-05-21",
+  "url": "https://search.example/search?q=agent+infrastructure+hiring",
+  "title": "Search results",
+  "sourceType": "search_engine",
+  "observedAt": "2026-05-21T11:00:00.000Z",
+  "screenshot": {
+    "id": "shot-search",
+    "width": 1440,
+    "height": 900
+  },
+  "visibleText": "Synthetic Agent Lab - Careers.",
+  "elements": [
+    {
+      "id": "result-synthetic-agent-lab",
+      "role": "link",
+      "text": "Synthetic Agent Lab Careers",
+      "href": "https://synthetic-agent-lab.example/careers",
+      "box": {
+        "x": 160,
+        "y": 220,
+        "width": 420,
+        "height": 36
+      }
+    }
+  ],
+  "signals": []
+}
+```
+
+The normalized visual state computes element center points so actions can be coordinate-grounded.
+
+### Browser Actions
+
+The browser adapter should expose only visible-browser actions:
+
+- `open_url` - open an approved public URL in the visible browser.
+- `click` - click a visible element by center point.
+- `type` - type text into the focused visible field.
+- `press` - press a key.
+- `scroll` - scroll the visible surface.
+- `wait` - wait for visible page changes.
+- `capture_screenshot` - capture a screenshot for supervised understanding.
+- `stop_session` - stop when the budget or a stop condition is reached.
+
+The workflow rejects forbidden action types before execution, including:
+
+- `raw_http_fetch`
+- `hidden_api_call`
+- `sitemap_crawl`
+- `solve_captcha`
+- `rotate_proxy`
+- `headless_bulk_collect`
+- `auto_apply`
+- `send_message`
+- `auto_add_connection`
+
+### Processing Actions
+
+Processing happens after visible page observation:
+
+- Normalize page observations.
+- Extract short evidence bullets.
+- Classify the page as `target_company`, `job_opportunity`, `person_contact_surface`, `source_evidence`, or `irrelevant`.
+- Score targets and opportunities with the generated runtime rubrics.
+- Write private records and review queue items to `CAREERDEEPSEEK_DATA_DIR`.
+
+## Session Contract
+
+A collection session must define:
+
+```json
+{
+  "id": "agent-discovery-2026-05-21",
+  "goal": "Find production AI agent infrastructure companies with hiring signals.",
+  "sourceScope": ["search_engine", "company_site", "public_careers", "engineering_blog", "github_org"],
+  "pageBudget": {
+    "maxPages": 8
+  },
+  "stopConditions": ["login_required", "captcha", "rate_limited", "budget_exceeded"]
+}
+```
+
+Allowed source classes:
+
+- `search_engine`
+- `company_site`
+- `public_careers`
+- `public_ats`
+- `engineering_blog`
+- `documentation`
+- `changelog`
+- `github_org`
+
+## Page Observation Contract
+
+A page observation stores structured facts from the visible page. It must not store raw page dumps.
+
+```json
+{
+  "sessionId": "agent-discovery-2026-05-21",
+  "url": "https://synthetic-agent-lab.example/careers",
+  "title": "Synthetic Agent Lab Careers",
+  "sourceType": "company_site",
+  "observedAt": "2026-05-21T10:00:00.000Z",
+  "evidence": [
+    {
+      "label": "domain_alignment",
+      "text": "Builds agent runtime observability for production AI systems.",
+      "sourceUrl": "https://synthetic-agent-lab.example/careers"
+    }
+  ],
+  "extracted": {
+    "candidateType": "target_company"
+  }
+}
+```
+
+## Review Queue Contract
+
+The review queue is the handoff between automated collection and human decisions.
+
+Review items include:
+
+- Session id.
+- Candidate type and id.
+- Private record type.
+- Score and decision.
+- Source URL, title, source type, and observed timestamp.
+- Short evidence bullets.
+- Missing information.
+- Risk flags.
+- Next action.
+
+Review items are written to:
+
+```txt
+$CAREERDEEPSEEK_DATA_DIR/review-queue
+```
+
+## Stop Conditions
+
+The browser session must stop and ask before:
+
+- Logging in.
+- Handling account, identity, payment, or security prompts.
+- Solving CAPTCHA or anti-bot challenges.
+- Continuing after rate limiting or suspicious-activity warnings.
+- Opening pages beyond the approved budget.
+- Saving personal contact data.
+- Sending any message or application.
+- Changing source class or platform-specific behavior.
+
+## Visual Action MVP
+
+The current MVP implements the visual-action loop:
+
+```txt
+normalize visual state
+  -> choose visual action
+  -> check action policy
+  -> act through computer-use adapter
+  -> observe again
+  -> verify progress
+  -> repeat or stop
+```
+
+Implemented automation modules:
+
+- `src/automation/visualState.js` - validates screenshot-backed visual state and computes element centers.
+- `src/automation/actionSpace.js` - constructs visual actions such as coordinate-grounded clicks and typing.
+- `src/automation/actionPolicy.js` - rejects forbidden action types and high-risk element intents such as apply, login, CAPTCHA, payment, or send-message actions.
+- `src/automation/progressVerifier.js` - verifies action progress by URL, title, screenshot, or visible text changes.
+- `src/automation/mockComputerUseAdapter.js` - deterministic computer-use adapter for tests.
+- `src/automation/sessionRunner.js` - observe/action/observe session loop with budget and stop-condition handling.
+- `src/automation/visualObservation.js` - converts a visual state into a collection page observation without saving raw visible text.
+
+## LLM Discovery MVP
+
+The current MVP wires visual action to model decisions:
+
+```txt
+VisualState
+  -> src/llm/visualActionPlanner.js
+  -> policy-checked Action
+  -> src/automation/sessionRunner.js
+  -> final VisualState
+  -> src/llm/evidenceExtractor.js
+  -> PageObservation
+  -> collection classification/scoring/review queue
+```
+
+Implemented LLM/workflow modules:
+
+- `src/llm/modelContract.js` - minimal `generateJson(request)` adapter contract.
+- `src/llm/visualActionPlanner.js` - asks the model for the next action and converts click outputs into coordinate-grounded actions.
+- `src/llm/evidenceExtractor.js` - asks the model for evidence and candidate fields, then normalizes them into a page observation.
+- `src/workflows/runDiscoveryWorkflow.js` - runs the full discovery loop from visual state to review queue item.
+
+The model may suggest actions and extraction fields, but it cannot bypass policy checks, write files directly, or perform high-risk actions.
+
+## Demo Command
+
+Run the synthetic visual discovery demo:
+
+```bash
+npm run demo:discovery
+```
+
+The demo uses:
+
+- a mock computer-use adapter
+- a deterministic mock model
+- synthetic search and company visual states
+- the real session runner, LLM planner/extractor interfaces, target scoring, and review queue builder
+
+It prints the visual action trace and generated review queue item. It does not write private files unless the script is run with `--write` and `CAREERDEEPSEEK_DATA_DIR` is configured.
+
+## Current Implementation
+
+The current implementation provides the workflow core and visual-action MVP:
+
+- `src/automation/visualState.js`
+- `src/automation/actionSpace.js`
+- `src/automation/actionPolicy.js`
+- `src/automation/progressVerifier.js`
+- `src/automation/mockComputerUseAdapter.js`
+- `src/automation/sessionRunner.js`
+- `src/automation/visualObservation.js`
+- `src/llm/modelContract.js`
+- `src/llm/visualActionPlanner.js`
+- `src/llm/evidenceExtractor.js`
+- `src/workflows/runDiscoveryWorkflow.js`
+- `src/collection/sessionPolicy.js`
+- `src/collection/toolContract.js`
+- `src/collection/pageObservation.js`
+- `src/collection/classifyCandidate.js`
+- `src/collection/buildReviewItem.js`
+- `src/collection/writeReviewQueue.js`
+
+It does not yet ship a real browser adapter or provider-specific LLM client. The next step is an adapter that maps actual visible-browser operations to `observe()` and `act(action)`, plus a provider wrapper that implements `generateJson(request)`.

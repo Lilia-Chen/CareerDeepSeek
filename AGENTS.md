@@ -2,7 +2,7 @@
 
 ## Purpose
 
-CareerDeepSeek is a public code repository for a human-in-the-loop job search workbench. It evaluates AI engineering opportunities, records evidence, drafts outreach, and supports offline eval-driven improvement.
+CareerDeepSeek is a public code repository for a bounded visible-browser job search agent. It automates target and opportunity discovery, evidence collection, scoring, private CRM writes, outreach drafting, and offline eval-driven improvement while keeping high-risk actions under human approval.
 
 ## Hard Boundary
 
@@ -31,25 +31,28 @@ Never write real personal assets, job leads, contacts, recruiter messages, CVs, 
 
 ## Browser-use Policy
 
-Visible browser or computer-use only.
+CareerDeepSeek is a visible browser-use agent, not a raw scraper.
+
+Browser automation is allowed when the session is bounded by an explicit search goal, source scope, page budget, and stop conditions. The agent may search, click, read visible pages, classify candidates, score them, and write structured private records without asking before every click inside the approved session.
 
 Allowed:
-- Open user-approved pages.
-- Type visible search keywords.
-- Click visible buttons.
-- Read current visible page text.
-- Capture screenshots for user-supervised understanding.
-- Summarize the current page.
-- Write summaries to the repo-external private data directory.
-- Draft messages for user review.
+- Open search engines, company websites, public careers pages, public ATS pages, engineering blogs, docs, changelogs, GitHub organization pages, and other approved public sources in a visible browser.
+- Type visible search keywords and refine queries.
+- Click visible links and buttons needed for the approved search session.
+- Read visible page text and classify pages as target company, job opportunity, person/contact surface, source evidence, or irrelevant.
+- Capture screenshots for user-supervised understanding when useful.
+- Extract short evidence summaries, missing information, risk flags, source labels, and observed timestamps.
+- Score targets and opportunities with the project rubrics.
+- Write structured records, summaries, and review queues to the repo-external private data directory.
+- Draft outreach or application messages for user review.
 
 Forbidden:
 - Raw HTTP scraping.
 - requests, cheerio, hidden API reverse engineering, or sitemap crawling.
 - CAPTCHA bypass, proxy rotation, or robots bypass.
 - Headless bulk collection.
-- Background unattended browsing.
-- Bulk extraction of jobs, profiles, reviews, salaries, or interview reports.
+- Long-running background browsing without a bounded session goal and page budget.
+- Bulk extraction of jobs, profiles, reviews, salaries, or interview reports from restricted platforms.
 - Auto-apply.
 - Auto-send messages.
 - Auto-add LinkedIn connections.
@@ -71,8 +74,7 @@ Stop and ask before:
 - Creating or modifying external accounts.
 - Sending messages or applications.
 - Storing new categories of private data.
-- Adding browser automation beyond visible, low-frequency actions.
+- Starting a new class of browser automation source not covered by the current browser-use policy.
 - Moving private data into this repo.
 - Changing the scoring rubric thresholds.
 - Publishing or pushing a branch to GitHub.
-

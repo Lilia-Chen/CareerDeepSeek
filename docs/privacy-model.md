@@ -45,4 +45,12 @@ Generated target records are written under:
 $CAREERDEEPSEEK_DATA_DIR/targets
 ```
 
+Generated review queue items are written under:
+
+```txt
+$CAREERDEEPSEEK_DATA_DIR/review-queue
+```
+
 The repo must work without this directory for public tests and synthetic evals.
+
+The runtime rejects `CAREERDEEPSEEK_DATA_DIR` values that resolve inside this public repository.

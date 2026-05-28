@@ -1,6 +1,6 @@
 # CareerDeepSeek
 
-CareerDeepSeek is a human-in-the-loop job search workbench for evaluating AI engineering opportunities, drafting outreach, and improving targeting through offline evals.
+CareerDeepSeek is a bounded visible-browser job search agent for discovering AI engineering targets, evaluating opportunities, drafting outreach, and improving targeting through offline evals.
 
 The repository is designed to be public. Real job leads, contacts, CVs, cover letters, screenshots, recruiter messages, and browsing evidence must stay outside this repo.
 
@@ -8,6 +8,7 @@ The repository is designed to be public. Real job leads, contacts, CVs, cover le
 
 - Score opportunities against a transparent fit rubric.
 - Qualify target companies and teams before a specific role exists.
+- Automate bounded visible-browser discovery sessions for target and opportunity search.
 - Run offline evals on synthetic fixtures.
 - Keep browser-use boundaries explicit.
 - Provide OpenCode/Codex project instructions for bounded work sessions.
@@ -17,7 +18,8 @@ The repository is designed to be public. Real job leads, contacts, CVs, cover le
 
 - No raw HTTP scraping.
 - No hidden API reverse engineering.
-- No unattended platform browsing.
+- No unbounded background browsing.
+- No headless bulk collection.
 - No auto-apply.
 - No auto-send messages.
 - No real personal or contact data in public fixtures.
@@ -27,6 +29,7 @@ The repository is designed to be public. Real job leads, contacts, CVs, cover le
 ```bash
 npm test
 npm run eval
+npm run demo:discovery
 ```
 
 The scoring rubrics are edited in Markdown. Generate the runtime JSON after rubric edits:
@@ -60,6 +63,10 @@ Set `CAREERDEEPSEEK_DATA_DIR` to a repo-external path such as `../CareerDeepSeek
 
 ```txt
 src/
+  automation/    Visual-action browser/computer-use loop
+  collection/    Browser-use collection workflow contracts
+  llm/           Structured JSON model planner and extractor contracts
+  workflows/     End-to-end discovery workflows
   scoring/       Fit scoring logic
   targets/       Target company/team scoring logic
   privateData/   Repo-external private data directory resolution
