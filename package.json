@@ -1,18 +1,32 @@
 {
   "name": "careerdeepseek",
+  "type": "module",
   "version": "0.1.0",
   "private": false,
-  "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "description": "Bounded visible-browser job search agent with offline fit-scoring evals.",
-  "scripts": {
-    "generate:rubric": "node scripts/generate-rubric.js",
-    "generate:target-rubric": "node scripts/generate-target-rubric.js",
-    "demo:discovery": "node scripts/run-synthetic-discovery.js",
-    "test": "node --test",
-    "eval": "node scripts/run-eval.js"
-  },
   "license": "MIT",
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "generate:rubric": "tsx scripts/generate-rubric.ts",
+    "generate:target-rubric": "tsx scripts/generate-target-rubric.ts",
+    "demo:discovery": "tsx scripts/run-synthetic-discovery.ts",
+    "eval": "tsx scripts/run-eval.ts",
+    "lint": "moeru-lint .",
+    "lint:fix": "moeru-lint --fix .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^8.3.0",
+    "@moeru/eslint-config": "^0.1.0-beta.18",
+    "@types/node": "^24.12.4",
+    "eslint": "^10.4.0",
+    "eslint-plugin-oxlint": "^1.60.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.4"
   }
 }

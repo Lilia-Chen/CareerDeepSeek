@@ -27,28 +27,31 @@ The repository is designed to be public. Real job leads, contacts, CVs, cover le
 ## Quick start
 
 ```bash
-npm test
-npm run eval
-npm run demo:discovery
+pnpm install
+pnpm test
+pnpm run typecheck
+pnpm run lint
+pnpm run eval
+pnpm run demo:discovery
 ```
 
 The scoring rubrics are edited in Markdown. Generate the runtime JSON after rubric edits:
 
 ```bash
-npm run generate:rubric
-npm run generate:target-rubric
+pnpm run generate:rubric
+pnpm run generate:target-rubric
 ```
 
 Score a target company/team JSON without writing private records:
 
 ```bash
-node scripts/score-target.js path/to/target.json
+pnpm exec tsx scripts/score-target.ts path/to/target.json
 ```
 
 Write a scored target record only when `CAREERDEEPSEEK_DATA_DIR` points outside this repository:
 
 ```bash
-CAREERDEEPSEEK_DATA_DIR=../CareerDeepSeek-data node scripts/score-target.js path/to/target.json --write
+CAREERDEEPSEEK_DATA_DIR=../CareerDeepSeek-data pnpm exec tsx scripts/score-target.ts path/to/target.json --write
 ```
 
 Optional private data directory:

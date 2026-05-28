@@ -2,6 +2,7 @@
 .env.local
 .env.*.local
 node_modules/
+.eslintcache
 coverage/
 dist/
 tmp/
@@ -24,4 +25,3 @@ memory-bank/
 *.jpg
 *.jpeg
 *.webp
-
