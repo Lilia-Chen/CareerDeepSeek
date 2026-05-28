@@ -33,6 +33,7 @@ pnpm run typecheck
 pnpm run lint
 pnpm run eval
 pnpm run demo:discovery
+pnpm run privacy:scan
 ```
 
 The scoring rubrics are edited in Markdown. Generate the runtime JSON after rubric edits:
@@ -61,6 +62,22 @@ cp .env.example .env
 ```
 
 Set `CAREERDEEPSEEK_DATA_DIR` to a repo-external path such as `../CareerDeepSeek-data`.
+
+## CI and local harness
+
+Public CI runs only deterministic checks and synthetic fixtures. It does not call an LLM API and does not read private data:
+
+```bash
+pnpm run ci:public
+```
+
+Install the local pre-push hook when you want the full local gate before pushing:
+
+```bash
+pnpm run hooks:install
+```
+
+The pre-push hook runs lint, typecheck, tests, synthetic eval, synthetic discovery, the public privacy scan, and the private harness. The private harness reads `CAREERDEEPSEEK_DATA_DIR` or `../CareerDeepSeek-data` when present, validates repo-external target/review records, and prints only aggregate counts. If no private data directory is configured, it skips without failing.
 
 ## Project layout
 
