@@ -22,7 +22,7 @@ export interface BrowserObservationViewport {
 }
 
 export interface BrowserObservationScreenshot {
-  source: 'extension_captureVisibleTab' | 'playwright_page_screenshot' | 'cdp_Page.captureScreenshot'
+  source: 'cdp_Page.captureScreenshot'
   format: 'png'
   width?: number
   height?: number

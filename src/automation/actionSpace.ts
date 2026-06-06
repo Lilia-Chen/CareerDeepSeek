@@ -3,10 +3,8 @@ import type { VisualAction } from '../types.js'
 
 type ClickAction = Extract<VisualAction, { type: 'click' }>
 type TypeAction = Extract<VisualAction, { type: 'type' }>
-type OpenUrlAction = Extract<VisualAction, { type: 'open_url' }>
 
 export const VISUAL_ACTION_TYPES = new Set([
-  'open_url',
   'click',
   'type',
   'press',
@@ -39,16 +37,5 @@ export function createTypeAction({ text }: { text: string }): TypeAction {
   return {
     type: 'type',
     text,
-  }
-}
-
-export function createOpenUrlAction({ url }: { url: string }): OpenUrlAction {
-  if (typeof url !== 'string' || url.trim() === '') {
-    throw new TypeError('Open URL action url must be a non-empty string.')
-  }
-
-  return {
-    type: 'open_url',
-    url,
   }
 }

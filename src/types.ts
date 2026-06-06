@@ -53,6 +53,7 @@ export interface VisualElement {
   text: string
   href: string | null
   intent: string | null
+  source?: string
   box: VisualBox
   center: VisualPoint
 }
@@ -80,12 +81,6 @@ export interface VisualState {
 
 export type VisualAction
   = | {
-    type: 'open_url'
-    url: string
-    reason?: string | null
-    expectedChange?: string | null
-  }
-  | {
     type: 'click'
     elementId: string
     point: VisualPoint

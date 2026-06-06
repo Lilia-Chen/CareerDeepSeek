@@ -1,6 +1,6 @@
 # Architecture
 
-CareerDeepSeek starts as a local-first eval and workflow repository, then adds bounded visible-browser discovery sessions for automated job and target search.
+CareerDeepSeek is a local-first eval and workflow repository with a bounded visible-browser computer-use runtime for target and opportunity discovery.
 
 ## Components
 
@@ -8,21 +8,23 @@ CareerDeepSeek starts as a local-first eval and workflow repository, then adds b
 - Target hunting rubric: `docs/target-rubric.md` is the canonical human-edited rubric for company or team targets before a specific role exists.
 - Runtime rubric artifacts: `config/scoring-rubric.json` and `config/target-rubric.json` are generated from the Markdown rubrics.
 - Scoring engines: deterministic scoring from structured opportunity or target signals and the generated runtime rubrics.
-- Browser observation core: read-only DOM-visible observation, ARIA/HTML semantic approximation, viewport boxes, occlusion checks, screenshot metadata, and optional CDP debug corroboration.
-- Visual-action automation core: screenshot-backed visual state, coordinate-grounded action space, action policy, progress verification, mock computer-use adapter, browser-use debug adapter, and session runner.
+- Computer-use observation core: `src/computer-use/` captures screenshot, window metadata, AX tree, and read-only Chrome DOM semantics.
+- Desktop grounding core: screenshot, window, AX, and Chrome DOM observations are merged into `DesktopGroundingSnapshot` target candidates with source priority `chrome_dom > ax > vision > raw`.
+- Computer-use action core: `src/computer-use/macos-actions.ts` executes mouse, keyboard, key, and scroll actions through Swift + Quartz `CGEvent`.
+- Foreground context guard: `MacOSComputerUseAdapter.observe()` and `MacOSComputerUseAdapter.act()` ensure Google Chrome is open and frontmost before observation or input. The default policy rejects when another app is frontmost; `auto_focus_chrome` may use OS-level app activation and must recheck before continuing.
+- Browser safety gate: deterministic code detects high-risk browser states and low-risk blocking overlays before evidence extraction. Cookie consent and marketing overlays may be dismissed through observed CGEvent clicks. Login, CAPTCHA, payment, checkout, apply, and send-message states produce hard stops.
+- URL navigation is performed through the visible Chrome address bar with `Cmd+L`, keyboard text input, and Enter. There is no `open_url` action or URL-opening bootstrap helper.
 - LLM decision layer: structured JSON model contract, DeepSeek V4 Pro adapter through Vercel AI SDK, visual action planner, evidence extractor, and end-to-end discovery workflow.
-- Browser session policy: bounded visible-browser automation rules for search, navigation, evidence extraction, stop conditions, and private writes.
-- Collection workflow core: session validation, browser action contract checks, page observation normalization, candidate classification, review item building, and private review queue writes.
-- Browser discovery runner: default low-footprint observer extension for current-tab read-only observation. Playwright and CDP are explicit debug/high-fidelity modes, not the default browser observation layer.
+- Browser session policy: bounded visible-browser rules for source scope, stop conditions, private writes, and prohibited actions.
+- Collection workflow core: session validation, action contract checks, page observation normalization, candidate classification, review item building, and private review queue writes.
 - Page observation and evidence extraction: structured conversion of visible page content into short evidence summaries, missing information, risk flags, source labels, and observed timestamps.
 - Candidate classifier: classifies pages as target company, job opportunity, person/contact surface, source evidence, or irrelevant.
 - Review queue writer: writes ranked findings requiring human approval to the private data root.
 - Synthetic evals: public fixtures that test decision thresholds and risk handling.
-- OpenCode configuration: project agents and commands for planning, scoring, and review.
 - Policy docs: browser-use and privacy constraints that every agent must follow.
 - Private data root: repo-external directory for real CRM data and evidence.
 
-## Data flow
+## Data Flow
 
 ```txt
 docs/scoring-rubric.md
@@ -46,11 +48,14 @@ target company/team JSON
   -> optional private target record under CAREERDEEPSEEK_DATA_DIR/targets
 
 bounded visible-browser discovery session
-  -> read-only browser observation
-  -> DOM-visible + ARIA/HTML semantic approximation
-  -> screenshot corroboration
-  -> optional CDP debug corroboration
-  -> page observation
+  -> adapter observe() ensures Chrome foreground
+  -> address-bar keyboard navigation only when bootstrap is needed
+  -> screenshot + windows + AX tree + read-only Chrome DOM observation
+  -> DesktopGroundingSnapshot
+  -> deterministic browser safety gate
+  -> overlay dismissal or blocking stop
+  -> coordinate-grounded CGEvent action
+  -> observe/action/observe progress verification
   -> LLM evidence extraction
   -> target/opportunity classification
   -> scoring
@@ -59,14 +64,89 @@ bounded visible-browser discovery session
 
 Real opportunity records must be written only to `CAREERDEEPSEEK_DATA_DIR`.
 
-## First implementation boundary
+## Computer-Use Runtime
 
-The committed first version proves the opportunity scoring contract, target-level company/team scoring contract, private data boundary, and eval loop on synthetic offline data.
+The default runtime is macOS local computer-use.
 
-The current implementation boundary now separates default observation from action-capable automation. Default browser observation lives in `src/observation/` and `extensions/careerdeepseek-observer/`. It returns DOM-visible elements, ARIA/HTML-derived semantic approximation, viewport boxes, `elementFromPoint` occlusion checks, and screenshot metadata. It does not claim native accessibility tree access.
+Observation:
 
-Native AX tree and DOMSnapshot access are available only through the CDP debug observer. The debug observer allowlist is `Accessibility.getFullAXTree`, `DOMSnapshot.captureSnapshot`, and `Page.captureScreenshot`. The Playwright-backed browser-use adapter remains useful for explicit debug/automation experiments, but it is not the default browser observation layer.
+- `screencapture -x` writes PNG screenshots and returns metadata.
+- `CGWindowListCopyWindowInfo` returns visible window bounds, titles, owner PIDs, layers, and frontmost app metadata.
+- `AXUIElement` returns desktop accessibility roles, labels, values, bounds, focus, enabled state, and children.
+- JXA `tab.execute({ javascript })` reads Chrome DOM semantics from the active tab.
 
-The current LLM capability layer includes `src/llm/deepseekModelAdapter.ts`, which adapts the Vercel AI SDK DeepSeek provider to the internal `generateJson(request)` contract. It defaults to `deepseek-v4-pro`, `https://api.deepseek.com`, thinking mode enabled, reasoning effort high, and JSON output.
+The JXA observer is read-only. It must not navigate, click, type, set values, dispatch events, mutate DOM, attach CDP, or use browser-internal action APIs.
 
-The next boundary is wiring read-only observation outputs into the discovery workflow before reintroducing any action-capable browser automation. It must not use raw HTTP scraping, hidden APIs, CAPTCHA bypass, proxy rotation, headless bulk collection, auto-apply, auto-send behavior, or OS-level desktop control. Databases and LLM-driven self-modification remain out of scope until supervised browser runs are implemented and tested.
+Actions:
+
+- Mouse movement and click use Swift + Quartz `CGEvent`.
+- Text input uses keyboard events: ASCII characters use physical virtual key codes, and non-ASCII characters keep a Unicode fallback.
+- Key chords use virtual key events.
+- Scrolling uses Quartz scroll wheel events.
+
+At task startup and before later observations, `observe()` ensures Google Chrome is open and frontmost. If Chrome is not open, `auto_focus_chrome` may open it through OS-level app activation. If Chrome is behind another app, `auto_focus_chrome` may activate it. The adapter must observe window state and confirm a visible Chrome window is frontmost before returning observation.
+
+Before `click`, `type`, `press`, or `scroll`, the adapter checks the desktop foreground context again. The default policy is `require_chrome`: if Google Chrome is not frontmost, the operation is rejected before capture or CGEvent input. Workflows that need to recover from another local app being frontmost may opt into `auto_focus_chrome`; that policy uses OS-level app activation only, waits briefly, then rechecks that Chrome is frontmost. This does not allow browser-internal action APIs.
+
+Desktop foreground state and page-visible DOM state are separate. Foreground state controls whether OS-level mouse and keyboard events can reach Chrome. Page-visible DOM state controls which elements from the current Chrome viewport/screenshot may be used as action targets. The runtime may keep read-only active-tab context, but only visible, unoccluded page elements should become action candidates.
+
+Every screen action must be preceded by observation. Click coordinates must come from the current observation's DOM, AX, or window bounds for a named target. The runtime must not infer screen coordinates from fixed offsets, layout guesses, or hard-coded Chrome geometry.
+
+The automatic visual action policy allows only click, type, press, scroll, wait, capture screenshots, or stop. URL navigation is not a separate action type; it is composed from visible keyboard actions against the Chrome address bar. Page-internal search uses observed page controls, such as a search box, and then normal CGEvent typing.
+
+The browser safety gate runs before normal page work. It is hardcoded controller logic, not model judgment. It may dismiss low-risk overlays that block the real page content:
+
+- cookie consent prompts, including `Yes, I agree` or equivalent accept controls
+- marketing modals with an observed close, dismiss, no-thanks, or skip control
+
+It must stop instead of clicking through high-risk states:
+
+- login, SSO, passkey, account-selection, or credential flows
+- CAPTCHA, human verification, security prompts, or suspicious-activity blocks
+- payment, checkout, billing, or purchase prompts
+- apply, send-message, connect, follow, or other external side-effect flows
+
+Passive page links such as a header `Sign in` button are not themselves stop states. The stop applies when the visible page requires authentication, identity verification, payment, applying, or sending before continuing.
+
+Text entry temporarily switches macOS to a Latin keyboard input source (`U.S.` or `ABC`) while sending CGEvent key codes, then restores the previous user input source. This prevents CJK input methods from converting ASCII queries while keeping the user's desktop input source intact after the action.
+
+Real discovery scripts must write structured computer-use traces under the configured session root. A trace entry records the phase, decision, action summary, before observation, after observation, duration, and result or error. Search-result deep dives must follow currently observed result links by coordinate-grounded click; they must not retype observed result hrefs into the address bar.
+
+Overlay and stop handling must be trace-visible. `overlay_dismissal` records the observed overlay control and before/after observations. `blocking_stop_signal` records the high-risk signal and ends the run as `stopped`, not as a normal failed implementation error.
+
+Production agent mode differs from development mode. Development mode may edit code and register tools. Production agent mode may only call pre-registered tools behind policy gates. It must not create new tools, change action policy, add browser automation routes, or modify stop conditions during a run.
+
+Current workflow control is skill-driven. `.opencode/skills/browser-use-policy/SKILL.md` is the operational guide for the OpenCode/Codex agent during interactive browser research. The agent acts as the workflow controller, while computer-use remains the atomic observation/action layer. Stable, repeatedly validated parts of this skill workflow may later be encoded as deterministic state machines.
+
+Future unattended runs should add a browser/profile-level safety harness around the workflow. The intended direction is a dedicated Chrome agent profile, not the user's daily profile. The harness should detect the active Chrome profile at startup and refuse to run, or switch through an approved startup path, unless the active profile is the agent profile. That profile may keep limited approved login state for research sources, while avoiding stored payment methods, broad password autofill, unrelated accounts, and personal browsing history. Chrome policy details must be verified against official Chrome policy documentation before implementation.
+
+Future debugging may add lightweight screen recording with macOS-native capture, such as `screencapture` video mode or ScreenCaptureKit, so a reviewer can inspect action timing with multimodal tools. Recording is an audit artifact only. It is not an action primitive and must not introduce browser-internal automation.
+
+## Reference Implementations
+
+`src/observation/` remains in the repository as reference implementations for DOM semantic observation. CDP, Playwright, WebDriver, extension bridge actions, DOM click, DOM value assignment, and event dispatch are not part of the default runtime.
+
+## Implementation Boundary
+
+The current implementation proves:
+
+- deterministic scoring and target rubric contracts
+- public/private data separation
+- synthetic eval loop
+- computer-use observation and CGEvent action primitives
+- deterministic overlay and browser safety gate
+- LLM action planning constrained by visible coordinate-grounded actions
+- review queue writes to repo-external private data
+
+Out of scope until explicitly approved:
+
+- raw HTTP scraping
+- hidden APIs
+- CAPTCHA bypass
+- proxy rotation
+- headless bulk collection
+- auto-apply
+- auto-send behavior
+- browser-internal action routes
+- databases
+- LLM-driven self-modification

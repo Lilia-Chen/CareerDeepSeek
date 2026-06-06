@@ -1,0 +1,231 @@
+/**
+ * Computer-use observation and action types.
+ *
+ * These extend CareerDeepSeek's visual-automation types with
+ * macOS-specific desktop observation structures.
+ */
+
+export interface Bounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface DisplayDescriptor {
+  displayId: number
+  isMain: boolean
+  isBuiltIn: boolean
+  bounds: Bounds
+  visibleBounds: Bounds
+  scaleFactor: number
+  pixelWidth: number
+  pixelHeight: number
+}
+
+export interface WindowDescriptor {
+  id: string
+  appName: string
+  title: string | null
+  bounds: Bounds
+  ownerPid: number
+  layer: number
+  isOnScreen: boolean
+}
+
+export interface WindowObservation {
+  frontmostAppName?: string
+  frontmostWindowTitle?: string | null
+  windows: WindowDescriptor[]
+  observedAt: string
+}
+
+export interface ScreenshotArtifact {
+  dataBase64: string
+  mimeType: 'image/png'
+  path: string
+  width?: number
+  height?: number
+  capturedAt: string
+  placeholder?: boolean
+  note?: string
+}
+
+// ---------------------------------------------------------------------------
+// AX Tree
+// ---------------------------------------------------------------------------
+
+export interface AXNode {
+  uid: string
+  role: string
+  title?: string
+  value?: string
+  description?: string
+  enabled?: boolean
+  focused?: boolean
+  bounds?: Bounds
+  children: AXNode[]
+}
+
+export interface AXSnapshot {
+  snapshotId: string
+  pid: number
+  appName: string
+  root: AXNode
+  capturedAt: string
+  maxDepth: number
+  truncated: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Chrome DOM observation via AppleScript execute JS
+// ---------------------------------------------------------------------------
+
+export interface ChromeDomElement {
+  id: string
+  tagName: string
+  role: string
+  name: string
+  text: string
+  href: string | null
+  bounds: Bounds
+  center: { x: number, y: number }
+  confidence: number
+  actionable: boolean
+  states: Record<string, unknown>
+}
+
+export interface ChromeDomObservation {
+  url: string
+  title: string
+  observedAt: string
+  visibleText: string
+  elements: ChromeDomElement[]
+  signals: string[]
+}
+
+export type BrowserPageClass
+  = | 'empty_tab'
+    | 'google_home'
+    | 'google_results'
+    | 'linkedin_feed'
+    | 'linkedin_search_results'
+    | 'linkedin_company_page'
+    | 'linkedin_jobs_results'
+    | 'linkedin_job_page'
+    | 'company_site'
+    | 'unknown'
+
+export interface ChromeContext {
+  running: boolean
+  isFrontmost: boolean
+  visibleWindowCount: number
+  activeTabUrl: string | null
+  activeTabTitle: string | null
+  domAvailable: boolean
+  domElementCount: number
+  domVisibleTextLength: number
+}
+
+export interface BrowserPageContext {
+  className: BrowserPageClass
+  url: string | null
+  title: string | null
+  host: string | null
+  source: 'chrome_dom' | 'window_title' | 'unknown'
+  domAvailable: boolean
+  signals: string[]
+}
+
+// ---------------------------------------------------------------------------
+// Grounding — merged desktop target candidates
+// ---------------------------------------------------------------------------
+
+export type CandidateSource = 'chrome_dom' | 'ax' | 'vision' | 'raw'
+
+export interface DesktopTargetCandidate {
+  id: string
+  source: CandidateSource
+  appName: string
+  role: string
+  label: string
+  href?: string | null
+  bounds: Bounds
+  center: { x: number, y: number }
+  confidence: number
+  interactable: boolean
+  focused?: boolean
+  enabled?: boolean
+  axUid?: string
+  chromeDomId?: string
+}
+
+export interface GroundingStalenessFlags {
+  screenshot: boolean
+  ax: boolean
+  chromeSemantic: boolean
+  windows: boolean
+}
+
+export interface DesktopGroundingSnapshot {
+  snapshotId: string
+  capturedAt: string
+  foregroundApp: string
+  windows: WindowDescriptor[]
+  screenshot: ScreenshotArtifact
+  axSnapshot?: AXSnapshot
+  chromeContext: ChromeContext
+  pageContext: BrowserPageContext
+  chromeDomObservation?: ChromeDomObservation
+  targetCandidates: DesktopTargetCandidate[]
+  staleFlags: GroundingStalenessFlags
+}
+
+// ---------------------------------------------------------------------------
+// Pointer trace
+// ---------------------------------------------------------------------------
+
+export interface PointerTracePoint {
+  x: number
+  y: number
+  delayMs: number
+}
+
+// ---------------------------------------------------------------------------
+// Swift script input payloads
+// ---------------------------------------------------------------------------
+
+export interface EnumerateWindowsInput {
+  limit?: number
+  app?: string
+}
+
+export interface CaptureAXTreeInput {
+  pid?: number
+  maxDepth?: number
+  maxNodes?: number
+  verbose?: boolean
+}
+
+export interface MoveAndClickInput {
+  pointerTrace: PointerTracePoint[]
+  button?: number
+  clickCount?: number
+}
+
+export interface TypeTextInput {
+  pointerTrace?: PointerTracePoint[]
+  text: string
+  pressEnter?: boolean
+}
+
+export interface PressKeysInput {
+  keys: string[]
+  modifiers?: string[]
+}
+
+export interface ScrollInput {
+  pointerTrace?: PointerTracePoint[]
+  deltaX?: number
+  deltaY?: number
+}

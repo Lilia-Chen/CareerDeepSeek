@@ -67,6 +67,7 @@ function normalizeElement(element: unknown): VisualElement {
     text: typeof record.text === 'string' ? record.text : '',
     href: typeof record.href === 'string' ? record.href : null,
     intent: typeof record.intent === 'string' ? record.intent : null,
+    source: typeof record.source === 'string' ? record.source : undefined,
     box: {
       x: record.box.x,
       y: record.box.y,

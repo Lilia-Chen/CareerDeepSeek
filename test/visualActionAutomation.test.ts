@@ -141,6 +141,15 @@ it('allows visual click and type actions but blocks high-risk intents', () => {
   )
 })
 
+it('rejects open_url inside the automatic visual action loop', () => {
+  const state = normalizeVisualState(searchState)
+
+  assert.throws(
+    () => assertAutomationActionAllowed({ type: 'open_url', url: 'https://example.com' }, state),
+    /unsupported automation action: open_url/,
+  )
+})
+
 it('verifies visual action progress after navigation', () => {
   const before = normalizeVisualState(searchState)
   const after = normalizeVisualState(companyState)

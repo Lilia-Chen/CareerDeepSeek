@@ -1,7 +1,6 @@
 const ALLOWED_BROWSER_ACTIONS = new Set([
   'search',
   'refine_query',
-  'open_url',
   'click_visible_link',
   'read_visible_page',
   'capture_screenshot',

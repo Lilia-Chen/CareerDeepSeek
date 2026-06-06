@@ -1,4 +1,4 @@
-import { createClickAction, createOpenUrlAction, createTypeAction } from '../automation/actionSpace.js'
+import { createClickAction, createTypeAction } from '../automation/actionSpace.js'
 import { assertAutomationActionAllowed } from '../automation/actionPolicy.js'
 import { normalizeVisualState } from '../automation/visualState.js'
 import { generateJson, assertPlainObject } from './modelContract.js'
@@ -39,7 +39,7 @@ export async function planVisualAction({
       action: item.action,
       progress: item.progress,
     })),
-    allowedActionTypes: ['open_url', 'click', 'type', 'press', 'scroll', 'wait', 'capture_screenshot', 'stop'],
+    allowedActionTypes: ['click', 'type', 'press', 'scroll', 'wait', 'capture_screenshot', 'stop'],
   })
 
   const action = normalizeModelAction(output, visualState)
@@ -88,17 +88,6 @@ function normalizeModelAction(output: unknown, state: VisualState): VisualAction
     }
     return {
       ...createTypeAction({ text: output.text }),
-      reason: optionalText(output.reason),
-      expectedChange: optionalText(output.expectedChange),
-    }
-  }
-
-  if (output.type === 'open_url') {
-    if (typeof output.url !== 'string') {
-      throw new TypeError('Model open_url action must include url.')
-    }
-    return {
-      ...createOpenUrlAction({ url: output.url }),
       reason: optionalText(output.reason),
       expectedChange: optionalText(output.expectedChange),
     }

@@ -2,11 +2,15 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-004](./ADR-004-use-local-computer-use-runtime.md)
 
 ## Date
 
 2026-06-05
+
+## Supersession Note
+
+This decision described the pre-computer-use browser observation direction. CareerDeepSeek now defaults to local macOS computer-use: screenshot, window metadata, AX tree, read-only JXA Chrome DOM observation, and CGEvent-backed actions. The current decision is ADR-004.
 
 ## Context
 
@@ -96,5 +100,5 @@ Rejected. It violates CareerDeepSeek's visible-browser policy and cannot corrobo
 - The default observer cannot promise native accessibility tree fidelity.
 - The semantic layer is an approximation derived from page-authored HTML and ARIA quality.
 - Native AX disagreements are investigated through CDP debug experiments, not hidden inside the default runtime.
-- Existing Playwright browser-use code remains useful for explicit debug or automation experiments, but it is not the default observation layer.
+- This historical Playwright note is superseded by ADR-004. Playwright browser-use code has been removed from CareerDeepSeek because it does not match the current computer-use boundary.
 - Real screenshots, raw DOM text, raw AX trees, and browsing evidence remain private data and must not be committed to this public repository.

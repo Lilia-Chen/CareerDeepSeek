@@ -1,19 +1,20 @@
 # Information Collection Workflow
 
-CareerDeepSeek collects job-search intelligence through bounded visible-browser sessions. The default browser layer behaves like a careful human observer using a real browser: read the current visible page, corroborate DOM-visible structure with screenshot context, extract short evidence, classify candidates, score them, and write structured private records only after the private-write boundary is approved.
+CareerDeepSeek collects job-search intelligence through bounded visible-browser sessions. The default runtime uses local macOS computer-use: observe the real screen, ground visible targets, interact through OS mouse and keyboard events, extract short evidence, classify candidates, score them, and write private records only after the private-write boundary is approved.
 
-It must not become a raw scraper, crawler, hidden API client, CAPTCHA bypass tool, or auto-application system.
+It must not become a raw scraper, crawler, hidden API client, CAPTCHA bypass tool, or browser-internal automation system.
 
 ## Goal
 
-Automate the collection loop for AI engineering targets and opportunities:
-
 ```txt
 bounded browser session
-  -> read-only browser observation
-  -> DOM-visible + ARIA/HTML semantic approximation
-  -> screenshot corroboration
-  -> optional CDP debug corroboration
+  -> adapter observe() ensures Chrome foreground
+  -> screenshot + windows + AX + read-only Chrome DOM observation
+  -> DesktopGroundingSnapshot
+  -> hardcoded browser safety gate
+  -> low-risk overlay dismissal when needed
+  -> coordinate-grounded CGEvent action
+  -> observe/action/observe progress verification
   -> page observation
   -> LLM evidence extraction
   -> candidate classification
@@ -23,55 +24,93 @@ bounded browser session
 
 ## Required Tools
 
-### Read-Only Browser Observer
-
-The default browser observer has one method:
-
-```txt
-observe() -> DomSemanticObservation
-```
-
-`observe()` returns the current visible page state. It does not click, type, navigate, mutate DOM, create global markers, or attach CDP. The default observer is implemented by `src/observation/` and the minimal MV3 extension under `extensions/careerdeepseek-observer/`.
-
-The default observation contains:
-
-- DOM-visible semantic candidates.
-- ARIA/HTML-derived role, name, state, and relationship approximation.
-- computed style visibility.
-- viewport bounding boxes.
-- `elementFromPoint(center)` occlusion checks.
-- screenshot preview or screenshot metadata.
-
-This is not native browser accessibility tree data.
-
-### CDP Debug Observer
-
-Native AX tree corroboration is explicit debug mode only. The initial CDP allowlist is:
-
-```txt
-Accessibility.getFullAXTree
-DOMSnapshot.captureSnapshot
-Page.captureScreenshot
-```
-
-The debug observer must not use `Runtime.evaluate`, `Input.*`, DOM mutation commands, or network inspection commands.
-
 ### Computer-Use Adapter
 
-The action-capable debug/automation path expects a browser-use adapter with two methods:
+The default adapter is `MacOSComputerUseAdapter` from `src/computer-use/`.
 
 ```txt
-observe() -> VisualState
+observe() -> VisualState-compatible observation
 act(action) -> ActionResult
 ```
 
-`observe()` returns the current visual state of the browser surface. `act(action)` executes one policy-checked action such as clicking a coordinate-grounded element, typing text, pressing a key, scrolling, waiting, opening a URL, or stopping.
+`observe()` first ensures Google Chrome is frontmost, then captures:
 
-The repository includes a mock adapter for deterministic tests and a Playwright-backed browser-use adapter for explicit debug/automation experiments. The Playwright adapter is not the default browser observation layer. It must not call `element.click()`, assign `input.value`, dispatch synthetic DOM events, or control the OS desktop.
+- screenshot PNG metadata through `screencapture -x`
+- visible windows through `CGWindowListCopyWindowInfo`
+- desktop accessibility nodes through `AXUIElement`
+- Chrome DOM semantics through read-only JXA `tab.execute()`
+
+The observation sources are merged into a `DesktopGroundingSnapshot`. Candidate source priority is:
+
+```txt
+chrome_dom > ax > vision > raw
+```
+
+`act(action)` executes:
+
+- `click` through Swift + Quartz `CGEvent` mouse movement and click
+- `type` through keyboard events; ASCII uses physical virtual key codes, non-ASCII keeps a Unicode fallback
+- `press` through keyboard virtual key events
+- `scroll` through Quartz scroll wheel events
+- `wait`
+- `capture_screenshot`
+- `stop`
+
+At task startup and before every later observation, `observe()` must ensure Google Chrome is frontmost. If Chrome is not open, auto-focus mode may use OS-level app activation to open it. If another app is frontmost, auto-focus mode may activate Chrome. The adapter must recheck the window state and confirm a visible Chrome window is frontmost before returning observation.
+
+Before `click`, `type`, `press`, or `scroll`, `act()` must check the foreground app again. Default behavior is to reject input unless Google Chrome is frontmost. Real desktop workflows may explicitly opt into OS-level Chrome activation; after activation, the adapter must recheck that Chrome is frontmost before posting CGEvents.
+
+Two states must not be conflated. Desktop foreground state decides whether OS mouse and keyboard input can reach Chrome. Page-visible DOM state decides which observed page elements are action candidates. The workflow should fix desktop foreground through adapter guard before observation. Within a loaded page, hidden, covered, offscreen, or overlay-blocked DOM must not be clicked even if the read-only DOM observer can see it.
+
+Before `type`, the action executor temporarily selects a Latin keyboard input source (`U.S.` or `ABC`), sends CGEvent key codes, then restores the previous user input source. This prevents active CJK IMEs from converting ASCII queries.
+
+URL navigation is not a separate action. It must be composed through the visible Chrome address bar with `press Cmd+L`, `type`, and `press Enter`.
+
+Before any screen action, the workflow must observe the current desktop. Action coordinates must be copied from the current observation for a named target. For example, address-bar navigation first observes Chrome's AX tree, finds the `AXTextField` described as "Address and search bar", clicks that observed center, then sends keyboard events. Page-internal search first observes the page search field, clicks its observed center, then types. The workflow must not use fixed offsets or guessed browser chrome coordinates.
+
+After a search results page is reached, deeper navigation must use currently observed page links. The workflow may scroll the visible results page, observe again, extract visible candidate links, and click the chosen link's observed center. It must not take a result href and re-enter it through the address bar. If already on a usable LinkedIn feed, the next search step uses the observed LinkedIn page search box, not the Chrome address bar.
+
+If several visible controls have the same text, the workflow must rank candidates before clicking. The rank must use current workflow intent, local page region, href target, and nearby text rather than first text match. On LinkedIn, company-local tabs such as `/company/{slug}/jobs/`, `/company/{slug}/posts/`, and `/company/{slug}/people/` must be distinguished from global top-nav links with the same labels.
+
+If a click moves the session to the wrong page, the workflow should recover through observed Chrome history controls. It must observe the current page, click the observed Back or Forward button through CGEvent, then observe again. It must not recover by typing the previous URL into the address bar.
+
+If browser history does not reach the intended workflow page, the workflow should continue through observed page controls rather than address-bar recovery. On LinkedIn, the page search control and an observed exact recent query can return the session to a known search result set, after which the workflow chooses the required vertical filter.
+
+Before extracting evidence from a page, the workflow must detect whether the visible page is blocked by a transient overlay rather than showing the real page content. Cookie consent prompts and low-risk marketing modals may be dismissed by deterministic code only. The dismissal target must come from the current observation and must be clicked through the normal CGEvent action path.
+
+Cookie consent is treated as a low-risk browsing prerequisite. If the current observation contains a cookie prompt with `Yes, I agree`, `I agree`, `Accept all cookies`, or equivalent accept controls, the workflow may click that observed control. If only a close control or rejection control is visible, the workflow may use that observed control. It must not open cookie preference managers as part of automated collection.
+
+Marketing overlays such as newsletter prompts, report download promos, demo promos, or modal popups may be closed only through an observed close/dismiss/no-thanks control. The workflow must not click the overlay's CTA, submit a form, enter an email address, download a report, request a demo, or sign up.
+
+Login, CAPTCHA, payment, checkout, account, identity, apply, and send-message states are not dismissible overlays. They are hard stop states. The workflow must record `blocking_stop_signal` in the trace and end the session with `stopped`, not ask the model to reason about whether it can continue.
+
+### Read-Only Chrome DOM Observer
+
+Chrome DOM observation uses JXA only to read the active tab. The injected script may collect:
+
+- current URL and title
+- visible text
+- role/name/text approximations from HTML and ARIA
+- computed visibility
+- viewport-clipped bounding boxes
+- center points
+- `elementFromPoint(center)` occlusion checks
+- stop signals such as CAPTCHA, login, or rate limit text
+
+The injected script must not:
+
+- navigate
+- click
+- type
+- set input values
+- dispatch DOM events
+- mutate DOM
+- attach CDP/debugger
+- use hidden APIs
 
 ### LLM Adapter
 
-The MVP expects an LLM adapter with one method:
+The LLM adapter exposes:
 
 ```txt
 generateJson(request) -> object
@@ -79,30 +118,44 @@ generateJson(request) -> object
 
 The model never receives permission to execute actions directly. It only returns structured JSON to deterministic code.
 
-The current MVP calls the model for two tasks:
+The current workflow calls the model for:
 
-- `plan_visual_action` - choose one next visual action from the current state.
-- `extract_page_observation` - convert the final visual state into short evidence and candidate fields.
+- `plan_visual_action` - choose one next visible, coordinate-grounded action.
+- `extract_page_observation` - convert a final visual state into short evidence and candidate fields.
 
-The deterministic workflow still owns:
+Deterministic code owns:
 
 - action policy checks
 - stop-condition checks
+- overlay dismissal and high-risk browser safety gates
 - progress verification
 - scoring
 - file writes
 
-### Visual State
+## Runtime Mode Boundary
+
+CareerDeepSeek has two different modes:
+
+- Development mode: engineers may edit code, register tools, change policy, and run tests.
+- Production agent mode: the agent may only call pre-registered tools. It must not create new tools, modify tool policy, add browser automation paths, change stop conditions, or bypass the harness while a task is running.
+
+Production agent mode relies on hardcoded controllers before any model decision. The model may report what it sees, propose evidence, or select among allowed visible actions. It does not get authority to decide that a high-risk state is safe, invent a new action, or continue past a hard stop.
+
+Future work may add a browser/profile-level safety harness for unattended sessions. That harness should use a dedicated Chrome agent profile rather than the user's daily profile. At startup, it should detect the active Chrome profile and refuse to run, or switch through an approved startup path, unless the active profile is the agent profile. The agent profile may keep approved logged-in state for a small set of research sources, but should avoid stored payment methods, broad password autofill, unrelated accounts, and personal browsing history.
+
+The profile sandbox is a second hard boundary around the workflow. It should reduce the damage available from an accidental click even if a page tries to lead the agent into an identity, payment, or account flow. Exact Chrome profile and policy support must be checked against official Chrome documentation before implementation.
+
+## Visual State
 
 A visual state is the agent's grounded view of the current surface:
 
 ```json
 {
-  "sessionId": "agent-discovery-2026-05-21",
+  "sessionId": "agent-discovery-2026-06-06",
   "url": "https://search.example/search?q=agent+infrastructure+hiring",
   "title": "Search results",
   "sourceType": "search_engine",
-  "observedAt": "2026-05-21T11:00:00.000Z",
+  "observedAt": "2026-06-06T11:00:00.000Z",
   "screenshot": {
     "id": "shot-search",
     "width": 1440,
@@ -120,6 +173,10 @@ A visual state is the agent's grounded view of the current surface:
         "y": 220,
         "width": 420,
         "height": 36
+      },
+      "center": {
+        "x": 370,
+        "y": 238
       }
     }
   ],
@@ -127,22 +184,42 @@ A visual state is the agent's grounded view of the current surface:
 }
 ```
 
-The normalized visual state computes element center points so actions can be coordinate-grounded.
+The normalized visual state computes element centers so actions can be coordinate-grounded.
 
-### Browser Actions
+## Trace Contract
 
-The browser adapter exposes only visible-browser actions:
+Real computer-use sessions write structured traces under the configured session root, not inside the public repository unless the session root is explicitly set there for a local test.
 
-- `open_url` - open an approved public URL in the visible browser.
-- `click` - move the browser mouse to a visible element center point and click.
+Each trace step records:
+
+- `phase` - the workflow phase, such as Google search, result scroll, deep-dive click, or return to search results.
+- `decision` - why this action was selected.
+- `action` - the CGEvent action summary, including element id, point, key, scroll delta, or target metadata.
+- `before` and `after` - compact observation summaries with URL, title, screenshot id, element count, link count, and visible text snippet.
+- `durationMs` - elapsed action time.
+- `result` or `error` - the observed outcome.
+
+Trace replay must make URL-input misuse visible. If a deep-dive step follows a search result, its action must be a coordinate-grounded click on the observed result link, not address-bar navigation to that link's href.
+
+Trace replay must also make wrong-navigation recovery visible. A recovery step should record the incorrect page, the observed Back or Forward control that was clicked, the recovered page, and the next disambiguated target selection.
+
+Trace replay must also make overlay handling and hard stops visible. Overlay dismissals use `phase: "overlay_dismissal"` and include the overlay kind, the observed clicked element, before/after observation summaries, and the workflow phase that was blocked. High-risk states use `phase: "blocking_stop_signal"` and record the stop signal, such as `login_required`, `captcha`, `payment_required`, or `apply_or_send_required`.
+
+Future debugging may add macOS-native screen recording for selected sessions. That recording would be a private audit artifact for human or multimodal review. It must not become a control path, DOM action route, or browser-internal automation mechanism.
+
+## Action Contract
+
+Automatic session actions:
+
+- `click` - move the OS pointer to a visible element center and click.
 - `type` - type text into the focused visible field.
-- `press` - press a key.
+- `press` - press a key or key chord.
 - `scroll` - scroll the visible surface.
 - `wait` - wait for visible page changes.
 - `capture_screenshot` - capture a screenshot for supervised understanding.
-- `stop_session` - stop when the budget or a stop condition is reached.
+- `stop` - stop when the budget or a stop condition is reached.
 
-The workflow rejects forbidden action types before execution, including:
+Forbidden action types include:
 
 - `raw_http_fetch`
 - `hidden_api_call`
@@ -150,11 +227,14 @@ The workflow rejects forbidden action types before execution, including:
 - `solve_captcha`
 - `rotate_proxy`
 - `headless_bulk_collect`
+- `bulk_extract_platform`
 - `auto_apply`
 - `send_message`
 - `auto_add_connection`
 
-### Processing Actions
+Production agents must not add new action types at runtime. Any new action type, tool, policy branch, or browser control path is a development-mode code change and requires review before it can be registered.
+
+## Processing Actions
 
 Processing happens after visible page observation:
 
@@ -170,7 +250,7 @@ A collection session must define:
 
 ```json
 {
-  "id": "agent-discovery-2026-05-21",
+  "id": "agent-discovery-2026-06-06",
   "goal": "Find production AI agent infrastructure companies with hiring signals.",
   "sourceScope": ["search_engine", "company_site", "public_careers", "engineering_blog", "github_org"],
   "pageBudget": {
@@ -197,11 +277,11 @@ A page observation stores structured facts from the visible page. It must not st
 
 ```json
 {
-  "sessionId": "agent-discovery-2026-05-21",
+  "sessionId": "agent-discovery-2026-06-06",
   "url": "https://synthetic-agent-lab.example/careers",
   "title": "Synthetic Agent Lab Careers",
   "sourceType": "company_site",
-  "observedAt": "2026-05-21T10:00:00.000Z",
+  "observedAt": "2026-06-06T10:00:00.000Z",
   "evidence": [
     {
       "label": "domain_alignment",
@@ -239,9 +319,9 @@ $CAREERDEEPSEEK_DATA_DIR/review-queue
 
 ## Stop Conditions
 
-The browser session must stop and ask before:
+The browser session must record a hard stop before:
 
-- Logging in.
+- Entering a login, SSO, passkey, account-selection, or credential flow.
 - Handling account, identity, payment, or security prompts.
 - Solving CAPTCHA or anti-bot challenges.
 - Continuing after rate limiting or suspicious-activity warnings.
@@ -249,129 +329,61 @@ The browser session must stop and ask before:
 - Saving personal contact data.
 - Sending any message or application.
 - Changing source class or platform-specific behavior.
-- Starting CDP native AX/DOMSnapshot debug mode.
-- Starting Playwright/browser-use action mode.
+- Starting CDP or any browser-internal automation mode.
 
-## Browser Observation MVP
+Passive header links such as a normal `Sign in` button are not enough to stop the session. The stop condition applies when the visible page is asking the session to authenticate, verify identity, pay, apply, or send something before continuing.
 
-The default MVP implements the read-only observation loop:
+## Implemented Modules
 
-```txt
-current tab
-  -> one-shot DOM observation
-  -> ARIA/HTML semantic approximation
-  -> viewport and occlusion filtering
-  -> screenshot metadata
-  -> compact observation JSON
-```
+Default computer-use runtime:
 
-Implemented observation modules:
+- `src/computer-use/config.ts` - environment-backed runtime configuration.
+- `src/computer-use/screenshot.ts` - `screencapture -x` screenshot capture.
+- `src/computer-use/window-observation.ts` - `CGWindowListCopyWindowInfo` window observation.
+- `src/computer-use/ax-tree.ts` - macOS AX tree capture.
+- `src/computer-use/chrome-dom.ts` - read-only JXA Chrome DOM observation.
+- `src/computer-use/desktop-grounding.ts` - source merging, de-duplication, and ranking.
+- `src/computer-use/overlay-resolver.ts` - deterministic overlay dismissal and high-risk browser stop detection.
+- `src/computer-use/macos-actions.ts` - Swift + Quartz CGEvent action executors.
+- `src/computer-use/macos-adapter.ts` - `MacOSComputerUseAdapter`.
 
-- `src/observation/browserObservation.js` - observation contracts and boundary validation.
-- `src/observation/domSemanticObserver.js` - browser-context read-only DOM and ARIA/HTML semantic approximation.
-- `src/observation/cdpDebugObserver.js` - explicit CDP debug observer with read-only command allowlist.
-- `extensions/careerdeepseek-observer/` - minimal MV3 extension using `activeTab` and `scripting`.
-- `scripts/run-browser-observation-experiment.ts` - local synthetic browser experiment comparing default observation with CDP debug corroboration.
+Automation and workflow:
 
-## Visual Action Debug MVP
+- `src/automation/visualState.ts` - validates screenshot-backed visual state and computes element centers.
+- `src/automation/actionSpace.ts` - constructs coordinate-grounded click/type actions.
+- `src/automation/actionPolicy.ts` - rejects forbidden action types and high-risk element intents.
+- `src/automation/progressVerifier.ts` - verifies action progress by URL, title, screenshot, or visible text changes.
+- `src/automation/mockComputerUseAdapter.ts` - deterministic computer-use adapter for tests.
+- `src/automation/sessionRunner.ts` - observe/action/observe session loop with budget and stop-condition handling.
+- `src/automation/visualObservation.ts` - converts visual state into a collection page observation without saving raw visible text.
+- `src/llm/modelContract.ts` - minimal `generateJson(request)` adapter contract.
+- `src/llm/deepseekModelAdapter.ts` - Vercel AI SDK DeepSeek adapter for `deepseek-v4-pro` JSON output.
+- `src/llm/visualActionPlanner.ts` - asks the model for the next visible action and converts click outputs into coordinate-grounded actions.
+- `src/llm/evidenceExtractor.ts` - asks the model for evidence and candidate fields, then normalizes them into a page observation.
+- `src/workflows/runDiscoveryWorkflow.ts` - runs the full discovery loop from visual state to review queue item.
 
-The action-capable debug MVP implements the visual-action loop:
+Reference implementations:
 
-```txt
-normalize visual state
-  -> choose visual action
-  -> check action policy
-  -> act through browser-use adapter
-  -> observe again
-  -> verify progress
-  -> repeat or stop
-```
+- `src/observation/` — DOM observation contracts and CDP debug observer (not the default runtime).
 
-Implemented automation modules:
+## Demo Commands
 
-- `src/automation/visualState.js` - validates screenshot-backed visual state and computes element centers.
-- `src/automation/actionSpace.js` - constructs visual actions such as coordinate-grounded clicks and typing.
-- `src/automation/actionPolicy.js` - rejects forbidden action types and high-risk element intents such as apply, login, CAPTCHA, payment, or send-message actions.
-- `src/automation/progressVerifier.js` - verifies action progress by URL, title, screenshot, or visible text changes.
-- `src/automation/mockComputerUseAdapter.js` - deterministic computer-use adapter for tests.
-- `src/automation/browserUseAdapter.js` - Playwright-backed debug/automation adapter that observes DOM-plus-screenshot visual state and executes through mouse/keyboard/page actions.
-- `src/automation/sessionRunner.js` - observe/action/observe session loop with budget and stop-condition handling.
-- `src/automation/visualObservation.js` - converts a visual state into a collection page observation without saving raw visible text.
-
-## LLM Discovery MVP
-
-The current discovery MVP still wires visual action to model decisions:
-
-```txt
-VisualState
-  -> src/llm/visualActionPlanner.js
-  -> policy-checked Action
-  -> src/automation/sessionRunner.js
-  -> final VisualState
-  -> src/llm/evidenceExtractor.js
-  -> PageObservation
-  -> collection classification/scoring/review queue
-```
-
-Implemented LLM/workflow modules:
-
-- `src/llm/modelContract.js` - minimal `generateJson(request)` adapter contract.
-- `src/llm/deepseekModelAdapter.js` - Vercel AI SDK DeepSeek adapter for `deepseek-v4-pro` JSON output.
-- `src/llm/visualActionPlanner.js` - asks the model for the next action and converts click outputs into coordinate-grounded actions.
-- `src/llm/evidenceExtractor.js` - asks the model for evidence and candidate fields, then normalizes them into a page observation.
-- `src/workflows/runDiscoveryWorkflow.js` - runs the full discovery loop from visual state to review queue item.
-
-The model may suggest actions and extraction fields, but it cannot bypass policy checks, write files directly, or perform high-risk actions.
-
-## Demo Command
-
-Run the browser observation experiment:
+Run the computer-use observation smoke test:
 
 ```bash
-pnpm run experiment:browser-observation
+pnpm exec tsx scripts/run-computer-use-smoke.ts https://example.com
 ```
 
-Set `CAREERDEEPSEEK_OBSERVER_HEADLESS=true` when a headed browser is not available.
+Run the computer-use Google discovery smoke task:
+
+```bash
+pnpm exec tsx scripts/run-discovery-task.ts "AI agent infrastructure hiring 2026"
+```
 
 Run the synthetic visual discovery demo:
 
 ```bash
-npm run demo:discovery
+pnpm run demo:discovery
 ```
 
-The demo uses:
-
-- a mock computer-use adapter
-- a deterministic mock model
-- synthetic search and company visual states
-- the real session runner, LLM planner/extractor interfaces, target scoring, and review queue builder
-
-It prints the visual action trace and generated review queue item. It does not write private files unless the script is run with `--write` and `CAREERDEEPSEEK_DATA_DIR` is configured.
-
-## Current Implementation
-
-The current implementation provides the workflow core, read-only browser observation MVP, and visual-action debug MVP:
-
-- `src/observation/browserObservation.js`
-- `src/observation/domSemanticObserver.js`
-- `src/observation/cdpDebugObserver.js`
-- `src/automation/visualState.js`
-- `src/automation/actionSpace.js`
-- `src/automation/actionPolicy.js`
-- `src/automation/progressVerifier.js`
-- `src/automation/mockComputerUseAdapter.js`
-- `src/automation/sessionRunner.js`
-- `src/automation/visualObservation.js`
-- `src/llm/modelContract.js`
-- `src/llm/deepseekModelAdapter.js`
-- `src/llm/visualActionPlanner.js`
-- `src/llm/evidenceExtractor.js`
-- `src/workflows/runDiscoveryWorkflow.js`
-- `src/collection/sessionPolicy.js`
-- `src/collection/toolContract.js`
-- `src/collection/pageObservation.js`
-- `src/collection/classifyCandidate.js`
-- `src/collection/buildReviewItem.js`
-- `src/collection/writeReviewQueue.js`
-
-It now ships a minimal read-only browser observer and an explicit CDP debug observer. The next step is wiring read-only observation outputs into discovery before reintroducing any supervised action-capable browser automation.
+The synthetic demo uses a mock computer-use adapter, a deterministic mock model, synthetic visual states, the real session runner, target scoring, and review queue builder. It does not write private files unless the script is run with `--write` and `CAREERDEEPSEEK_DATA_DIR` is configured.
