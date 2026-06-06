@@ -1,6 +1,6 @@
 # Information Collection Workflow
 
-CareerDeepSeek collects job-search intelligence through bounded visible-browser sessions. The agent should behave like a careful human researcher using a real browser: search, click, read visible pages, extract short evidence, classify candidates, score them, and write structured private records.
+CareerDeepSeek collects job-search intelligence through bounded visible-browser sessions. The default browser layer behaves like a careful human observer using a real browser: read the current visible page, corroborate DOM-visible structure with screenshot context, extract short evidence, classify candidates, score them, and write structured private records only after the private-write boundary is approved.
 
 It must not become a raw scraper, crawler, hidden API client, CAPTCHA bypass tool, or auto-application system.
 
@@ -10,11 +10,10 @@ Automate the collection loop for AI engineering targets and opportunities:
 
 ```txt
 bounded browser session
-  -> visual state observation
-  -> visual action planning
-  -> LLM structured action output
-  -> policy-checked browser/computer action
-  -> progress verification
+  -> read-only browser observation
+  -> DOM-visible + ARIA/HTML semantic approximation
+  -> screenshot corroboration
+  -> optional CDP debug corroboration
   -> page observation
   -> LLM evidence extraction
   -> candidate classification
@@ -24,18 +23,51 @@ bounded browser session
 
 ## Required Tools
 
+### Read-Only Browser Observer
+
+The default browser observer has one method:
+
+```txt
+observe() -> DomSemanticObservation
+```
+
+`observe()` returns the current visible page state. It does not click, type, navigate, mutate DOM, create global markers, or attach CDP. The default observer is implemented by `src/observation/` and the minimal MV3 extension under `extensions/careerdeepseek-observer/`.
+
+The default observation contains:
+
+- DOM-visible semantic candidates.
+- ARIA/HTML-derived role, name, state, and relationship approximation.
+- computed style visibility.
+- viewport bounding boxes.
+- `elementFromPoint(center)` occlusion checks.
+- screenshot preview or screenshot metadata.
+
+This is not native browser accessibility tree data.
+
+### CDP Debug Observer
+
+Native AX tree corroboration is explicit debug mode only. The initial CDP allowlist is:
+
+```txt
+Accessibility.getFullAXTree
+DOMSnapshot.captureSnapshot
+Page.captureScreenshot
+```
+
+The debug observer must not use `Runtime.evaluate`, `Input.*`, DOM mutation commands, or network inspection commands.
+
 ### Computer-Use Adapter
 
-The core MVP expects a computer-use adapter with two methods:
+The action-capable debug/automation path expects a browser-use adapter with two methods:
 
 ```txt
 observe() -> VisualState
 act(action) -> ActionResult
 ```
 
-`observe()` returns the current visual state of the browser or computer surface. `act(action)` executes one policy-checked action such as clicking a coordinate-grounded element, typing text, pressing a key, scrolling, waiting, opening a URL, or stopping.
+`observe()` returns the current visual state of the browser surface. `act(action)` executes one policy-checked action such as clicking a coordinate-grounded element, typing text, pressing a key, scrolling, waiting, opening a URL, or stopping.
 
-The repository includes a mock adapter for tests. A real adapter can later wrap Codex Browser, browser-use, Playwright with visible mode, or another visible computer-use runtime as long as it obeys the same contract.
+The repository includes a mock adapter for deterministic tests and a Playwright-backed browser-use adapter for explicit debug/automation experiments. The Playwright adapter is not the default browser observation layer. It must not call `element.click()`, assign `input.value`, dispatch synthetic DOM events, or control the OS desktop.
 
 ### LLM Adapter
 
@@ -99,10 +131,10 @@ The normalized visual state computes element center points so actions can be coo
 
 ### Browser Actions
 
-The browser adapter should expose only visible-browser actions:
+The browser adapter exposes only visible-browser actions:
 
 - `open_url` - open an approved public URL in the visible browser.
-- `click` - click a visible element by center point.
+- `click` - move the browser mouse to a visible element center point and click.
 - `type` - type text into the focused visible field.
 - `press` - press a key.
 - `scroll` - scroll the visible surface.
@@ -217,16 +249,39 @@ The browser session must stop and ask before:
 - Saving personal contact data.
 - Sending any message or application.
 - Changing source class or platform-specific behavior.
+- Starting CDP native AX/DOMSnapshot debug mode.
+- Starting Playwright/browser-use action mode.
 
-## Visual Action MVP
+## Browser Observation MVP
 
-The current MVP implements the visual-action loop:
+The default MVP implements the read-only observation loop:
+
+```txt
+current tab
+  -> one-shot DOM observation
+  -> ARIA/HTML semantic approximation
+  -> viewport and occlusion filtering
+  -> screenshot metadata
+  -> compact observation JSON
+```
+
+Implemented observation modules:
+
+- `src/observation/browserObservation.js` - observation contracts and boundary validation.
+- `src/observation/domSemanticObserver.js` - browser-context read-only DOM and ARIA/HTML semantic approximation.
+- `src/observation/cdpDebugObserver.js` - explicit CDP debug observer with read-only command allowlist.
+- `extensions/careerdeepseek-observer/` - minimal MV3 extension using `activeTab` and `scripting`.
+- `scripts/run-browser-observation-experiment.ts` - local synthetic browser experiment comparing default observation with CDP debug corroboration.
+
+## Visual Action Debug MVP
+
+The action-capable debug MVP implements the visual-action loop:
 
 ```txt
 normalize visual state
   -> choose visual action
   -> check action policy
-  -> act through computer-use adapter
+  -> act through browser-use adapter
   -> observe again
   -> verify progress
   -> repeat or stop
@@ -239,12 +294,13 @@ Implemented automation modules:
 - `src/automation/actionPolicy.js` - rejects forbidden action types and high-risk element intents such as apply, login, CAPTCHA, payment, or send-message actions.
 - `src/automation/progressVerifier.js` - verifies action progress by URL, title, screenshot, or visible text changes.
 - `src/automation/mockComputerUseAdapter.js` - deterministic computer-use adapter for tests.
+- `src/automation/browserUseAdapter.js` - Playwright-backed debug/automation adapter that observes DOM-plus-screenshot visual state and executes through mouse/keyboard/page actions.
 - `src/automation/sessionRunner.js` - observe/action/observe session loop with budget and stop-condition handling.
 - `src/automation/visualObservation.js` - converts a visual state into a collection page observation without saving raw visible text.
 
 ## LLM Discovery MVP
 
-The current MVP wires visual action to model decisions:
+The current discovery MVP still wires visual action to model decisions:
 
 ```txt
 VisualState
@@ -260,6 +316,7 @@ VisualState
 Implemented LLM/workflow modules:
 
 - `src/llm/modelContract.js` - minimal `generateJson(request)` adapter contract.
+- `src/llm/deepseekModelAdapter.js` - Vercel AI SDK DeepSeek adapter for `deepseek-v4-pro` JSON output.
 - `src/llm/visualActionPlanner.js` - asks the model for the next action and converts click outputs into coordinate-grounded actions.
 - `src/llm/evidenceExtractor.js` - asks the model for evidence and candidate fields, then normalizes them into a page observation.
 - `src/workflows/runDiscoveryWorkflow.js` - runs the full discovery loop from visual state to review queue item.
@@ -267,6 +324,14 @@ Implemented LLM/workflow modules:
 The model may suggest actions and extraction fields, but it cannot bypass policy checks, write files directly, or perform high-risk actions.
 
 ## Demo Command
+
+Run the browser observation experiment:
+
+```bash
+pnpm run experiment:browser-observation
+```
+
+Set `CAREERDEEPSEEK_OBSERVER_HEADLESS=true` when a headed browser is not available.
 
 Run the synthetic visual discovery demo:
 
@@ -285,8 +350,11 @@ It prints the visual action trace and generated review queue item. It does not w
 
 ## Current Implementation
 
-The current implementation provides the workflow core and visual-action MVP:
+The current implementation provides the workflow core, read-only browser observation MVP, and visual-action debug MVP:
 
+- `src/observation/browserObservation.js`
+- `src/observation/domSemanticObserver.js`
+- `src/observation/cdpDebugObserver.js`
 - `src/automation/visualState.js`
 - `src/automation/actionSpace.js`
 - `src/automation/actionPolicy.js`
@@ -295,6 +363,7 @@ The current implementation provides the workflow core and visual-action MVP:
 - `src/automation/sessionRunner.js`
 - `src/automation/visualObservation.js`
 - `src/llm/modelContract.js`
+- `src/llm/deepseekModelAdapter.js`
 - `src/llm/visualActionPlanner.js`
 - `src/llm/evidenceExtractor.js`
 - `src/workflows/runDiscoveryWorkflow.js`
@@ -305,4 +374,4 @@ The current implementation provides the workflow core and visual-action MVP:
 - `src/collection/buildReviewItem.js`
 - `src/collection/writeReviewQueue.js`
 
-It does not yet ship a real browser adapter or provider-specific LLM client. The next step is an adapter that maps actual visible-browser operations to `observe()` and `act(action)`, plus a provider wrapper that implements `generateJson(request)`.
+It now ships a minimal read-only browser observer and an explicit CDP debug observer. The next step is wiring read-only observation outputs into discovery before reintroducing any supervised action-capable browser automation.

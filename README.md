@@ -11,6 +11,7 @@ The repository is designed to be public. Real job leads, contacts, CVs, cover le
 - Automate bounded visible-browser discovery sessions for target and opportunity search.
 - Run offline evals on synthetic fixtures.
 - Keep browser-use boundaries explicit.
+- Use a low-footprint read-only browser observer by default.
 - Provide OpenCode/Codex project instructions for bounded work sessions.
 - Generate drafts and CRM records in a private data directory, not in this repository.
 
@@ -63,11 +64,38 @@ cp .env.example .env
 
 Set `CAREERDEEPSEEK_DATA_DIR` to a repo-external path such as `../CareerDeepSeek-data`.
 
+Optional DeepSeek model access:
+
+```env
+DEEPSEEK_API_KEY=
+```
+
+The real LLM capability is implemented as a Vercel AI SDK DeepSeek adapter at `src/llm/deepseekModelAdapter.ts`. It uses `deepseek-v4-pro`, DeepSeek thinking mode, and JSON output by default while preserving the internal `generateJson(request)` contract.
+
+Run a real DeepSeek JSON smoke test after setting `DEEPSEEK_API_KEY`:
+
+```bash
+pnpm run smoke:llm
+```
+
+The default browser observation capability is the read-only observer under `src/observation/` plus the minimal MV3 extension under `extensions/careerdeepseek-observer/`. It captures DOM-visible elements, ARIA/HTML-derived semantic approximation, viewport boxes, occlusion checks, and screenshot metadata. This is not Chrome's native accessibility tree.
+
+Run the local browser observation experiment:
+
+```bash
+pnpm run experiment:browser-observation
+```
+
+Set `CAREERDEEPSEEK_OBSERVER_HEADLESS=true` when a headed browser is not available.
+
+Native AX and DOMSnapshot corroboration is available only through the explicit CDP debug observer. The Playwright-backed `src/automation/browserUseAdapter.ts` remains a debug/automation adapter that can execute browser actions; it is not the default observation layer.
+
 ## CI and local harness
 
 Public CI runs only deterministic checks and synthetic fixtures. It does not call an LLM API and does not read private data:
 
 ```bash
+pnpm run browsers:install
 pnpm run ci:public
 ```
 
@@ -86,11 +114,13 @@ src/
   automation/    Visual-action browser/computer-use loop
   collection/    Browser-use collection workflow contracts
   llm/           Structured JSON model planner and extractor contracts
+  observation/   Read-only browser observation and CDP debug observers
   workflows/     End-to-end discovery workflows
   scoring/       Fit scoring logic
   targets/       Target company/team scoring logic
   privateData/   Repo-external private data directory resolution
 scripts/         Local eval commands
+extensions/      Minimal read-only browser observer extension
 evals/           Synthetic fixtures, expected results, reports
 config/          Generated runtime rubric and policy config
 docs/            Architecture, privacy, browser-use policy, ADRs

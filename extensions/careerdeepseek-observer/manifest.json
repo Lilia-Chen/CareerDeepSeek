@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "CareerDeepSeek Observer",
+  "version": "0.1.0",
+  "description": "Read-only current-tab DOM and ARIA-derived observation for CareerDeepSeek experiments.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_title": "Observe current tab",
+    "default_popup": "popup.html"
+  }
+}
