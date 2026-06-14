@@ -24,7 +24,7 @@ export class TraceStore {
     return run
   }
 
-  endRun(runId: string, statusCode: 'ok' | 'error', summary?: string): void {
+  endRun(_runId: string, statusCode: 'ok' | 'error', summary?: string): void {
     if (!this.#runWritten) return
     const runPath = join(this.traceDir, 'run.json')
     const current = JSON.parse(readFileSync(runPath, 'utf-8'))
