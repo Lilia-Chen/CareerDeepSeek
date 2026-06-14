@@ -22,7 +22,7 @@ describe('normalizeToSurfaceNodes', () => {
     const ocrMatches: OcrTextMatch[] = [
       { matchIndex: 0, text: 'Search', confidence: 0.97, bounds: { x: 100, y: 76, width: 248, height: 76 } },
     ]
-    const nodes = normalizeToSurfaceNodes({ ocrMatches, contract, runId, spanId, startNodeIndex: 0 })
+    const nodes = normalizeToSurfaceNodes({ ocrMatches, contract, runId, spanId })
     assert.equal(nodes.length, 1)
     const node = nodes[0]!
     assert.equal(node.kind, 'ocr_text')
@@ -49,7 +49,7 @@ describe('normalizeToSurfaceNodes', () => {
       },
     }
     const nodes = normalizeToSurfaceNodes({
-      ocrMatches: [], axSnapshot, contract, runId, spanId, startNodeIndex: 0,
+      ocrMatches: [], axSnapshot, contract, runId, spanId, 
     })
     assert.equal(nodes.length, 1)
     const node = nodes[0]!
@@ -72,7 +72,7 @@ describe('normalizeToSurfaceNodes', () => {
     }
     const viewportBounds = { x: 100, y: 0, width: 900, height: 800 }
     const nodes = normalizeToSurfaceNodes({
-      ocrMatches: [], domObservation, contract, runId, spanId, startNodeIndex: 0, viewportBounds,
+      ocrMatches: [], domObservation, contract, runId, spanId, viewportBounds,
     })
     assert.equal(nodes.length, 1)
     const node = nodes[0]!
@@ -87,7 +87,7 @@ describe('normalizeToSurfaceNodes', () => {
   })
 
   it('returns empty array for empty input', () => {
-    const nodes = normalizeToSurfaceNodes({ ocrMatches: [], contract, runId, spanId, startNodeIndex: 0 })
+    const nodes = normalizeToSurfaceNodes({ ocrMatches: [], contract, runId, spanId })
     assert.equal(nodes.length, 0)
   })
 
@@ -97,7 +97,7 @@ describe('normalizeToSurfaceNodes', () => {
       { matchIndex: 1, text: 'Top', confidence: 0.9, bounds: { x: 100, y: 80, width: 200, height: 40 } },
       { matchIndex: 2, text: 'TopRight', confidence: 0.9, bounds: { x: 500, y: 82, width: 200, height: 40 } },
     ]
-    const nodes = normalizeToSurfaceNodes({ ocrMatches, contract, runId, spanId, startNodeIndex: 0 })
+    const nodes = normalizeToSurfaceNodes({ ocrMatches, contract, runId, spanId })
     assert.equal(nodes.length, 3)
     assert.equal(nodes[0]!.label, 'Top')
     assert.equal(nodes[1]!.label, 'TopRight')
