@@ -95,62 +95,63 @@ export async function findAndActivateProfileWindow(expectedProfilePath: string):
   observedPath?: string
   error?: string
 }> {
-  const jxaScript = `
-var chrome = Application('Google Chrome');
-var windows = chrome.windows();
-if (windows.length === 0) {
-  return JSON.stringify({ error: 'No Chrome windows open' });
-}
+  const expectedDir = expectedProfilePath
 
-for (var wi = 0; wi < windows.length; wi++) {
   try {
-    var win = windows[wi];
+    const { execFileSync } = await import('node:child_process')
+    const { writeFileSync, unlinkSync } = await import('node:fs')
 
-    // Open chrome://version to check profile
-    var versionTab = chrome.Tab({url: 'chrome://version/'});
-    win.tabs.push(versionTab);
-    delay(1.0);
-
-    var text = versionTab.execute({javascript: 'document.body.innerText'});
-    chrome.close(versionTab);
-
-    // Parse Profile Path
-    var profilePath = '';
-    var lines = text.split('\\n');
-    for (var j = 0; j < lines.length; j++) {
-      if (lines[j].indexOf('Profile Path') === 0) {
-        profilePath = lines[j].replace('Profile Path', '').trim();
-        break;
-      }
-    }
-
-    if (profilePath) {
-      var profileDir = profilePath.split('/').pop();
-      if (profileDir === '${expectedProfilePath}' || profilePath.indexOf('/Chrome/${expectedProfilePath}') >= 0) {
-        // Found the right window — activate it
-        win.index = 1; // bring to front
-        chrome.activate();
-        return JSON.stringify({
-          windowIndex: wi,
-          profilePath: profilePath,
-          profileDir: profileDir,
-        });
-      }
-    }
-  } catch (e) {
-    // JXA execute may be blocked on some windows — skip
+    // Write JXA to temp file to avoid shell escaping issues
+    const jxaScript = `(function() {
+  var chrome = Application('Google Chrome');
+  var windows = chrome.windows();
+  if (windows.length === 0) {
+    return JSON.stringify({ error: 'No Chrome windows open' });
   }
-}
 
-return JSON.stringify({ error: 'No Chrome window found with profile ${expectedProfilePath}' });
-`
+  for (var wi = 0; wi < windows.length; wi++) {
+    try {
+      var win = windows[wi];
+      var versionTab = chrome.Tab({url: 'chrome://version/'});
+      win.tabs.push(versionTab);
+      delay(1.0);
+      var text = versionTab.execute({javascript: 'document.body.innerText'});
+      chrome.close(versionTab);
 
-  try {
-    const { execSync } = await import('node:child_process')
-    const stdout = execSync(`osascript -l JavaScript -e '${jxaScript.replace(/'/g, "'\\''")}'`, {
+      var profilePath = '';
+      var lines = text.split('\\n');
+      for (var j = 0; j < lines.length; j++) {
+        if (lines[j].indexOf('Profile Path') === 0) {
+          profilePath = lines[j].replace('Profile Path', '').trim();
+          break;
+        }
+      }
+
+      if (profilePath) {
+        var profileDir = profilePath.split('/').pop();
+        if (profileDir === '${expectedDir}' || profilePath.indexOf('/Chrome/${expectedDir}') >= 0) {
+          win.index = 1;
+          chrome.activate();
+          return JSON.stringify({
+            windowIndex: wi,
+            profilePath: profilePath,
+            profileDir: profileDir,
+          });
+        }
+      }
+    } catch (e) {}
+  }
+
+  return JSON.stringify({ error: 'No Chrome window found with profile ${expectedDir}' });
+})()`
+
+    const tmpFile = `/tmp/jxa_profile_check_${Date.now()}.js`
+    writeFileSync(tmpFile, jxaScript, 'utf-8')
+    const stdout = execFileSync('osascript', ['-l', 'JavaScript', tmpFile], {
       encoding: 'utf-8',
       timeout: 30_000,
     })
+    unlinkSync(tmpFile)
     const result = JSON.parse(stdout.trim()) as { windowIndex?: number; profilePath?: string; profileDir?: string; error?: string }
     if (result.error) {
       return { verified: false, error: result.error }

@@ -1,7 +1,7 @@
 import type { ChromeCaptureContract, ChromeRecognitionTarget, RecognitionResult, RecognitionScope, RecognizedItem } from './types.js'
 
 const BUTTON_KINDS = new Set(['dom_button', 'ax_button'])
-const TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
+const TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'dom_combobox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
 const LINK_KINDS = new Set(['dom_link', 'ax_link'])
 
 export function recognizeFromCapture(

@@ -69,6 +69,7 @@ export class MacOSChromeDriver {
   #runId: string
   #spanId = 'session'
   #lastCapture?: ChromeWindowCapture
+  #lastObservation?: ObservationSnapshot
 
   constructor(options: MacOSChromeDriverOptions) {
     if (!options.sessionId?.trim()) {
@@ -225,7 +226,7 @@ export class MacOSChromeDriver {
 
     this.#traceStore?.endSpan(spanId, 'ok', `observed ${nodes.length} nodes`)
 
-    return {
+    const result: ObservationSnapshot = {
       api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
       snapshot_id: snapshotId,
       run_id: this.#runId,
@@ -249,6 +250,9 @@ export class MacOSChromeDriver {
       },
       known_limits: [this.#profileVerified ? 'profile loaded' : 'profile config missing, actions blocked'],
     }
+
+    this.#lastObservation = result
+    return result
   }
 
   async recognizeFromCapture(
@@ -269,7 +273,8 @@ export class MacOSChromeDriver {
       matches: [],
     }))
 
-    const items: RecognizedItem[] = ocr.matches.map((match, i) => ({
+    // OCR items
+    const ocrItems: RecognizedItem[] = ocr.matches.map((match, i) => ({
       item_id: `ocr_${i}`,
       kind: 'ocr_text',
       text: match.text,
@@ -283,8 +288,31 @@ export class MacOSChromeDriver {
       detail: { match_index: match.matchIndex, raw_pixel_bounds: match.bounds },
     }))
 
+    // DOM/AX items from last observation (AUXILIARY for role verification)
+    const domAxItems: RecognizedItem[] = (this.#lastObservation?.nodes ?? [])
+      .filter(n => n.kind.startsWith('dom_') || n.kind.startsWith('ax_'))
+      .filter(n => n.label && n.label.length > 0)
+      .map(n => ({
+        item_id: n.node_ref.node_id,
+        kind: n.kind,
+        text: n.label ?? undefined,
+        box: n.box,
+        provider_score: n.provider_score ?? 0.5,
+        detail: n.detail,
+      }))
+
+    // Merge: OCR items + DOM/AX items, deduplicate by item_id
+    const seenIds = new Set<string>()
+    const allItems: RecognizedItem[] = []
+    for (const item of [...domAxItems, ...ocrItems]) {
+      if (!seenIds.has(item.item_id)) {
+        seenIds.add(item.item_id)
+        allItems.push(item)
+      }
+    }
+
     const result = recognizeFromCapture(
-      items, target, capture.contract, capture.screenshot.path, this.#runId, spanId,
+      allItems, target, capture.contract, capture.screenshot.path, this.#runId, spanId,
     )
 
     this.#nextRecognitionId++
