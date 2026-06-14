@@ -13,13 +13,11 @@ export interface NormalizeInput {
   contract: ChromeCaptureContract
   runId: string
   spanId: string
-  startNodeIndex: number
-  viewportBounds?: { x: number; y: number; width: number; height: number }
+  viewportBounds?: { x: number, y: number, width: number, height: number }
 }
 
 export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   const nodes: SurfaceNode[] = []
-  let idx = input.startNodeIndex
 
   // OCR matches → SurfaceNode (PRIMARY source)
   for (const match of input.ocrMatches) {
@@ -37,7 +35,6 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
       provider_score: match.confidence,
       detail: { match_index: match.matchIndex, raw_pixel_bounds: match.bounds },
     })
-    idx++
   }
 
   // AX nodes → SurfaceNode (AUXILIARY)
@@ -69,7 +66,6 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
             enabled: axNode.enabled,
           },
         })
-        idx++
       }
     })
   }
@@ -107,7 +103,6 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
         },
         recognized_item_kind: element.role,
       })
-      idx++
     }
   }
 
