@@ -83,3 +83,85 @@ export async function loadProfileConfig(sessionRoot: string): Promise<ProfileCon
     throw err
   }
 }
+
+/**
+ * Finds the Chrome window that is using the expected profile,
+ * activates it, and returns the window index and profile path.
+ * If no window matches, returns verified=false.
+ */
+export async function findAndActivateProfileWindow(expectedProfilePath: string): Promise<{
+  verified: boolean
+  windowIndex?: number
+  observedPath?: string
+  error?: string
+}> {
+  const jxaScript = `
+var chrome = Application('Google Chrome');
+var windows = chrome.windows();
+if (windows.length === 0) {
+  return JSON.stringify({ error: 'No Chrome windows open' });
+}
+
+for (var wi = 0; wi < windows.length; wi++) {
+  try {
+    var win = windows[wi];
+
+    // Open chrome://version to check profile
+    var versionTab = chrome.Tab({url: 'chrome://version/'});
+    win.tabs.push(versionTab);
+    delay(1.0);
+
+    var text = versionTab.execute({javascript: 'document.body.innerText'});
+    chrome.close(versionTab);
+
+    // Parse Profile Path
+    var profilePath = '';
+    var lines = text.split('\\n');
+    for (var j = 0; j < lines.length; j++) {
+      if (lines[j].indexOf('Profile Path') === 0) {
+        profilePath = lines[j].replace('Profile Path', '').trim();
+        break;
+      }
+    }
+
+    if (profilePath) {
+      var profileDir = profilePath.split('/').pop();
+      if (profileDir === '${expectedProfilePath}' || profilePath.indexOf('/Chrome/${expectedProfilePath}') >= 0) {
+        // Found the right window — activate it
+        win.index = 1; // bring to front
+        chrome.activate();
+        return JSON.stringify({
+          windowIndex: wi,
+          profilePath: profilePath,
+          profileDir: profileDir,
+        });
+      }
+    }
+  } catch (e) {
+    // JXA execute may be blocked on some windows — skip
+  }
+}
+
+return JSON.stringify({ error: 'No Chrome window found with profile ${expectedProfilePath}' });
+`
+
+  try {
+    const { execSync } = await import('node:child_process')
+    const stdout = execSync(`osascript -l JavaScript -e '${jxaScript.replace(/'/g, "'\\''")}'`, {
+      encoding: 'utf-8',
+      timeout: 30_000,
+    })
+    const result = JSON.parse(stdout.trim()) as { windowIndex?: number; profilePath?: string; profileDir?: string; error?: string }
+    if (result.error) {
+      return { verified: false, error: result.error }
+    }
+    return {
+      verified: true,
+      windowIndex: result.windowIndex,
+      observedPath: result.profilePath,
+    }
+  } catch (err) {
+    return { verified: false, error: `JXA profile find failed: ${(err as Error).message}` }
+  }
+}
+

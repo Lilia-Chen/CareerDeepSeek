@@ -41,7 +41,7 @@ import { requireWindowNumber } from './types.js'
 import { normalizeToSurfaceNodes, inferObservationSource } from './surface-node.js'
 import { recognizeFromCapture } from './recognition.js'
 import { promoteCandidate as doPromoteCandidate } from './candidate-promotion.js'
-import { loadProfileConfig, detectHardStopSignals } from './safety-gate.js'
+import { loadProfileConfig, detectHardStopSignals, findAndActivateProfileWindow } from './safety-gate.js'
 import { TraceStore } from './trace-store.js'
 
 export interface MacOSChromeDriverOptions {
@@ -93,13 +93,54 @@ export class MacOSChromeDriver {
   }
 
   async observe(): Promise<ObservationSnapshot> {
-    // Lazy profile load on first observe
+    // Lazy profile load + verify on first observe
     if (!this.#profileConfig) {
       try {
         this.#profileConfig = await loadProfileConfig(this.#config.sessionRoot)
-        this.#profileVerified = true
-      } catch {
+        // Find and activate the Chrome window that uses the expected profile
+        const result = await findAndActivateProfileWindow(this.#profileConfig.profile_path)
+        this.#profileVerified = result.verified
+        if (!result.verified) {
+          const msg = `Profile "${this.#profileConfig.profile_path}" not found in any Chrome window: ${result.error ?? 'unknown'}`
+          this.#traceStore?.recordEvent({
+            event_id: `evt_profile_mismatch_${Date.now()}`,
+            span_id: this.#spanId,
+            name: 'profile_verification_failed',
+            timestamp_millis: Date.now(),
+            attributes: {
+              expected: this.#profileConfig.profile_path,
+              error: result.error ?? null,
+            },
+            message: msg,
+            artifact_ids: [],
+          })
+        } else {
+          this.#traceStore?.recordEvent({
+            event_id: `evt_profile_verified_${Date.now()}`,
+            span_id: this.#spanId,
+            name: 'profile_verified',
+            timestamp_millis: Date.now(),
+            attributes: {
+              profile: result.observedPath ?? '',
+              window_index: result.windowIndex ?? -1,
+            },
+            message: `Profile verified and activated: ${result.observedPath} (window ${result.windowIndex})`,
+            artifact_ids: [],
+          })
+          // Wait briefly for Chrome window to come to foreground
+          await new Promise(r => setTimeout(r, 500))
+        }
+      } catch (err) {
         this.#profileVerified = false
+        this.#traceStore?.recordEvent({
+          event_id: `evt_profile_error_${Date.now()}`,
+          span_id: this.#spanId,
+          name: 'profile_verification_failed',
+          timestamp_millis: Date.now(),
+          attributes: { error: (err as Error).message },
+          message: (err as Error).message,
+          artifact_ids: [],
+        })
       }
     }
 

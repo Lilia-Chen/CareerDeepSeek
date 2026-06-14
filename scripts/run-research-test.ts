@@ -142,7 +142,6 @@ async function main(): Promise<void> {
     log('Observing search results...')
     const searchSnapshot = await driver.observe()
     summarizeObservation(searchSnapshot)
-    const searchCapture = driver.lastCapture!
 
     // ── Phase 2: Extract and score links ──
     log('\n── Phase 2: Extract search result links ──')
