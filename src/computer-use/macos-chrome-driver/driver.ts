@@ -1,17 +1,24 @@
 import type { ComputerUseConfig } from '../config.js'
-import type { AXNode, Bounds, ChromeDomElement, WindowDescriptor, WindowObservation } from '../types.js'
+import type { AXNode, AXSnapshot, Bounds, ChromeDomElement, WindowDescriptor, WindowObservation } from '../types.js'
 import type {
+  CandidatePromotion,
   ChromeContextSnapshot,
   ChromeForegroundPolicy,
   ChromeRecognitionEvidence,
   ChromeRecognitionSource,
   ChromeRecognitionTarget,
   ChromeRecognizedItem,
+  ChromeWindowCapture,
   ChromeWindowRef,
   MacOSChromeCandidateRef,
   MacOSChromeObservationSnapshot,
   MacOSChromeRecognitionResult,
+  ObservationSnapshot,
   OcrTextMatch,
+  ProfileConfig,
+  PromotedCandidate,
+  RecognizedItem,
+  RecognitionResult as NewRecognitionResult,
 } from './types.js'
 
 import { resolveComputerUseConfig } from '../config.js'
@@ -29,6 +36,13 @@ import { buildPointerTrace } from '../pointer-trace.js'
 import { captureChromeWindow } from './capture.js'
 import { recognizeTextInImage } from './ocr.js'
 import { requireWindowNumber } from './types.js'
+
+// AUV two-path imports
+import { normalizeToSurfaceNodes, inferObservationSource } from './surface-node.js'
+import { recognizeFromCapture } from './recognition.js'
+import { promoteCandidate as doPromoteCandidate } from './candidate-promotion.js'
+import { loadProfileConfig, detectHardStopSignals } from './safety-gate.js'
+import { TraceStore } from './trace-store.js'
 
 export interface MacOSChromeDriverOptions {
   sessionId: string
@@ -48,6 +62,13 @@ export class MacOSChromeDriver {
   #nextRecognitionId = 1
   #lastCursorPosition?: { x: number, y: number }
 
+  // AUV two-path fields
+  #traceStore?: TraceStore
+  #profileConfig?: ProfileConfig
+  #profileVerified = false
+  #runId: string
+  #spanId = 'session'
+
   constructor(options: MacOSChromeDriverOptions) {
     if (!options.sessionId?.trim()) {
       throw new TypeError('MacOSChromeDriver requires a non-empty sessionId.')
@@ -55,9 +76,234 @@ export class MacOSChromeDriver {
     this.#sessionId = options.sessionId
     this.#config = { ...resolveComputerUseConfig(), ...options.config }
     this.#foregroundPolicy = options.foregroundPolicy ?? 'require_chrome'
+
+    this.#runId = `run_${options.sessionId}_${Date.now()}`
+    this.#traceStore = new TraceStore(this.#config.sessionRoot, options.sessionId)
+    this.#traceStore.startRun(this.#runId, { intent: 'macos_chrome_driver' })
+    this.#traceStore.startSpan(this.#spanId, undefined, 'session')
   }
 
-  async observe(): Promise<MacOSChromeObservationSnapshot> {
+  // ═══════════════════════════════════════════════════════════════
+  // NEW API — AUV two-path architecture
+  // ═══════════════════════════════════════════════════════════════
+
+  async observe(): Promise<ObservationSnapshot> {
+    // Lazy profile load on first observe
+    if (!this.#profileConfig) {
+      try {
+        this.#profileConfig = await loadProfileConfig(this.#config.sessionRoot)
+        this.#profileVerified = true
+      } catch {
+        this.#profileVerified = false
+      }
+    }
+
+    this.#step++
+    const snapshotId = `mco_${this.#nextObservationId++}`
+    const spanId = `observe_${snapshotId}`
+
+    this.#traceStore?.startSpan(spanId, this.#spanId, 'observe')
+
+    const chromeContext = await this.#resolveChromeContext()
+    const capture = await captureChromeWindow({
+      config: this.#config, sessionId: this.#sessionId, snapshotId, window: chromeContext.window,
+    })
+
+    // Record screenshot artifact
+    const screenshotArtifactId = `screenshot_${snapshotId}`
+    this.#traceStore?.recordArtifact({
+      artifact_id: screenshotArtifactId, span_id: spanId, role: 'screenshot',
+      mime_type: 'image/png', path: capture.screenshot.path,
+      attributes: { width: capture.screenshot.width, height: capture.screenshot.height },
+    })
+
+    // Record capture contract artifact
+    const contractArtifactId = `capture_contract_${snapshotId}`
+    this.#traceStore?.recordArtifact({
+      artifact_id: contractArtifactId, span_id: spanId, role: 'capture_contract',
+      mime_type: 'application/json',
+      path: `${this.#config.sessionRoot}/traces/${this.#sessionId}/contract_${snapshotId}.json`,
+      attributes: { coordinate_contract_version: capture.contract.coordinateContractVersion },
+    })
+
+    // Parallel observation: AX, DOM, OCR
+    const [axResult, domResult, ocrResult] = await Promise.allSettled([
+      captureAXTree(this.#config, {
+        pid: chromeContext.window.ownerPid, maxDepth: 15, maxNodes: 3000,
+      }),
+      captureChromeDom(this.#config),
+      recognizeTextInImage(this.#config, {
+        imagePath: capture.screenshot.path, maxObservations: 256,
+      }),
+    ])
+
+    const axSnapshot = axResult.status === 'fulfilled' ? axResult.value : undefined
+    const chromeDomObservation
+      = domResult.status === 'fulfilled' && domResult.value ? domResult.value : undefined
+    const ocr = ocrResult.status === 'fulfilled'
+      ? ocrResult.value
+      : {
+          recognizedAt: new Date().toISOString(),
+          imagePath: capture.screenshot.path,
+          imageWidth: capture.screenshot.width ?? 0,
+          imageHeight: capture.screenshot.height ?? 0,
+          matches: [],
+        }
+
+    // Compute viewport bounds from AX tree (falls back to window bounds)
+    const viewportBounds = findChromeViewportBounds(axSnapshot) ?? chromeContext.window.bounds
+
+    // Normalize ALL sources → SurfaceNode[]
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: ocr.matches,
+      axSnapshot,
+      domObservation: chromeDomObservation ?? undefined,
+      contract: capture.contract,
+      runId: this.#runId,
+      spanId,
+      viewportBounds,
+    })
+
+    const source = inferObservationSource(nodes)
+    const visibleText = nodes.map(n => n.label ?? '').join('\n')
+    const signals = detectHardStopSignals(visibleText)
+
+    // Record observation snapshot artifact
+    this.#traceStore?.recordArtifact({
+      artifact_id: `observation_${snapshotId}`, span_id: spanId,
+      role: 'observation_snapshot', mime_type: 'application/json',
+      path: `${this.#config.sessionRoot}/traces/${this.#sessionId}/observation_${snapshotId}.json`,
+      attributes: { node_count: nodes.length, source },
+    })
+
+    this.#traceStore?.endSpan(spanId, 'ok', `observed ${nodes.length} nodes`)
+
+    return {
+      api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
+      snapshot_id: snapshotId,
+      run_id: this.#runId,
+      span_id: spanId,
+      captured_at_millis: Date.now(),
+      source,
+      scope: {
+        surface: 'window',
+        window_number: chromeContext.window.windowNumber,
+        app_bundle_id: chromeContext.window.ownerBundleId,
+        window_title: chromeContext.window.title ?? undefined,
+        capture_artifact: { run_id: this.#runId, artifact_id: screenshotArtifactId, span_id: spanId },
+      },
+      capture_contract_ref: { run_id: this.#runId, artifact_id: contractArtifactId, span_id: spanId },
+      evidence: [{ run_id: this.#runId, artifact_id: screenshotArtifactId, span_id: spanId }],
+      nodes,
+      detail: {
+        chrome_context: { active_tab_url: chromeContext.activeTabUrl, active_tab_title: chromeContext.activeTabTitle },
+        signals,
+        ocr_match_count: ocr.matches.length,
+      },
+      known_limits: [this.#profileVerified ? 'profile loaded' : 'profile config missing, actions blocked'],
+    }
+  }
+
+  async recognizeFromCapture(
+    capture: ChromeWindowCapture,
+    target: ChromeRecognitionTarget,
+  ): Promise<NewRecognitionResult> {
+    const spanId = `recognize_${this.#nextRecognitionId}`
+    this.#traceStore?.startSpan(spanId, this.#spanId, 'recognize')
+
+    // OCR-first
+    const ocr = await recognizeTextInImage(this.#config, {
+      imagePath: capture.screenshot.path, maxObservations: 256,
+    }).catch(() => ({
+      recognizedAt: new Date().toISOString(),
+      imagePath: capture.screenshot.path,
+      imageWidth: capture.screenshot.width ?? 0,
+      imageHeight: capture.screenshot.height ?? 0,
+      matches: [],
+    }))
+
+    const items: RecognizedItem[] = ocr.matches.map((match, i) => ({
+      item_id: `ocr_${i}`,
+      kind: 'ocr_text',
+      text: match.text,
+      box: {
+        x: capture.contract.sourceGlobalLogicalBounds.x + match.bounds.x * capture.contract.pixelToLogicalScale.x,
+        y: capture.contract.sourceGlobalLogicalBounds.y + match.bounds.y * capture.contract.pixelToLogicalScale.y,
+        width: match.bounds.width * capture.contract.pixelToLogicalScale.x,
+        height: match.bounds.height * capture.contract.pixelToLogicalScale.y,
+      },
+      provider_score: match.confidence,
+      detail: { match_index: match.matchIndex, raw_pixel_bounds: match.bounds },
+    }))
+
+    const result = recognizeFromCapture(
+      items, target, capture.contract, capture.screenshot.path, this.#runId, spanId,
+    )
+
+    this.#nextRecognitionId++
+    this.#traceStore?.endSpan(spanId, 'ok')
+    return result
+  }
+
+  async promoteCandidate(
+    recognition: NewRecognitionResult,
+    capture: ChromeWindowCapture,
+  ): Promise<CandidatePromotion> {
+    const chromeContext = await this.#resolveChromeContext()
+    const hardStopSignals = detectHardStopSignals(
+      recognition.all.map(i => i.text ?? '').join('\n'),
+    )
+
+    return doPromoteCandidate(recognition, capture.contract, chromeContext.window, {
+      profile_verified: this.#profileVerified,
+      chrome_foreground: chromeContext.isFrontmost,
+      hard_stop_signals: hardStopSignals,
+      ttl_ms: 5000,
+      run_id: this.#runId,
+      span_id: this.#spanId,
+    })
+  }
+
+  async click(candidate: PromotedCandidate): Promise<void> {
+    // Safety gate: profile must be verified
+    if (!this.#profileVerified) {
+      throw new Error('Safety gate: profile not verified, refusing click.')
+    }
+
+    const context = await this.#resolveChromeContext()
+
+    // Window number check from candidate's liveness preconditions
+    const winNumber = candidate.liveness.preconditions.window_ref.window_number
+    if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
+      throw new Error('Refusing click: Chrome window changed after candidate promotion.')
+    }
+
+    const box = candidate.target_spec.box
+    const center = centerOf(box)
+
+    if (!pointInsideBounds(center, context.window.bounds)) {
+      throw new Error('Refusing click: candidate point is outside the active Chrome window.')
+    }
+
+    const pointerTrace = buildPointerTrace({
+      from: this.#lastCursorPosition,
+      to: center,
+      bounds: this.#config.allowedBounds,
+    })
+    await executeMoveAndClick(this.#config, {
+      pointerTrace,
+      button: 0,
+      clickCount: 1,
+    })
+    this.#lastCursorPosition = center
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // LEGACY API — deprecated, kept for backward compatibility
+  // ═══════════════════════════════════════════════════════════════
+
+  /** @deprecated Use observe() which returns ObservationSnapshot instead. */
+  async observeLegacy(): Promise<MacOSChromeObservationSnapshot> {
     const step = this.#step++
     const snapshotId = `mco_${this.#nextObservationId++}`
     const chromeContext = await this.#resolveChromeContext()
@@ -115,8 +361,9 @@ export class MacOSChromeDriver {
     }
   }
 
-  async recognize(target: ChromeRecognitionTarget): Promise<MacOSChromeRecognitionResult> {
-    const observation = await this.observe()
+  /** @deprecated Use recognizeFromCapture() with the new two-path flow instead. */
+  async recognizeLegacy(target: ChromeRecognitionTarget): Promise<MacOSChromeRecognitionResult> {
+    const observation = await this.observeLegacy()
     const all = collectRecognizedItems(observation)
     const filtered = all
       .filter(item => matchesTarget(item, target))
@@ -140,7 +387,8 @@ export class MacOSChromeDriver {
     }
   }
 
-  async click(candidate: MacOSChromeCandidateRef): Promise<void> {
+  /** @deprecated Use click(PromotedCandidate) with the new two-path flow instead. */
+  async clickLegacy(candidate: MacOSChromeCandidateRef): Promise<void> {
     const context = await this.#resolveChromeContext()
     if (context.window.windowNumber !== candidate.window.windowNumber) {
       throw new Error('Refusing click: Chrome window changed after candidate recognition.')
@@ -285,7 +533,7 @@ function domRecognizedItems(observation: MacOSChromeObservationSnapshot): Chrome
   const dom = observation.chromeDomObservation
   if (!dom)
     return []
-  const viewport = findChromeViewportBounds(observation) ?? observation.chromeContext.window.bounds
+  const viewport = findChromeViewportBounds(observation.axSnapshot) ?? observation.chromeContext.window.bounds
   return dom.elements.map((element): ChromeRecognizedItem => {
     const text = element.name || element.text || element.role
     const bounds = offsetBounds(element.bounds, viewport)
@@ -399,9 +647,13 @@ function recognitionEvidence(observation: MacOSChromeObservationSnapshot): Chrom
   return evidence
 }
 
-function findChromeViewportBounds(observation: MacOSChromeObservationSnapshot): Bounds | undefined {
-  const root = observation.axSnapshot?.root
-  if (!root)
+/**
+ * Finds the AXWebArea viewport bounds from an accessibility snapshot.
+ * Falls back to undefined when no AXWebArea is found (caller should use
+ * window bounds instead).
+ */
+function findChromeViewportBounds(axSnapshot?: AXSnapshot): Bounds | undefined {
+  if (!axSnapshot)
     return undefined
   let result: Bounds | undefined
   function walk(node: AXNode) {
@@ -415,7 +667,7 @@ function findChromeViewportBounds(observation: MacOSChromeObservationSnapshot): 
       walk(child)
     }
   }
-  walk(root)
+  walk(axSnapshot.root)
   return result
 }
 

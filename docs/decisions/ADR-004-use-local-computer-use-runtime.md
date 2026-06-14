@@ -25,18 +25,22 @@ The current product direction is computer-use:
 
 CareerDeepSeek's default visible-browser runtime is local macOS computer-use in `src/computer-use/`.
 
+The bottom-level Chrome control entry is `MacOSChromeDriver` in `src/computer-use/macos-chrome-driver/`. It separates:
+
+- observation: open-ended view of the current Chrome window and desktop context
+- recognition: target-specific lookup for a known UI target
+- candidate promotion: converting a successful recognition result into an actionable candidate ref
+- action: CGEvent input against a promoted candidate or foreground-checked keyboard/scroll operation
+
 Observation sources:
 
-- `screencapture -x` for screenshots.
-- `CGWindowListCopyWindowInfo` for visible window metadata.
+- `screencapture -l<windowid> -x -o` for Chrome window screenshots and capture coordinate contracts.
+- `CGWindowListCopyWindowInfo` for visible window metadata, real window numbers, bundle ids, and foreground state.
 - `AXUIElement` for native macOS accessibility tree data.
+- macOS Vision OCR for visible text in the captured Chrome window.
 - JXA `tab.execute({ javascript })` for read-only Chrome DOM semantics.
 
-Observation is merged into `DesktopGroundingSnapshot` with target candidate priority:
-
-```txt
-chrome_dom > ax > vision > raw
-```
+Observation does not directly create action targets. A workflow must call `recognize(target)` for the next known target, then promote the recognition result before clicking. Raw planner-supplied points are not a driver action contract.
 
 JXA is observation-only. It may read the current tab URL, title, DOM-visible text, attributes, computed styles, viewport boxes, and occlusion state. It must not navigate, click, type, set input values, dispatch events, mutate DOM, or attach CDP/debugger.
 
@@ -49,13 +53,13 @@ Actions are OS-level:
 
 Task startup establishes the Chrome context first. Real desktop scripts must capture the current desktop, ensure Google Chrome is open and frontmost before address-bar or page actions, and capture another screenshot after Chrome is confirmed frontmost. If Chrome is not open, they may open it through OS-level app activation. If Chrome is open behind another app, they may activate it. Window observation must confirm a visible Chrome window is frontmost before the task continues.
 
-Foreground context is also guarded before input. The default adapter policy rejects `click`, `type`, `press`, and `scroll` unless Google Chrome is frontmost. Real desktop startup scripts may explicitly opt into OS-level Chrome activation; activation must be followed by a foreground recheck before any CGEvent is posted.
+Foreground context is also guarded before input. The default driver policy rejects `click`, `type`, `press`, and `scroll` unless Google Chrome is frontmost. Real desktop startup scripts may explicitly opt into OS-level Chrome activation; activation must be followed by a foreground recheck before any CGEvent is posted.
 
 Text input temporarily selects a Latin keyboard input source (`U.S.` or `ABC`) while sending CGEvent key codes, then restores the previous user input source. This prevents active IMEs from converting ASCII search queries.
 
 There is no `open_url` action or URL-opening bootstrap helper. URL navigation is composed from observed Chrome address-bar actions: locate the address bar through AX bounds, click its observed center, press `Cmd+L`, type the URL, then press Enter. Page-internal search uses observed page controls and normal CGEvent typing.
 
-All screen actions follow an observe-before-act rule. CGEvent mouse coordinates must originate from the current observation: Chrome DOM boxes, native AX bounds, or observed window bounds for a specific window target. Hard-coded offsets and guessed browser geometry are outside the accepted design.
+All screen actions follow an observe-before-act and recognize-before-click rule. CGEvent mouse coordinates must originate from a promoted recognition candidate backed by current OCR, DOM, AX, or capture-contract evidence. Hard-coded offsets and guessed browser geometry are outside the accepted design.
 
 ## Consequences
 

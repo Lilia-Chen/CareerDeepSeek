@@ -139,6 +139,23 @@ describe('planOverlayDismissal', () => {
     assert.equal(detectBlockingStopSignal(state({ visibleText: 'Enter payment details to continue' })), 'payment_required')
   })
 
+  it('allows reading a job description page while still stopping on application submission flow', () => {
+    assert.equal(detectBlockingStopSignal(state({
+      visibleText: 'Back to jobs AI Infrastructure Engineer London Apply Fin is the AI Customer Agent company.',
+      elements: [
+        element({ id: 'apply', text: 'Apply', role: 'link' }),
+        element({ id: 'form', text: 'Submit application Upload resume required before continuing', role: 'form' }),
+      ],
+    })), null)
+
+    assert.equal(detectBlockingStopSignal(state({
+      visibleText: 'Submit application Upload resume required before continuing',
+      elements: [
+        element({ id: 'submit', text: 'Submit application', role: 'button' }),
+      ],
+    })), 'apply_or_send_required')
+  })
+
   it('does not treat passive header links or article text as blocking states', () => {
     assert.equal(detectBlockingStopSignal(state({
       visibleText: 'Company home page. Sign in Start for free Products Pricing',

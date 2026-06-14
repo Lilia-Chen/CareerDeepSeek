@@ -9,9 +9,78 @@ import { fileURLToPath } from 'node:url'
 import { loadTargetRubric } from '../src/targets/targetRubric.js'
 import { scoreTarget } from '../src/targets/scoreTarget.js'
 import { writeTargetRecord } from '../src/targets/writeTargetRecord.js'
+import type { ScoredTarget, TargetResearchQuality, TargetResearchQualityAssessment } from '../src/types.js'
 
 const execFileAsync = promisify(execFile)
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
+
+function highConfidenceResearchQuality(): TargetResearchQuality {
+  return {
+    sourceCount: 4,
+    sourceTypes: ['company_site', 'public_careers', 'linkedin_company', 'engineering_blog'],
+    evidenceCoverage: [
+      {
+        dimensionId: 'stage_hiring_pressure',
+        status: 'confirmed',
+        sourceCount: 2,
+        note: 'Careers page and hiring announcement show active engineering hiring.',
+      },
+      {
+        dimensionId: 'team_composition',
+        status: 'confirmed',
+        sourceCount: 2,
+        note: 'Founders and early engineers have visible AI systems background.',
+      },
+      {
+        dimensionId: 'technical_closure',
+        status: 'confirmed',
+        sourceCount: 2,
+        note: 'Product and engineering blog show owned runtime and eval layers.',
+      },
+      {
+        dimensionId: 'domain_alignment',
+        status: 'confirmed',
+        sourceCount: 2,
+        note: 'Direct fit for agent infrastructure.',
+      },
+      {
+        dimensionId: 'culture_ownership_signal',
+        status: 'partial',
+        sourceCount: 1,
+        note: 'Public engineering writing suggests ownership, but team interviews remain unknown.',
+      },
+      {
+        dimensionId: 'right_to_work_location',
+        status: 'partial',
+        sourceCount: 1,
+        note: 'UK/EU employment looks plausible but needs confirmation.',
+      },
+      {
+        dimensionId: 'reachability_signal',
+        status: 'partial',
+        sourceCount: 1,
+        note: 'Relevant engineers are visible on LinkedIn.',
+      },
+    ],
+  }
+}
+
+function assessedHighConfidenceResearchQuality(): TargetResearchQualityAssessment {
+  return {
+    ...highConfidenceResearchQuality(),
+    confidence: 'high',
+    stopReason: null,
+    coverageSummary: {
+      confirmedDimensions: 4,
+      partialDimensions: 3,
+      unknownDimensions: 0,
+      blockedDimensions: 0,
+      criticalGaps: [],
+    },
+    decisionCap: null,
+    missingInfo: [],
+  }
+}
 
 it('loads the target hunting rubric with company/team dimensions', async () => {
   const rubric = await loadTargetRubric()
@@ -51,6 +120,7 @@ it('scores a strong company/team target without requiring a live role', async ()
       'Engineering-led team building production agent infrastructure.',
       'No current role is required for target-level qualification.',
     ],
+    researchQuality: highConfidenceResearchQuality(),
     missingInfo: [
       'Current right-to-work path needs direct confirmation.',
     ],
@@ -63,6 +133,37 @@ it('scores a strong company/team target without requiring a live role', async ()
   assert.equal(result.decision, 'priority_target')
   assert.equal(result.name, 'Synthetic Agent Lab')
   assert.equal(result.contributions.length, 7)
+  assert.equal(result.researchQuality.confidence, 'high')
+})
+
+it('caps a high numeric target score when research evidence is too shallow', async () => {
+  const rubric = await loadTargetRubric()
+  const target = {
+    id: 'thin-agent-lab',
+    name: 'Thin Agent Lab',
+    category: 'agent_product',
+    scores: {
+      stage_hiring_pressure: 5,
+      team_composition: 5,
+      technical_closure: 5,
+      domain_alignment: 5,
+      culture_ownership_signal: 5,
+      right_to_work_location: 5,
+      reachability_signal: 5,
+    },
+    evidence: ['Homepage says it builds AI agents.'],
+    riskFlags: [],
+  }
+
+  const result = scoreTarget(target, rubric)
+
+  assert.equal(result.total, 100)
+  assert.equal(result.decision, 'research_more')
+  assert.equal(result.researchQuality.confidence, 'low')
+  assert.match(
+    result.missingInfo.join('\n'),
+    /Critical target-rubric evidence gaps remain/,
+  )
 })
 
 it('target hard blockers force reject even when company score is high', async () => {
@@ -91,7 +192,7 @@ it('target hard blockers force reject even when company score is high', async ()
 
 it('writes scored target records only under the private data target directory', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'careerdeepseek-data-'))
-  const scoredTarget = {
+  const scoredTarget: ScoredTarget = {
     id: 'synthetic-agent-lab',
     name: 'Synthetic Agent Lab',
     category: 'agent_product',
@@ -103,6 +204,7 @@ it('writes scored target records only under the private data target directory', 
     riskFlags: [],
     missingInfo: [],
     nextAction: 'Find engineering team surface.',
+    researchQuality: assessedHighConfidenceResearchQuality(),
   }
 
   const outputPath = await writeTargetRecord(scoredTarget, { dataDir })
@@ -136,6 +238,7 @@ it('score-target CLI scores input JSON and writes private records only with --wr
           reachability_signal: 4,
         },
         evidence: ['Synthetic public fixture evidence.'],
+        researchQuality: highConfidenceResearchQuality(),
         riskFlags: [],
         missingInfo: [],
       },

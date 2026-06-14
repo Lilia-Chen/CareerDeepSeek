@@ -180,6 +180,37 @@ export interface ScoreContribution {
   points: number
 }
 
+export type EvidenceCoverageStatus = 'confirmed' | 'partial' | 'unknown' | 'blocked'
+export type ResearchConfidence = 'high' | 'medium' | 'low'
+
+export interface EvidenceCoverageItem {
+  dimensionId: string
+  status: EvidenceCoverageStatus
+  sourceCount: number
+  note: string
+}
+
+export interface TargetResearchQuality {
+  sourceCount: number
+  sourceTypes: string[]
+  evidenceCoverage: EvidenceCoverageItem[]
+  confidence?: ResearchConfidence
+  stopReason?: string | null
+}
+
+export interface TargetResearchQualityAssessment extends TargetResearchQuality {
+  confidence: ResearchConfidence
+  coverageSummary: {
+    confirmedDimensions: number
+    partialDimensions: number
+    unknownDimensions: number
+    blockedDimensions: number
+    criticalGaps: string[]
+  }
+  decisionCap: string | null
+  missingInfo: string[]
+}
+
 export interface OpportunityInput {
   id: string
   title: string
@@ -208,6 +239,7 @@ export interface TargetInput {
   riskFlags?: string[]
   missingInfo?: string[]
   nextAction?: string | null
+  researchQuality?: TargetResearchQuality
 }
 
 export interface ScoredTarget extends Omit<TargetInput, 'scores'> {
@@ -218,6 +250,7 @@ export interface ScoredTarget extends Omit<TargetInput, 'scores'> {
   riskFlags: string[]
   missingInfo: string[]
   nextAction: string | null
+  researchQuality: TargetResearchQualityAssessment
 }
 
 export interface ReviewQueueItem {

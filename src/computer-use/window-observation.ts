@@ -38,7 +38,9 @@ let inputData = rawInput.data(using: .utf8) ?? Data()
 let input = (try? JSONSerialization.jsonObject(with: inputData)) as? [String: Any] ?? [:]
 let limit = (input["limit"] as? Int) ?? 12
 let appFilter = ((input["app"] as? String) ?? "").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-let frontmostAppName = NSWorkspace.shared.frontmostApplication?.localizedName
+let frontmostApp = NSWorkspace.shared.frontmostApplication
+let frontmostAppName = frontmostApp?.localizedName
+let frontmostAppBundleId = frontmostApp?.bundleIdentifier
 
 let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
 let rawWindowInfo = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
@@ -54,14 +56,18 @@ for window in rawWindowInfo {
   let bounds = boundsDict(window[kCGWindowBounds as String] as? NSDictionary)
   let title = (window[kCGWindowName as String] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
   let ownerPid = window[kCGWindowOwnerPID as String] as? Int ?? 0
+  let windowNumber = window[kCGWindowNumber as String] as? Int ?? 0
+  let ownerBundleId = NSRunningApplication(processIdentifier: pid_t(ownerPid))?.bundleIdentifier
 
   if alpha <= 0 || (bounds?["width"] ?? 0) <= 1 || (bounds?["height"] ?? 0) <= 1 {
     continue
   }
 
   windows.append([
-    "id": "\(ownerPid):\(layer):\(title ?? ownerName)",
+    "id": "\(windowNumber)",
+    "windowNumber": windowNumber,
     "appName": ownerName,
+    "ownerBundleId": ownerBundleId as Any,
     "title": title as Any,
     "bounds": bounds as Any,
     "ownerPid": ownerPid,
@@ -77,6 +83,7 @@ for window in rawWindowInfo {
 let frontmostWindowTitle = windows.first(where: { ($0["appName"] as? String) == frontmostAppName })?["title"]
 let payload: [String: Any] = [
   "frontmostAppName": frontmostAppName as Any,
+  "frontmostAppBundleId": frontmostAppBundleId as Any,
   "frontmostWindowTitle": frontmostWindowTitle as Any,
   "windows": windows,
   "observedAt": ISO8601DateFormatter().string(from: Date()),
@@ -89,7 +96,9 @@ print(String(data: data, encoding: .utf8)!)
 
 interface RawWindowEntry {
   id: string
+  windowNumber?: number
   appName: string
+  ownerBundleId?: string
   title: string | null
   bounds: { x: number, y: number, width: number, height: number }
   ownerPid: number
@@ -99,6 +108,7 @@ interface RawWindowEntry {
 
 interface RawWindowOutput {
   frontmostAppName?: string
+  frontmostAppBundleId?: string
   frontmostWindowTitle?: string | null
   windows: RawWindowEntry[]
   observedAt: string
@@ -128,10 +138,13 @@ export async function observeWindows(
 
   return {
     frontmostAppName: raw.frontmostAppName,
+    frontmostAppBundleId: raw.frontmostAppBundleId,
     frontmostWindowTitle: raw.frontmostWindowTitle,
     windows: raw.windows.map(w => ({
       id: w.id,
+      windowNumber: w.windowNumber,
       appName: w.appName,
+      ownerBundleId: w.ownerBundleId,
       title: w.title,
       bounds: w.bounds,
       ownerPid: w.ownerPid,

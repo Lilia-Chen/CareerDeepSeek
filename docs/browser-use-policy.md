@@ -16,7 +16,7 @@ A browser session is allowed when it has:
 
 Inside an approved session, the agent may observe the visible browser, classify pages, score candidates, and produce review outputs. Page interaction after bootstrap must use the computer-use action layer.
 
-OS-level context management is allowed for the local desktop. `MacOSComputerUseAdapter.observe()` and `MacOSComputerUseAdapter.act()` must ensure Google Chrome is the foreground app before observing or sending input. In `auto_focus_chrome` mode, the adapter may use native app activation, then must recheck the foreground app before continuing. This permission does not extend to browser-internal automation inside the page.
+OS-level context management is allowed for the local desktop. `MacOSChromeDriver.observe()`, target `recognize(...)`, and action methods must ensure Google Chrome is the foreground app before observing or sending input. In `auto_focus_chrome` mode, the driver may use native app activation, then must recheck the foreground app before continuing. This permission does not extend to browser-internal automation inside the page.
 
 Development mode and production agent mode are separate. Development mode may change code, tests, registered tools, and policy. Production agent mode may only call pre-registered tools. It must not invent tools, change policy, register new action types, add browser-internal automation routes, or bypass the computer-use harness during a run.
 
@@ -26,10 +26,16 @@ Current workflow mode is skill-driven. The OpenCode/Codex agent reads `.opencode
 
 The default observation stack is `src/computer-use/`:
 
-- `screencapture -x` for PNG screenshots.
-- `CGWindowListCopyWindowInfo` for visible window position, title, owner, and layer metadata.
+- `MacOSChromeDriver.observe()` for open-ended Chrome state observation.
+- `screencapture -l<windowid> -x -o` for Chrome window PNG screenshots and capture coordinate contracts.
+- `CGWindowListCopyWindowInfo` for visible window position, title, owner, real window number, bundle id, and layer metadata.
 - macOS `AXUIElement` for accessibility roles, labels, bounds, focus, and enabled state.
+- macOS Vision OCR for text visible in the captured Chrome window screenshot.
 - JXA `tab.execute({ javascript })` for read-only Chrome DOM semantics.
+
+Observation answers what is currently visible. It does not directly authorize a click.
+
+Target recognition is a separate driver call. `recognize(...)` answers whether a known target is present, such as the Chrome address bar, a page search box, a cookie accept button, a result link, or visible evidence text. A successful recognition result must be promoted into a candidate before the driver clicks it.
 
 JXA is observation-only. It may read:
 
@@ -63,11 +69,11 @@ Text entry may temporarily switch macOS to a Latin keyboard input source (`U.S.`
 
 Automatic session actions are limited to visible, coordinate-grounded `click`, `type`, `press`, `scroll`, `wait`, `capture_screenshot`, and `stop`.
 
-Before `observe`, `click`, `type`, `press`, or `scroll`, the adapter must ensure Google Chrome is the foreground app. The default policy rejects the operation when another app is frontmost. A real desktop workflow may explicitly opt into OS-level Chrome activation, then the adapter must confirm Chrome is frontmost before continuing.
+Before `observe`, `recognize`, `click`, `type`, `press`, or `scroll`, the driver must ensure Google Chrome is the foreground app. The default policy rejects the operation when another app is frontmost. A real desktop workflow may explicitly opt into OS-level Chrome activation, then the driver must confirm Chrome is frontmost before continuing.
 
 There is no `open_url` action. URL navigation must be composed from observed Chrome address-bar actions: locate the address bar through AX bounds, click its observed center, press `Cmd+L`, type the URL, then press Enter. Searches inside a loaded page must use observed page controls and normal CGEvent input.
 
-Every screen action must follow observation. Mouse coordinates must come from observed target bounds, such as Chrome DOM boxes, native AX bounds, or observed window bounds for a specific window target. Fixed offsets, guessed toolbar positions, and hard-coded browser geometry are forbidden.
+Every screen action must follow observation and target recognition. Mouse coordinates must come from a promoted recognition candidate with current evidence from OCR, Chrome DOM, AX, or window capture contract. Fixed offsets, guessed toolbar positions, and hard-coded browser geometry are forbidden.
 
 Two visibility states are separate. Desktop foreground state controls whether OS-level input can reach Chrome. Page-visible DOM state controls which page elements may be acted on. Chrome being behind another app is fixed by foreground guard before observation. Hidden, covered, offscreen, or overlay-blocked page DOM must not become action targets.
 
@@ -81,7 +87,8 @@ Before normal page work, deterministic code must handle browser safety states:
 
 - Cookie consent prompts are low-risk browsing prerequisites. The workflow may click an observed `Yes, I agree`, `I agree`, `Accept all cookies`, or equivalent accept control.
 - Marketing popups may be closed only through an observed close, dismiss, no-thanks, or skip control.
-- Login, SSO, passkey, account-selection, CAPTCHA, security, payment, checkout, apply, and send-message states are hard stops. They must be recorded and stopped, not delegated to model judgment.
+- Login, SSO, passkey, account-selection, CAPTCHA, security, payment, checkout, application-submission, and send-message states are hard stops. They must be recorded and stopped, not delegated to model judgment.
+- A job description page with a visible `Apply` button is still a readable evidence page. The workflow may extract role, location, team, and technical evidence, but must not click `Apply`, `Submit application`, upload documents, or enter the application flow.
 
 The model may report what it sees and choose among allowed visible actions. It must not decide that a high-risk state is safe to continue through.
 
@@ -132,7 +139,7 @@ Stop the browser session and ask before:
 - Sending any message or application.
 - Changing the source class or platform-specific behavior.
 
-A passive header `Sign in` link is not a stop condition by itself. Stop when the current page requires authentication, identity verification, payment, applying, or sending before continuing.
+A passive header `Sign in` link is not a stop condition by itself. Stop when the current page requires authentication, identity verification, payment, application submission, or sending before continuing.
 
 ## Browser/Profile Safety Harness
 

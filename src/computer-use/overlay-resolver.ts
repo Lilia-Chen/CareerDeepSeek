@@ -74,7 +74,7 @@ const COOKIE_NESTED_FLOW_PATTERNS = [
 
 const CLOSE_PATTERNS = [
   /^x$/i,
-  /^×$/i,
+  /^×$/,
   /\b(close|dismiss|no thanks|not now)\b/i,
 ]
 
@@ -136,8 +136,18 @@ export function planOverlayDismissal(state: unknown): OverlayDismissalDecision |
 }
 
 function stateText(state: VisualState): string {
-  const elementText = state.elements.map(element => element.text).join('\n')
+  const elementText = state.elements
+    .filter(isActionableElement)
+    .map(element => element.text)
+    .join('\n')
   return `${state.visibleText}\n${elementText}`
+}
+
+function isActionableElement(element: VisualElement): boolean {
+  const role = element.role.toLowerCase()
+  return Boolean(element.href)
+    || Boolean(element.intent)
+    || ['button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'menuitem', 'tab'].includes(role)
 }
 
 function looksLikeCookieOverlay(text: string): boolean {

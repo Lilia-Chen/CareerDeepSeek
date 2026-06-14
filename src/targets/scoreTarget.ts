@@ -1,4 +1,5 @@
 import type { DecisionThreshold, Rubric, RubricDimension, ScoredTarget, ScoreContribution, TargetInput } from '../types.js'
+import { assessTargetResearchQuality, capDecisionByResearchQuality } from './researchQuality.js'
 
 export function scoreTarget(target: TargetInput, rubric: Rubric): ScoredTarget {
   assertTargetShape(target)
@@ -22,7 +23,9 @@ export function scoreTarget(target: TargetInput, rubric: Rubric): ScoredTarget {
   })
 
   const total = clamp(round(contributions.reduce((sum, item) => sum + item.points, 0)), 0, rubric.maxScore)
-  const decision = hardBlockers.length > 0 ? 'reject' : decisionForScore(total, rubric.decisionThresholds)
+  const scoreDecision = decisionForScore(total, rubric.decisionThresholds)
+  const researchQuality = assessTargetResearchQuality(target, rubric)
+  const decision = hardBlockers.length > 0 ? 'reject' : capDecisionByResearchQuality(scoreDecision, researchQuality)
 
   return {
     id: target.id,
@@ -34,8 +37,9 @@ export function scoreTarget(target: TargetInput, rubric: Rubric): ScoredTarget {
     contributions,
     evidence: target.evidence ?? [],
     riskFlags: target.riskFlags ?? [],
-    missingInfo: target.missingInfo ?? [],
+    missingInfo: uniqueStrings([...(target.missingInfo ?? []), ...researchQuality.missingInfo]),
     nextAction: target.nextAction ?? null,
+    researchQuality,
   }
 }
 
@@ -86,4 +90,8 @@ function clamp(value: number, min: number, max: number): number {
 
 function round(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim()))]
 }

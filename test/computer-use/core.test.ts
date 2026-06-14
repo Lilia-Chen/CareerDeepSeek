@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 import { buildPointerTrace } from '../../src/computer-use/pointer-trace.js'
-import { boundsIoU } from '../../src/computer-use/desktop-grounding.js'
 import { resolveComputerUseConfig } from '../../src/computer-use/config.js'
 
 // ---------------------------------------------------------------------------
@@ -96,45 +95,6 @@ describe('buildPointerTrace', () => {
 })
 
 // ---------------------------------------------------------------------------
-// boundsIoU — Intersection over Union
-// ---------------------------------------------------------------------------
-
-describe('boundsIoU', () => {
-  it('returns 1 for identical bounds', () => {
-    const a = { x: 0, y: 0, width: 100, height: 100 }
-    assert.equal(boundsIoU(a, a), 1)
-  })
-
-  it('returns 0 for completely separate bounds', () => {
-    const a = { x: 0, y: 0, width: 100, height: 100 }
-    const b = { x: 200, y: 200, width: 100, height: 100 }
-    assert.equal(boundsIoU(a, b), 0)
-  })
-
-  it('returns ~0.5 for half-overlapping bounds', () => {
-    const a = { x: 0, y: 0, width: 100, height: 100 }
-    const b = { x: 50, y: 0, width: 100, height: 100 }
-    const iou = boundsIoU(a, b)
-    // Intersection area = 50*100 = 5000
-    // Union area = 10000 + 10000 - 5000 = 15000
-    // IoU = 5000/15000 = 0.333...
-    assert.ok(iou > 0.3 && iou < 0.35, `expected ~0.333, got ${iou}`)
-  })
-
-  it('handles bounds with zero dimensions', () => {
-    const a = { x: 0, y: 0, width: 0, height: 100 }
-    const b = { x: 0, y: 0, width: 100, height: 100 }
-    assert.equal(boundsIoU(a, b), 0)
-  })
-
-  it('handles negative intersection gracefully', () => {
-    const a = { x: 0, y: 0, width: 100, height: 100 }
-    const b = { x: 150, y: 150, width: 100, height: 100 }
-    assert.equal(boundsIoU(a, b), 0)
-  })
-})
-
-// ---------------------------------------------------------------------------
 // config — environment variable resolution
 // ---------------------------------------------------------------------------
 
@@ -203,6 +163,26 @@ describe('chrome DOM observer script', () => {
     )
   })
 
+  it('collects viewport-visible text instead of whole-page body text', async () => {
+    const source = await readFile(new URL('../../src/computer-use/chrome-dom.ts', import.meta.url), 'utf8')
+
+    assert.doesNotMatch(
+      source,
+      /body&&doc\.body\.innerText|documentElement&&doc\.documentElement\.innerText/,
+      'Chrome visibleText must not be populated from whole-page innerText because offscreen forms can trigger false stop signals',
+    )
+    assert.match(
+      source,
+      /createTreeWalker/,
+      'Chrome visibleText should be collected from visible text nodes',
+    )
+    assert.match(
+      source,
+      /getClientRects/,
+      'Chrome visibleText should use text-node rects to keep text viewport-bounded',
+    )
+  })
+
   it('does not emit login_required from passive header login text alone', async () => {
     const source = await readFile(new URL('../../src/computer-use/chrome-dom.ts', import.meta.url), 'utf8')
 
@@ -264,23 +244,23 @@ describe('discovery task script', () => {
 
     assert.match(
       source,
-      /navigateToUrl\(adapter, config, 'google\.com'\)/,
+      /navigateViaObservedAddressBar\(driver, 'google\.com'\)/,
       'discovery should first navigate to Google through the visible address bar',
     )
     assert.match(
       source,
-      /captureAXTree\(config, \{ pid: window\.ownerPid/,
-      'discovery should locate Chrome address-bar bounds from AX observation',
+      /driver\.recognizeLegacy\(\{\s*kind:\s*'text_input',\s*name:\s*\/address and search bar\/i/,
+      'discovery should recognize the Chrome address bar semantically',
     )
     assert.match(
       source,
-      /address and search bar/i,
-      'discovery should identify the Chrome address bar semantically, not by fixed coordinates',
+      /promoteChromeCandidate\(addressBar\)/,
+      'discovery should promote the address-bar recognition before clicking',
     )
     assert.match(
       source,
-      /elementId:\s*'chrome-address-bar'/,
-      'discovery should click the observed Chrome address-bar target before typing startup URLs',
+      /driver\.clickLegacy\(promoteChromeCandidate\(addressBar\)\)/,
+      'discovery should click the promoted address-bar candidate before typing startup URLs',
     )
     assert.doesNotMatch(
       source,
@@ -289,13 +269,13 @@ describe('discovery task script', () => {
     )
     assert.match(
       source,
-      /findGoogleSearchBox/,
-      'discovery should locate the Google search box from observed page elements',
+      /searchGoogle\(driver, query\)/,
+      'discovery should locate and submit the Google search box through the driver',
     )
     assert.match(
       source,
-      /const center = \(searchBox\.center \|\| searchBox\.box\)/,
-      'discovery should click the observed search-box center before typing',
+      /promoteChromeCandidate\(searchBox\)/,
+      'discovery should promote the recognized Google search box before clicking',
     )
   })
 
@@ -314,13 +294,8 @@ describe('discovery task script', () => {
 
     assert.match(
       source,
-      /assertUrlIsGoogleSearch/,
+      /assertGoogleSearch/,
       'discovery must fail if address-bar navigation did not reach Google Search',
-    )
-    assert.match(
-      source,
-      /submitAddressBar/,
-      'discovery should retry Enter until the observed address bar submits',
     )
   })
 
@@ -329,23 +304,8 @@ describe('discovery task script', () => {
 
     assert.match(
       source,
-      /ensureChromeReadyAtTaskStart\(config\)/,
-      'discovery should initialize Chrome context before address-bar or page actions',
-    )
-    assert.match(
-      source,
-      /captureScreenshot\(config, 'task_start_before_chrome_context'\)/,
-      'discovery should capture the desktop before entering browser work',
-    )
-    assert.match(
-      source,
-      /captureScreenshot\(config, 'task_start_chrome_frontmost'\)/,
-      'discovery should capture proof after Chrome is confirmed frontmost',
-    )
-    assert.match(
-      source,
-      /executeOpenApp\(config, 'Google Chrome'\)/,
-      'discovery may open or activate Chrome at the OS layer when the task starts',
+      /new MacOSChromeDriver/,
+      'discovery should use the macOS Chrome driver as its only real browser control entry',
     )
     assert.match(
       source,
@@ -371,13 +331,13 @@ describe('computer-use smoke script', () => {
 
     assert.match(
       source,
-      /assertObservedUrlMatchesTarget/,
+      /normalizeOrigin/,
       'smoke must fail if visible observation did not reach the requested URL',
     )
     assert.match(
       source,
-      /captureAXTree\(config, \{ pid: window\.ownerPid/,
-      'smoke should locate Chrome address-bar bounds from AX observation',
+      /driver\.recognizeLegacy\(\{\s*kind:\s*'text_input',\s*name:\s*\/address and search bar\/i/,
+      'smoke should recognize the Chrome address bar before clicking',
     )
     assert.doesNotMatch(
       source,
@@ -391,23 +351,8 @@ describe('computer-use smoke script', () => {
 
     assert.match(
       source,
-      /ensureChromeReadyAtTaskStart\(config\)/,
-      'smoke should initialize Chrome context before address-bar actions',
-    )
-    assert.match(
-      source,
-      /captureScreenshot\(config, 'task_start_before_chrome_context'\)/,
-      'smoke should capture the desktop before entering browser work',
-    )
-    assert.match(
-      source,
-      /captureScreenshot\(config, 'task_start_chrome_frontmost'\)/,
-      'smoke should capture proof after Chrome is confirmed frontmost',
-    )
-    assert.match(
-      source,
-      /executeOpenApp\(config, 'Google Chrome'\)/,
-      'smoke may open or activate Chrome at the OS layer when the task starts',
+      /new MacOSChromeDriver/,
+      'smoke should use the macOS Chrome driver as its only real browser control entry',
     )
     assert.match(
       source,
@@ -417,290 +362,7 @@ describe('computer-use smoke script', () => {
   })
 })
 
-describe('company discovery script', () => {
-  it('deep-dives by clicking observed search-result links, not by typing hrefs into the address bar', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /visitByClick\(adapter, link,/,
-      'company deep-dive must follow the observed result link with a coordinate-grounded click',
-    )
-    assert.doesNotMatch(
-      source,
-      /visitCompanySite/,
-      'company deep-dive must not call a URL-navigation helper for result links',
-    )
-    assert.doesNotMatch(
-      source,
-      /navigateToUrl\(adapter, config, link\.href\)|navigateToUrl\(adapter, config, canonicalHref\)/,
-      'company deep-dive must not retype observed result hrefs through the address bar',
-    )
-  })
-
-  it('scrolls down through Google results before collecting links', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /deltaY:\s*-\d+/,
-      'scrolling down the Google results page uses negative deltaY in this CGEvent runtime',
-    )
-    assert.match(
-      source,
-      /collectSearchResultsWithScroll/,
-      'company discovery should observe and scroll repeatedly until enough search-result links are visible',
-    )
-  })
-
-  it('writes structured action trace entries with before and after observations', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(source, /recordStep/, 'company discovery should record structured trace steps')
-    assert.match(source, /before:/, 'trace entries should include the before observation')
-    assert.match(source, /after:/, 'trace entries should include the after observation')
-    assert.match(source, /action:/, 'trace entries should include the executed action')
-    assert.match(source, /decision:/, 'trace entries should include the decision rationale')
-    assert.match(source, /durationMs:/, 'trace entries should include elapsed time')
-  })
-
-  it('returns from result pages opened in a new Chrome tab without URL re-entry', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /readChromeTabContext/,
-      'company discovery should observe Chrome tab context before clicking a search result',
-    )
-    assert.match(
-      source,
-      /if \(!window\.tabs\.length\)/,
-      'Chrome tab context reading must handle an empty Chrome window without assuming activeTab exists',
-    )
-    assert.match(
-      source,
-      /tabCount\s*>\s*expected\.tabCount/,
-      'company discovery should detect result links that opened a new tab',
-    )
-    assert.match(
-      source,
-      /isGoogleSearchUrl\(currentTab\.url\)/,
-      'company discovery should not close tabs when the active tab is already back on Google Search',
-    )
-    assert.match(
-      source,
-      /key:\s*'w',\s*modifiers:\s*\['command'\]/,
-      'company discovery should close the newly opened tab through CGEvent Cmd+W',
-    )
-    assert.match(
-      source,
-      /focusOpenedBackgroundTab/,
-      'company discovery should handle result links that open a background tab',
-    )
-    assert.match(
-      source,
-      /key:\s*'right',\s*modifiers:\s*\['command',\s*'option'\]/,
-      'company discovery should switch to a newly opened background tab through CGEvent keyboard input',
-    )
-    assert.doesNotMatch(
-      source,
-      /navigateToUrl\(adapter, config, .*return/i,
-      'company discovery must not recover from result pages by typing URLs into the address bar',
-    )
-  })
-
-  it('uses address-bar navigation only when the current page is not already Google', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /function isGooglePageUrl/,
-      'company discovery should classify whether the current observed page is already a Google page',
-    )
-    assert.match(
-      source,
-      /if \(!isGooglePageUrl\(googleState\.url\)\)/,
-      'company discovery should gate startup address-bar navigation behind the current page context',
-    )
-    assert.match(
-      source,
-      /google_context_reuse/,
-      'company discovery should trace when it reuses the observed Google page instead of typing into the address bar',
-    )
-  })
-
-  it('does not close tabs or fail return logic on unreliable about:statusindicator observations', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /isObservationUrlUnreliable/,
-      'company discovery should identify Chrome status-indicator observations as unreliable page URLs',
-    )
-    assert.match(
-      source,
-      /about:statusindicator/,
-      'company discovery should explicitly treat about:statusindicator as an unreliable observation URL',
-    )
-    assert.match(
-      source,
-      /patchStateUrlFromTab/,
-      'company discovery should patch unreliable observed URLs from direct Chrome tab context',
-    )
-    assert.match(
-      source,
-      /canCloseNewTabForReturn/,
-      'company discovery should gate Cmd+W recovery behind a deterministic close-safety check',
-    )
-    assert.match(
-      source,
-      /!isObservationUrlUnreliable\(currentTab\.url\)/,
-      'company discovery must not close a tab when the current tab URL is an unreliable status page',
-    )
-    assert.match(
-      source,
-      /currentTab\.tabCount\s*>\s*1/,
-      'company discovery must never close the last remaining Chrome tab during return recovery',
-    )
-    assert.match(
-      source,
-      /isGoogleSearchUrl\(expected\.url\)/,
-      'company discovery should only close a newly opened result tab when the expected tab context is Google Search',
-    )
-    assert.match(
-      source,
-      /const afterTab = await readChromeTabContext\(\)[\s\S]*patchStateUrlFromTab\(after, afterTab\)/,
-      'overlay dismissal must patch unreliable post-dismissal observations from direct Chrome tab context',
-    )
-  })
-
-  it('writes trace output even when the real desktop run fails mid-session', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(source, /writeTraceFile/, 'company discovery should centralize trace persistence')
-    assert.match(source, /finally\s*\{[\s\S]*writeTraceFile/, 'company discovery should persist trace in a finally block')
-  })
-
-  it('filters Google text-fragment sublinks such as read-more from company candidates', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /url\.hash\s*=\s*''/,
-      'company discovery should dedupe text-fragment hrefs against the primary result URL',
-    )
-    assert.match(
-      source,
-      /'read more'/,
-      'company discovery should reject Google read-more sublinks as candidates',
-    )
-  })
-
-  it('dedupes search candidates by company domain and rejects CTA or job-board links', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /candidateDomainKey/,
-      'company discovery should dedupe Google result candidates by domain',
-    )
-    assert.match(
-      source,
-      /NON_CANDIDATE_LINK_TEXTS/,
-      'company discovery should reject generic CTA sitelinks such as demo, contact, and about links',
-    )
-    assert.match(
-      source,
-      /BLOCKED_CANDIDATE_HOSTS/,
-      'company discovery should reject job boards and non-company aggregation hosts',
-    )
-  })
-
-  it('filters listicle and directory hosts from direct company deep dives', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    for (const host of [
-      'wellows.com',
-      'startupnetworks.co.uk',
-      'entrepreneurloop.com',
-      'aimultiple.com',
-      'cbinsights.com',
-    ]) {
-      assert.match(
-        source,
-        new RegExp(`'${host.replace(/\./g, '\\.')}'`),
-        `company discovery should not treat ${host} listicle/directory pages as company targets`,
-      )
-    }
-  })
-
-  it('filters sponsored Google result links before collecting company candidates', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /collapseSponsoredResults/,
-      'company discovery should collapse visible sponsored Google results before collecting candidates',
-    )
-    assert.match(
-      source,
-      /phase:\s*'sponsored_results_collapse'/,
-      'sponsored result collapse should be visible in the trace',
-    )
-    assert.match(
-      source,
-      /googleSponsoredResultRange/,
-      'company discovery should identify the visible sponsored-results block on Google Search',
-    )
-    assert.match(
-      source,
-      /Hide sponsored results/,
-      'company discovery should use the observed end of the sponsored block as a deterministic boundary',
-    )
-    assert.match(
-      source,
-      /isGoogleSponsoredResultLink/,
-      'company discovery should filter sponsored links before planning deep dives',
-    )
-  })
-
-  it('uses a deterministic overlay gate before extracting deep-dive evidence', async () => {
-    const source = await readFile(new URL('../../scripts/run-company-discovery.ts', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /detectBlockingStopSignal/,
-      'company discovery should hard-stop high-risk states through code, not through model judgment',
-    )
-    assert.match(
-      source,
-      /planOverlayDismissal/,
-      'company discovery should use a deterministic overlay resolver before evidence extraction',
-    )
-    assert.match(
-      source,
-      /phase:\s*'overlay_dismissal'/,
-      'overlay dismissal must be visible in the structured trace',
-    )
-    assert.match(
-      source,
-      /phase:\s*'blocking_stop_signal'/,
-      'login, CAPTCHA, payment, apply, or send states must be marked in the structured trace',
-    )
-    assert.match(
-      source,
-      /status:\s*'running'\s*\|\s*'completed'\s*\|\s*'failed'\s*\|\s*'stopped'/,
-      'high-risk blocking states should stop the session without marking the run as a failed implementation error',
-    )
-    assert.doesNotMatch(
-      source,
-      /planNextVisualAction\(.*overlay|overlay.*planNextVisualAction/s,
-      'overlay safety decisions must not be delegated to the LLM visual action planner',
-    )
-  })
-})
-
-describe('OpenCode browser-use skill', () => {
+describe('opencode browser-use skill', () => {
   it('documents the computer-use workflow boundary and LinkedIn page workflow', async () => {
     const source = await readFile(new URL('../../.opencode/skills/browser-use-policy/SKILL.md', import.meta.url), 'utf8')
 
@@ -739,6 +401,16 @@ describe('OpenCode browser-use skill', () => {
       /CAPTCHA|payment|apply|send/i,
       'skill must include hard stop conditions',
     )
+    assert.match(
+      source,
+      /semantic research controller/i,
+      'skill must place internet research judgment in the agent controller, not in low-level automation rules',
+    )
+    assert.match(
+      source,
+      /discovery source/i,
+      'skill must preserve rankings, directories, and analysis pages as company-discovery sources instead of treating every non-company page as irrelevant',
+    )
   })
 
   it('documents duplicate-label disambiguation and browser-history recovery', async () => {
@@ -773,6 +445,153 @@ describe('OpenCode browser-use skill', () => {
       source,
       /observed exact recent query/,
       'LinkedIn workflow should allow selecting an observed exact recent search query from the page search UI',
+    )
+  })
+})
+
+describe('opencode company research workflow skill', () => {
+  it('documents evidence coverage, confidence caps, and completion criteria', async () => {
+    const source = await readFile(new URL('../../.opencode/skills/company-research-workflow/SKILL.md', import.meta.url), 'utf8')
+
+    assert.match(
+      source,
+      /Score is not confidence/,
+      'company research skill must separate numeric fit from research confidence',
+    )
+    assert.match(
+      source,
+      /evidence matrix/i,
+      'company research skill must force rubric-dimension evidence tracking',
+    )
+    assert.match(
+      source,
+      /10-15 candidates/,
+      'company research skill must require a candidate pool before deep dive',
+    )
+    assert.match(
+      source,
+      /Shortlist 5-8/,
+      'company research skill must define a shortlist size',
+    )
+    assert.match(
+      source,
+      /Decision caps/,
+      'company research skill must define confidence-based decision caps',
+    )
+    assert.match(
+      source,
+      /Do not stop as complete/,
+      'company research skill must prevent shallow completion',
+    )
+    assert.match(
+      source,
+      /Iteration Loop/,
+      'company research skill must require rerun-audit-patch cycles',
+    )
+    assert.match(
+      source,
+      /Quality Audit/,
+      'company research skill must define a final report quality audit',
+    )
+    assert.match(
+      source,
+      /Company Completion Gate/,
+      'company research skill must define when an individual company review is complete',
+    )
+    assert.match(
+      source,
+      /no obvious, low-cost, decision-changing source path left untried/,
+      'company completion must require exhausting obvious decision-changing source paths',
+    )
+    assert.match(
+      source,
+      /direct company surface[\s\S]*hiring surface[\s\S]*LinkedIn company\/jobs\/people surface[\s\S]*technical evidence surface[\s\S]*independent source/,
+      'company completion must enumerate required source classes',
+    )
+    assert.match(
+      source,
+      /open official site[\s\S]*open careers[\s\S]*inspect LinkedIn jobs[\s\S]*inspect LinkedIn people[\s\S]*open GitHub/,
+      'company completion must reject next actions that merely open obvious evidence sources',
+    )
+    assert.match(
+      source,
+      /Search Context Invariant/,
+      'company research skill must require search-surface classification before typing a new query',
+    )
+    assert.match(
+      source,
+      /Google discovery query must be typed into an observed Google page search box/,
+      'company research skill must prevent Google discovery queries from drifting into another site search box',
+    )
+    assert.match(
+      source,
+      /Do not type a Google discovery query into the LinkedIn top search box/,
+      'company research skill must document the observed LinkedIn-search drift failure mode',
+    )
+    assert.match(
+      source,
+      /One Back is not proof/,
+      'company research skill must require observation-based verification after browser history recovery',
+    )
+    assert.match(
+      source,
+      /search_submission_mismatch/,
+      'company research skill must require verification that a submitted query actually changed the result page',
+    )
+    assert.match(
+      source,
+      /rank matches by source value before click/,
+      'company research skill must prevent broad company-name matches from outranking direct sources',
+    )
+    assert.match(
+      source,
+      /Read more[\s\S]*Show more[\s\S]*Learn more[\s\S]*specific role title or JD page/,
+      'company research skill must prevent generic Google expansion links from replacing concrete source entries',
+    )
+    assert.match(
+      source,
+      /job-list page/,
+      'company research skill must not count ATS list pages as role-level evidence when a specific JD is needed',
+    )
+    assert.match(
+      source,
+      /specific JD/,
+      'company research skill must require opening a specific job description when role evidence is still missing',
+    )
+    assert.match(
+      source,
+      /not satisfied.*goal complete|goal complete.*not satisfied/s,
+      'company research skill must prevent premature completion when the researcher is still unsatisfied',
+    )
+    assert.match(
+      source,
+      /homepage-only company gets `priority_target`/,
+      'company research skill must include the observed homepage-only failure mode',
+    )
+  })
+
+  it('documents company research completion in the collection workflow', async () => {
+    const source = await readFile(new URL('../../docs/information-collection-workflow.md', import.meta.url), 'utf8')
+
+    assert.match(
+      source,
+      /Company Research Completion/,
+      'collection workflow must reference company research completion criteria',
+    )
+    assert.match(
+      source,
+      /researchQuality\.confidence/,
+      'collection workflow must require confidence separate from score',
+    )
+    assert.match(
+      source,
+      /Medium confidence caps/,
+      'collection workflow must document confidence caps',
+    )
+    assert.match(
+      source,
+      /quality audit/i,
+      'collection workflow must require quality audits between research passes',
     )
   })
 })
@@ -853,7 +672,7 @@ describe('computer-use action API boundary', () => {
     const sources = await Promise.all([
       readFile(new URL('../../src/types.ts', import.meta.url), 'utf8'),
       readFile(new URL('../../src/automation/actionSpace.ts', import.meta.url), 'utf8'),
-      readFile(new URL('../../src/computer-use/macos-adapter.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../../src/computer-use/macos-chrome-driver/driver.ts', import.meta.url), 'utf8'),
       readFile(new URL('../../src/computer-use/index.ts', import.meta.url), 'utf8'),
     ])
 

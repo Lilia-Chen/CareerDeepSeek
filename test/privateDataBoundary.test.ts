@@ -7,8 +7,69 @@ import { it } from 'vitest'
 import { resolvePrivateDataDir } from '../src/privateData/dataDir.js'
 import { writeTargetRecord } from '../src/targets/writeTargetRecord.js'
 import { writeReviewQueueItem } from '../src/collection/writeReviewQueue.js'
+import type { TargetResearchQualityAssessment } from '../src/types.js'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
+
+const researchQuality: TargetResearchQualityAssessment = {
+  sourceCount: 4,
+  sourceTypes: ['company_site', 'public_careers', 'linkedin_company', 'engineering_blog'],
+  evidenceCoverage: [
+    {
+      dimensionId: 'stage_hiring_pressure',
+      status: 'confirmed',
+      sourceCount: 2,
+      note: 'Synthetic source coverage.',
+    },
+    {
+      dimensionId: 'team_composition',
+      status: 'confirmed',
+      sourceCount: 2,
+      note: 'Synthetic source coverage.',
+    },
+    {
+      dimensionId: 'technical_closure',
+      status: 'confirmed',
+      sourceCount: 2,
+      note: 'Synthetic source coverage.',
+    },
+    {
+      dimensionId: 'domain_alignment',
+      status: 'confirmed',
+      sourceCount: 2,
+      note: 'Synthetic source coverage.',
+    },
+    {
+      dimensionId: 'culture_ownership_signal',
+      status: 'partial',
+      sourceCount: 1,
+      note: 'Synthetic source coverage.',
+    },
+    {
+      dimensionId: 'right_to_work_location',
+      status: 'partial',
+      sourceCount: 1,
+      note: 'Synthetic source coverage.',
+    },
+    {
+      dimensionId: 'reachability_signal',
+      status: 'partial',
+      sourceCount: 1,
+      note: 'Synthetic source coverage.',
+    },
+  ],
+  confidence: 'high',
+  stopReason: null,
+  coverageSummary: {
+    confirmedDimensions: 4,
+    partialDimensions: 3,
+    unknownDimensions: 0,
+    blockedDimensions: 0,
+    criticalGaps: [],
+  },
+  decisionCap: null,
+  missingInfo: [],
+}
 
 it('rejects private data directories inside the public repository', async () => {
   const inRepoDataDir = join(repoRoot, 'data')
@@ -32,6 +93,7 @@ it('rejects private data directories inside the public repository', async () => 
           riskFlags: [],
           missingInfo: [],
           nextAction: null,
+          researchQuality,
         },
         { dataDir: inRepoDataDir },
       ),

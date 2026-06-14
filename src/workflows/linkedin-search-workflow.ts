@@ -3,7 +3,7 @@
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
-import { MacOSComputerUseAdapter } from '../computer-use/macos-adapter.js'
+import { MacOSChromeDriver, promoteChromeCandidate } from '../computer-use/index.js'
 import type { VisualAction, VisualElement, VisualState } from '../types.js'
 
 const HARD_STOP_SIGNALS = new Set([
@@ -107,18 +107,20 @@ export async function runLinkedInSearchExperiment(params: {
   query: string
   sessionId?: string
 }): Promise<{ status: string, trace: LinkedInSearchTraceStep[], finalState: WorkflowState | null }> {
-  const adapter = new MacOSComputerUseAdapter({
+  const driver = new MacOSChromeDriver({
     sessionId: params.sessionId ?? `linkedin-${Date.now()}`,
     foregroundPolicy: 'auto_focus_chrome',
   })
   const trace: LinkedInSearchTraceStep[] = []
 
-  let state = await adapter.observe() as WorkflowState
+  const observation = await driver.observeLegacy()
+  let state = workflowStateFromChromeObservation(observation)
   for (let i = 0; i < 8; i++) {
     const decision = decideNextLinkedInSearchAction({ state, query: params.query })
 
     if (decision.kind === 'observe') {
-      const after = await adapter.observe() as WorkflowState
+      const afterObservation = await driver.observeLegacy()
+      const after = workflowStateFromChromeObservation(afterObservation)
       trace.push({
         phase: 'observe',
         decision: decision.kind,
@@ -131,22 +133,15 @@ export async function runLinkedInSearchExperiment(params: {
     }
 
     if (decision.kind === 'action') {
-      await adapter.act(decision.action)
-      const afterClick = await adapter.observe() as WorkflowState
-      await adapter.act({
-        type: 'type',
-        text: params.query,
-        reason: 'Type the LinkedIn search query into the focused page search box.',
-        expectedChange: 'The query appears in the LinkedIn page search field.',
+      const searchBox = await driver.recognizeLegacy({
+        kind: 'text_input',
+        name: /^search$/i,
       })
-      await adapter.act({
-        type: 'press',
-        key: 'enter',
-        reason: 'Submit the LinkedIn page search.',
-        expectedChange: 'LinkedIn opens search results for the typed query.',
-      })
-      await adapter.act({ type: 'wait', durationMs: 2500 })
-      const after = await adapter.observe() as WorkflowState
+      await driver.clickLegacy(promoteChromeCandidate(searchBox))
+      await driver.typeText(params.query)
+      await driver.pressKey('enter')
+      await wait(2500)
+      const after = workflowStateFromChromeObservation(await driver.observeLegacy())
       trace.push({
         phase: 'linkedin_search_submit',
         decision: decision.kind,
@@ -155,7 +150,6 @@ export async function runLinkedInSearchExperiment(params: {
         after: summarizeState(after),
         action: summarizeAction(decision.action),
       })
-      state = afterClick
       state = after
       continue
     }
@@ -170,6 +164,45 @@ export async function runLinkedInSearchExperiment(params: {
   }
 
   return { status: 'max_steps', trace, finalState: state }
+}
+
+function workflowStateFromChromeObservation(
+  observation: Awaited<ReturnType<MacOSChromeDriver['observeLegacy']>>,
+): WorkflowState {
+  return {
+    sessionId: observation.sessionId,
+    step: observation.step,
+    url: observation.chromeContext.activeTabUrl ?? 'about:blank',
+    title: observation.chromeContext.activeTabTitle ?? 'Chrome',
+    sourceType: 'company_site',
+    observedAt: observation.observedAt,
+    screenshot: {
+      id: observation.capture.snapshotId,
+      width: observation.capture.screenshot.width ?? 1,
+      height: observation.capture.screenshot.height ?? 1,
+    },
+    visibleText: observation.visibleText,
+    elements: [],
+    signals: observation.signals,
+    evidence: [],
+    extracted: {},
+    chrome: {
+      isFrontmost: observation.chromeContext.isFrontmost,
+      activeTabUrl: observation.chromeContext.activeTabUrl,
+      domAvailable: Boolean(observation.chromeDomObservation),
+    },
+    page: {
+      className: observation.chromeContext.activeTabUrl?.includes('/search/results/')
+        ? 'linkedin_search_results'
+        : observation.chromeContext.activeTabUrl?.includes('linkedin.com/feed')
+          ? 'linkedin_feed'
+          : 'unknown',
+    },
+  } as WorkflowState
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 export function summarizeState(state: StateLike): Record<string, unknown> {
@@ -189,7 +222,7 @@ export function summarizeState(state: StateLike): Record<string, unknown> {
 }
 
 function findLinkedInSearchBox(elements: VisualElement[]): VisualElement | null {
-  return elements.find(element => {
+  return elements.find((element) => {
     const text = element.text.trim().toLowerCase()
     const role = element.role.toLowerCase()
     return text === 'search'
@@ -241,7 +274,7 @@ async function main(): Promise<void> {
   const query = process.argv.slice(2).join(' ').trim()
     || 'AI agent infrastructure companies hiring'
   const result = await runLinkedInSearchExperiment({ query })
-  console.log(JSON.stringify(result, null, 2))
+  console.info(JSON.stringify(result, null, 2))
 }
 
 if (fileURLToPath(import.meta.url) === process.argv[1]) {

@@ -10,10 +10,22 @@ CareerDeepSeek uses visible browser / computer-use only.
 Current workflow mode:
 
 - Treat yourself as the workflow controller.
+- For company or team target research, also load `company-research-workflow`. This policy controls browser safety and visible actions; the research workflow controls evidence depth, source coverage, stop criteria, and final recommendations.
 - The computer-use adapter is an atomic observation/action tool, not the workflow.
+- Treat yourself as the semantic research controller for internet research. Computer-use can show what is visible and perform allowed clicks/typing/scrolling; it cannot decide whether a page is valuable, whether a source answers the research question, or which company deserves deeper work.
 - Every browser step must run `observe -> decide -> act -> observe`.
 - Do not invent tools at runtime.
 - Do not bypass computer-use with raw browser automation, Playwright, CDP, direct HTTP, or page-executed actions.
+
+Research workflow:
+
+- For company research, decide from visible page semantics before acting. Ask what the page contributes to the current objective: company discovery, company evidence, hiring evidence, reachability evidence, or nothing useful.
+- Do not reduce research to URL/title/domain if-else filtering. Rankings, directories, comparison articles, analyst posts, and tool libraries can be valuable discovery source pages even when they are not target companies.
+- A discovery source is not the scored target. Use it to extract candidate company names, context, and source evidence, then decide which companies need direct follow-up through their website, LinkedIn company page, careers page, engineering blog, GitHub org, or other approved visible sources.
+- Score and write records for companies or teams, not for articles, directories, ads, or job-board pages.
+- Job postings and careers pages are job signal sources. Use them to support hiring-pressure and domain-alignment evidence for a company; do not treat a freelance marketplace listing as a company target.
+- Before each click, record the semantic reason: why this visible link or control is useful now, what evidence is expected, and what would make the page a stop or reject.
+- Google sponsored results should be collapsed when the observed `Hide sponsored results` control is available. After that, evaluate organic results semantically instead of blindly clicking by rank.
 
 Two states must stay separate:
 
@@ -73,9 +85,11 @@ Forbidden:
 - Auto-like, comment, or follow.
 - Runtime tool creation or policy modification by the production agent.
 
-Stop if login, SSO, passkey, account-selection, CAPTCHA, security prompt, payment, checkout, external send/apply, or other high-risk continuation appears.
+Stop if login, SSO, passkey, account-selection, CAPTCHA, security prompt, payment, checkout, external send/apply, or other high-risk continuation is required before continuing.
 
 A normal header `Sign in` link is not enough to stop. Stop when the visible page is requiring authentication, verification, payment, applying, or sending before continuing.
+
+A job description page with a visible `Apply` button is still readable evidence. Record the role and hiring evidence, but do not click `Apply`, `Submit application`, upload files, or enter an application flow.
 
 If the page is hidden behind a popup, first decide whether it is dismissible:
 
@@ -99,4 +113,4 @@ Overlay workflow:
 1. Observe the current page and screenshot.
 2. If cookie consent blocks the page, click `Yes, I agree`, `Accept all cookies`, or equivalent observed agreement button.
 3. If a marketing modal blocks the page, click an observed close/dismiss/no-thanks control.
-4. If login, CAPTCHA, payment, checkout, apply, send-message, or account/security verification blocks the page, stop and record the reason.
+4. If login, CAPTCHA, payment, checkout, application submission, send-message, or account/security verification blocks the page, stop and record the reason.

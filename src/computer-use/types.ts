@@ -25,7 +25,9 @@ export interface DisplayDescriptor {
 
 export interface WindowDescriptor {
   id: string
+  windowNumber?: number
   appName: string
+  ownerBundleId?: string
   title: string | null
   bounds: Bounds
   ownerPid: number
@@ -35,6 +37,7 @@ export interface WindowDescriptor {
 
 export interface WindowObservation {
   frontmostAppName?: string
+  frontmostAppBundleId?: string
   frontmostWindowTitle?: string | null
   windows: WindowDescriptor[]
   observedAt: string
@@ -135,50 +138,6 @@ export interface BrowserPageContext {
   source: 'chrome_dom' | 'window_title' | 'unknown'
   domAvailable: boolean
   signals: string[]
-}
-
-// ---------------------------------------------------------------------------
-// Grounding — merged desktop target candidates
-// ---------------------------------------------------------------------------
-
-export type CandidateSource = 'chrome_dom' | 'ax' | 'vision' | 'raw'
-
-export interface DesktopTargetCandidate {
-  id: string
-  source: CandidateSource
-  appName: string
-  role: string
-  label: string
-  href?: string | null
-  bounds: Bounds
-  center: { x: number, y: number }
-  confidence: number
-  interactable: boolean
-  focused?: boolean
-  enabled?: boolean
-  axUid?: string
-  chromeDomId?: string
-}
-
-export interface GroundingStalenessFlags {
-  screenshot: boolean
-  ax: boolean
-  chromeSemantic: boolean
-  windows: boolean
-}
-
-export interface DesktopGroundingSnapshot {
-  snapshotId: string
-  capturedAt: string
-  foregroundApp: string
-  windows: WindowDescriptor[]
-  screenshot: ScreenshotArtifact
-  axSnapshot?: AXSnapshot
-  chromeContext: ChromeContext
-  pageContext: BrowserPageContext
-  chromeDomObservation?: ChromeDomObservation
-  targetCandidates: DesktopTargetCandidate[]
-  staleFlags: GroundingStalenessFlags
 }
 
 // ---------------------------------------------------------------------------

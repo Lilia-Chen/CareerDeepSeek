@@ -8,11 +8,13 @@ It must not become a raw scraper, crawler, hidden API client, CAPTCHA bypass too
 
 ```txt
 bounded browser session
-  -> adapter observe() ensures Chrome foreground
-  -> screenshot + windows + AX + read-only Chrome DOM observation
-  -> DesktopGroundingSnapshot
+  -> MacOSChromeDriver.observe() ensures Chrome foreground
+  -> Chrome window screenshot + capture contract + windows + AX + OCR + read-only Chrome DOM
+  -> MacOSChromeObservationSnapshot
   -> hardcoded browser safety gate
   -> low-risk overlay dismissal when needed
+  -> recognize(target) for the next known target
+  -> promoteChromeCandidate(recognition)
   -> coordinate-grounded CGEvent action
   -> observe/action/observe progress verification
   -> page observation
@@ -24,29 +26,28 @@ bounded browser session
 
 ## Required Tools
 
-### Computer-Use Adapter
+### macOS Chrome Driver
 
-The default adapter is `MacOSComputerUseAdapter` from `src/computer-use/`.
+The default Chrome control entry is `MacOSChromeDriver` from `src/computer-use/macos-chrome-driver/`.
 
 ```txt
-observe() -> VisualState-compatible observation
-act(action) -> ActionResult
+observe() -> MacOSChromeObservationSnapshot
+recognize(target) -> MacOSChromeRecognitionResult
+promoteChromeCandidate(recognition) -> MacOSChromeCandidateRef
+click(candidate) -> ActionResult
 ```
 
 `observe()` first ensures Google Chrome is frontmost, then captures:
 
-- screenshot PNG metadata through `screencapture -x`
-- visible windows through `CGWindowListCopyWindowInfo`
+- Chrome window screenshot and coordinate contract through `screencapture -l<windowid> -x -o`
+- visible windows, real window numbers, bundle ids, and foreground metadata through `CGWindowListCopyWindowInfo`
 - desktop accessibility nodes through `AXUIElement`
+- visible text through macOS Vision OCR
 - Chrome DOM semantics through read-only JXA `tab.execute()`
 
-The observation sources are merged into a `DesktopGroundingSnapshot`. Candidate source priority is:
+Observation answers what is currently visible. Recognition answers whether a known target is present and actionable. Action requires a promoted candidate, not a planner-supplied raw point.
 
-```txt
-chrome_dom > ax > vision > raw
-```
-
-`act(action)` executes:
+Driver actions execute:
 
 - `click` through Swift + Quartz `CGEvent` mouse movement and click
 - `type` through keyboard events; ASCII uses physical virtual key codes, non-ASCII keeps a Unicode fallback
@@ -56,9 +57,9 @@ chrome_dom > ax > vision > raw
 - `capture_screenshot`
 - `stop`
 
-At task startup and before every later observation, `observe()` must ensure Google Chrome is frontmost. If Chrome is not open, auto-focus mode may use OS-level app activation to open it. If another app is frontmost, auto-focus mode may activate Chrome. The adapter must recheck the window state and confirm a visible Chrome window is frontmost before returning observation.
+At task startup and before every later observation, `observe()` must ensure Google Chrome is frontmost. If Chrome is not open, auto-focus mode may use OS-level app activation to open it. If another app is frontmost, auto-focus mode may activate Chrome. The driver must recheck the window state and confirm a visible Chrome window is frontmost before returning observation.
 
-Before `click`, `type`, `press`, or `scroll`, `act()` must check the foreground app again. Default behavior is to reject input unless Google Chrome is frontmost. Real desktop workflows may explicitly opt into OS-level Chrome activation; after activation, the adapter must recheck that Chrome is frontmost before posting CGEvents.
+Before `click`, `type`, `press`, or `scroll`, the driver must check the foreground app again. Default behavior is to reject input unless Google Chrome is frontmost. Real desktop workflows may explicitly opt into OS-level Chrome activation; after activation, the driver must recheck that Chrome is frontmost before posting CGEvents.
 
 Two states must not be conflated. Desktop foreground state decides whether OS mouse and keyboard input can reach Chrome. Page-visible DOM state decides which observed page elements are action candidates. The workflow should fix desktop foreground through adapter guard before observation. Within a loaded page, hidden, covered, offscreen, or overlay-blocked DOM must not be clicked even if the read-only DOM observer can see it.
 
@@ -82,7 +83,9 @@ Cookie consent is treated as a low-risk browsing prerequisite. If the current ob
 
 Marketing overlays such as newsletter prompts, report download promos, demo promos, or modal popups may be closed only through an observed close/dismiss/no-thanks control. The workflow must not click the overlay's CTA, submit a form, enter an email address, download a report, request a demo, or sign up.
 
-Login, CAPTCHA, payment, checkout, account, identity, apply, and send-message states are not dismissible overlays. They are hard stop states. The workflow must record `blocking_stop_signal` in the trace and end the session with `stopped`, not ask the model to reason about whether it can continue.
+Login, CAPTCHA, payment, checkout, account, identity, application-submission, and send-message states are not dismissible overlays. They are hard stop states. The workflow must record `blocking_stop_signal` in the trace and end the session with `stopped`, not ask the model to reason about whether it can continue.
+
+A job description page that contains an `Apply` button is not itself blocked. The workflow may read visible role, location, department, and technical evidence from the JD. It must stop before clicking `Apply`, `Submit application`, uploading files, or entering any application form.
 
 ### Read-Only Chrome DOM Observer
 
@@ -107,6 +110,60 @@ The injected script must not:
 - mutate DOM
 - attach CDP/debugger
 - use hidden APIs
+
+### Semantic Research Controller
+
+Computer-use is an observation/action runtime, not the company research workflow.
+During internet research, the agent running the workflow must act as the semantic research controller.
+
+The controller decides, from visible page content and the current objective, whether the current page is useful and what kind of evidence it can produce:
+
+- `discovery_source` - ranking pages, comparison articles, analyst posts, directories, tool libraries, or ecosystem pages that can reveal candidate companies and market context.
+- `company_candidate` - a company website, product page, LinkedIn company page, GitHub organization, engineering blog, or other direct company/team surface.
+- `job_signal_source` - a careers page, ATS page, LinkedIn Jobs result, or job description that supports hiring-pressure, domain-alignment, location, and team-evidence scoring.
+- `reachability_source` - pages that reveal founders, engineering leaders, recruiters, maintainers, community channels, events, or other contact paths.
+- `reject_source` - irrelevant pages, pure ads, freelance marketplaces, SEO filler with no extractable company evidence, blocked pages, or high-risk flows.
+
+These categories are research semantics, not raw automation rules. The workflow must not reject a page merely because it is not a company homepage. A ranking, directory, report, or blog post can be a high-value discovery source if it names relevant companies and explains why they matter. The scored target remains the company or team, not the article.
+
+Before a page click, the controller records why that observed link is useful now, what evidence it expects, and what would make the page a stop or reject. After observing the destination, the controller reassesses the page instead of continuing by rank. This is the core difference between company research and operating a fixed application UI.
+
+Google sponsored results are a deterministic UI concern. When the observed Google page exposes `Hide sponsored results`, the workflow may click it through computer-use before evaluating organic results. After that, organic results are judged semantically: company pages, discovery sources, and job-signal sources can all be useful, but for different reasons.
+
+### Company Research Completion
+
+Company research is goal-directed target hunting, not page-by-page browsing. A workflow run should maintain a candidate pool, a shortlist, and one evidence matrix per company.
+
+The company research skill lives at:
+
+```txt
+.opencode/skills/company-research-workflow/SKILL.md
+```
+
+The workflow must separate numeric fit from research confidence:
+
+- `score` estimates how well the company would fit if the current facts are true.
+- `researchQuality.confidence` estimates whether those facts are supported well enough to recommend action.
+
+The target rubric dimensions become the evidence matrix:
+
+```txt
+stage_hiring_pressure
+team_composition
+technical_closure
+domain_alignment
+culture_ownership_signal
+right_to_work_location
+reachability_signal
+```
+
+Each dimension is `confirmed`, `partial`, `unknown`, or `blocked`. A `priority_target` recommendation requires high confidence: normally at least four useful sources, at least three source classes, coverage for all rubric dimensions, no critical gap in hiring pressure, technical closure, domain alignment, or right-to-work/location, and a concrete next action.
+
+Medium confidence caps the final decision at `qualified_watch`. Low confidence caps the final decision at `research_more`. This prevents a high numeric score from turning a homepage-only or snippet-only observation into a final recommendation.
+
+The final user-facing output must be a research result: ranked companies, evidence coverage, source list, risks, missing information, and next action. Trace entries, screenshots, commands, and browser operation logs are supporting audit material, not the result itself.
+
+Company research must be iterative. Each pass ends with a quality audit. If the audit finds shallow evidence, missing direct sources, unclear stop reasons, or a report that cannot guide the next action, the workflow must identify the root cause and update the skill, scoring guard, or execution harness before rerunning the affected path. A task is not complete when the report itself says the researcher is still unsatisfied.
 
 ### LLM Adapter
 
@@ -331,21 +388,20 @@ The browser session must record a hard stop before:
 - Changing source class or platform-specific behavior.
 - Starting CDP or any browser-internal automation mode.
 
-Passive header links such as a normal `Sign in` button are not enough to stop the session. The stop condition applies when the visible page is asking the session to authenticate, verify identity, pay, apply, or send something before continuing.
+Passive header links such as a normal `Sign in` button are not enough to stop the session. A visible `Apply` button on a job description is also not enough to stop evidence extraction. The stop condition applies when the visible page is asking the session to authenticate, verify identity, pay, submit an application, or send something before continuing.
 
 ## Implemented Modules
 
 Default computer-use runtime:
 
 - `src/computer-use/config.ts` - environment-backed runtime configuration.
-- `src/computer-use/screenshot.ts` - `screencapture -x` screenshot capture.
+- `src/computer-use/macos-chrome-driver/` - Chrome observation, target recognition, candidate promotion, window capture contracts, OCR, and candidate-click action entry.
+- `src/computer-use/screenshot.ts` - generic `screencapture -x` screenshot helper retained for non-driver diagnostics.
 - `src/computer-use/window-observation.ts` - `CGWindowListCopyWindowInfo` window observation.
 - `src/computer-use/ax-tree.ts` - macOS AX tree capture.
 - `src/computer-use/chrome-dom.ts` - read-only JXA Chrome DOM observation.
-- `src/computer-use/desktop-grounding.ts` - source merging, de-duplication, and ranking.
 - `src/computer-use/overlay-resolver.ts` - deterministic overlay dismissal and high-risk browser stop detection.
 - `src/computer-use/macos-actions.ts` - Swift + Quartz CGEvent action executors.
-- `src/computer-use/macos-adapter.ts` - `MacOSComputerUseAdapter`.
 
 Automation and workflow:
 

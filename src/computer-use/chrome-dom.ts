@@ -67,7 +67,27 @@ function domObserverJs(): string {
   var sel='a[href],button,input,textarea,select,summary,[role],[aria-label],[aria-labelledby],[tabindex]:not([tabindex="-1"]),h1,h2,h3,h4,h5,h6,main,nav,header,footer,aside,article,section,form,label,img[alt]';
   var elements=[];
 
-  function collectText(doc){try{var t=(doc.body&&doc.body.innerText||doc.documentElement&&doc.documentElement.innerText||'').replace(/\\s+/g,' ').trim();if(t)texts.push(t);}catch(e){}}
+  function collectText(doc,win){try{
+    var root=doc.body||doc.documentElement;if(!root)return;
+    var walker=doc.createTreeWalker(root,4,null);var n;
+    while((n=walker.nextNode())){
+      var s=(n.nodeValue||'').replace(/\\s+/g,' ').trim();if(!s)continue;
+      var p=n.parentElement;if(!p)continue;
+      var style=win.getComputedStyle(p);
+      if(p.hidden||p.getAttribute('aria-hidden')==='true'||style.display==='none'||style.visibility==='hidden'||style.opacity==='0')continue;
+      var range=doc.createRange();range.selectNodeContents(n);
+      var rects=range.getClientRects();
+      for(var r=0;r<rects.length;r++){
+        var rect=rects[r];
+        if(rect.width<=0||rect.height<=0)continue;
+        if(rect.bottom<0||rect.right<0||rect.top>win.innerHeight||rect.left>win.innerWidth)continue;
+        var cx=Math.min(Math.max(rect.left+Math.min(rect.width/2,20),0),Math.max(win.innerWidth-1,0));
+        var cy=Math.min(Math.max(rect.top+Math.min(rect.height/2,10),0),Math.max(win.innerHeight-1,0));
+        var top=doc.elementFromPoint(cx,cy);
+        if(top&&(top===p||p.contains(top)||top.contains(p))){texts.push(s);break;}
+      }
+    }
+  }catch(e){}}
 
   function scanDocument(doc,win,ox,oy,prefix){
     try{
@@ -97,7 +117,7 @@ function domObserverJs(): string {
     }catch(e){}
   }
 
-  collectText(document);
+  collectText(document,window);
   scanDocument(document,window,0,0,'top');
   Array.from(document.querySelectorAll('iframe')).forEach(function(frame,fi){
     try{
@@ -107,7 +127,7 @@ function domObserverJs(): string {
       if(frame.hidden||frameStyle.display==='none'||frameStyle.visibility==='hidden'||frameStyle.opacity==='0')return;
       var fdoc=frame.contentDocument, fwin=frame.contentWindow;
       if(!fdoc||!fwin)return;
-      collectText(fdoc);
+      collectText(fdoc,fwin);
       scanDocument(fdoc,fwin,frameRect.x,frameRect.y,'f'+fi);
     }catch(e){}
   });

@@ -116,3 +116,13 @@ Runtime ID: `reachability_signal`
 ## Formula
 
 Weighted score = sum of each dimension's normalized score multiplied by its weight. A hard blocker forces `reject` regardless of numeric score.
+
+## Research Confidence
+
+The numeric score is not enough for a final recommendation. Runtime target scoring also evaluates `researchQuality`:
+
+- `high` confidence may support `priority_target`.
+- `medium` confidence caps the final decision at `qualified_watch`.
+- `low` confidence caps the final decision at `research_more`.
+
+Research confidence is based on useful source count, source-class diversity, rubric-dimension evidence coverage, and critical gaps. A company with strong domain fit but shallow evidence should remain `research_more` until the missing sources are checked.

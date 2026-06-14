@@ -8,10 +8,11 @@ CareerDeepSeek is a local-first eval and workflow repository with a bounded visi
 - Target hunting rubric: `docs/target-rubric.md` is the canonical human-edited rubric for company or team targets before a specific role exists.
 - Runtime rubric artifacts: `config/scoring-rubric.json` and `config/target-rubric.json` are generated from the Markdown rubrics.
 - Scoring engines: deterministic scoring from structured opportunity or target signals and the generated runtime rubrics.
-- Computer-use observation core: `src/computer-use/` captures screenshot, window metadata, AX tree, and read-only Chrome DOM semantics.
-- Desktop grounding core: screenshot, window, AX, and Chrome DOM observations are merged into `DesktopGroundingSnapshot` target candidates with source priority `chrome_dom > ax > vision > raw`.
+- macOS Chrome driver: `src/computer-use/macos-chrome-driver/` is the only bottom-level Chrome observation/action driver. It separates open-ended observation from target-specific recognition.
+- Computer-use observation core: the driver captures Chrome window screenshots, capture coordinate contracts, window metadata, AX tree, OCR text, and read-only Chrome DOM semantics.
+- Computer-use recognition core: target-specific `recognize(...)` calls locate a known target such as an address bar, search box, button, link, or visible text. Successful recognition can be promoted into a candidate ref for action.
 - Computer-use action core: `src/computer-use/macos-actions.ts` executes mouse, keyboard, key, and scroll actions through Swift + Quartz `CGEvent`.
-- Foreground context guard: `MacOSComputerUseAdapter.observe()` and `MacOSComputerUseAdapter.act()` ensure Google Chrome is open and frontmost before observation or input. The default policy rejects when another app is frontmost; `auto_focus_chrome` may use OS-level app activation and must recheck before continuing.
+- Foreground context guard: `MacOSChromeDriver.observe()`, `recognize()`, and action methods ensure Google Chrome is open and frontmost before observation or input. The default policy rejects when another app is frontmost; `auto_focus_chrome` may use OS-level app activation and must recheck before continuing.
 - Browser safety gate: deterministic code detects high-risk browser states and low-risk blocking overlays before evidence extraction. Cookie consent and marketing overlays may be dismissed through observed CGEvent clicks. Login, CAPTCHA, payment, checkout, apply, and send-message states produce hard stops.
 - URL navigation is performed through the visible Chrome address bar with `Cmd+L`, keyboard text input, and Enter. There is no `open_url` action or URL-opening bootstrap helper.
 - LLM decision layer: structured JSON model contract, DeepSeek V4 Pro adapter through Vercel AI SDK, visual action planner, evidence extractor, and end-to-end discovery workflow.
@@ -48,13 +49,15 @@ target company/team JSON
   -> optional private target record under CAREERDEEPSEEK_DATA_DIR/targets
 
 bounded visible-browser discovery session
-  -> adapter observe() ensures Chrome foreground
+  -> MacOSChromeDriver.observe() ensures Chrome foreground
   -> address-bar keyboard navigation only when bootstrap is needed
-  -> screenshot + windows + AX tree + read-only Chrome DOM observation
-  -> DesktopGroundingSnapshot
+  -> Chrome window screenshot + capture contract + windows + AX + OCR + read-only Chrome DOM
+  -> MacOSChromeObservationSnapshot
   -> deterministic browser safety gate
   -> overlay dismissal or blocking stop
-  -> coordinate-grounded CGEvent action
+  -> recognize(target) for the next named target
+  -> promoteChromeCandidate(recognition)
+  -> coordinate-grounded CGEvent action against the promoted candidate
   -> observe/action/observe progress verification
   -> LLM evidence extraction
   -> target/opportunity classification
@@ -68,12 +71,21 @@ Real opportunity records must be written only to `CAREERDEEPSEEK_DATA_DIR`.
 
 The default runtime is macOS local computer-use.
 
-Observation:
+Observation answers "what is currently visible?":
 
-- `screencapture -x` writes PNG screenshots and returns metadata.
-- `CGWindowListCopyWindowInfo` returns visible window bounds, titles, owner PIDs, layers, and frontmost app metadata.
+- `screencapture -l<windowid> -x -o` captures the active Chrome window and records a coordinate contract.
+- `CGWindowListCopyWindowInfo` returns visible window bounds, titles, owner PIDs, real window numbers, layers, bundle ids, and frontmost app metadata.
 - `AXUIElement` returns desktop accessibility roles, labels, values, bounds, focus, enabled state, and children.
+- macOS Vision OCR reads visible text from the captured Chrome window screenshot.
 - JXA `tab.execute({ javascript })` reads Chrome DOM semantics from the active tab.
+
+Recognition answers "is the target I am looking for present and actionable?":
+
+- `recognize({ kind: 'text_input', name })` locates search boxes, address bars, and text inputs.
+- `recognize({ kind: 'button', text })` locates buttons such as cookie consent controls.
+- `recognize({ kind: 'link', text })` locates page links for navigation.
+- `recognize({ kind: 'visible_text', text })` confirms visible evidence text.
+- Recognition returns `best`, `filtered`, `all`, evidence refs, and known limits. Action requires a promoted candidate, not a raw coordinate from the planner.
 
 The JXA observer is read-only. It must not navigate, click, type, set values, dispatch events, mutate DOM, attach CDP, or use browser-internal action APIs.
 
@@ -84,9 +96,9 @@ Actions:
 - Key chords use virtual key events.
 - Scrolling uses Quartz scroll wheel events.
 
-At task startup and before later observations, `observe()` ensures Google Chrome is open and frontmost. If Chrome is not open, `auto_focus_chrome` may open it through OS-level app activation. If Chrome is behind another app, `auto_focus_chrome` may activate it. The adapter must observe window state and confirm a visible Chrome window is frontmost before returning observation.
+At task startup and before later observations, the driver ensures Google Chrome is open and frontmost. If Chrome is not open, `auto_focus_chrome` may open it through OS-level app activation. If Chrome is behind another app, `auto_focus_chrome` may activate it. The driver must observe window state and confirm a visible Chrome window is frontmost before returning observation.
 
-Before `click`, `type`, `press`, or `scroll`, the adapter checks the desktop foreground context again. The default policy is `require_chrome`: if Google Chrome is not frontmost, the operation is rejected before capture or CGEvent input. Workflows that need to recover from another local app being frontmost may opt into `auto_focus_chrome`; that policy uses OS-level app activation only, waits briefly, then rechecks that Chrome is frontmost. This does not allow browser-internal action APIs.
+Before `click`, `type`, `press`, or `scroll`, the driver checks the desktop foreground context again. The default policy is `require_chrome`: if Google Chrome is not frontmost, the operation is rejected before capture or CGEvent input. Workflows that need to recover from another local app being frontmost may opt into `auto_focus_chrome`; that policy uses OS-level app activation only, waits briefly, then rechecks that Chrome is frontmost. This does not allow browser-internal action APIs.
 
 Desktop foreground state and page-visible DOM state are separate. Foreground state controls whether OS-level mouse and keyboard events can reach Chrome. Page-visible DOM state controls which elements from the current Chrome viewport/screenshot may be used as action targets. The runtime may keep read-only active-tab context, but only visible, unoccluded page elements should become action candidates.
 
@@ -104,9 +116,11 @@ It must stop instead of clicking through high-risk states:
 - login, SSO, passkey, account-selection, or credential flows
 - CAPTCHA, human verification, security prompts, or suspicious-activity blocks
 - payment, checkout, billing, or purchase prompts
-- apply, send-message, connect, follow, or other external side-effect flows
+- application submission, send-message, connect, follow, or other external side-effect flows
 
-Passive page links such as a header `Sign in` button are not themselves stop states. The stop applies when the visible page requires authentication, identity verification, payment, applying, or sending before continuing.
+Passive page links such as a header `Sign in` button are not themselves stop states. The stop applies when the visible page requires authentication, identity verification, payment, application submission, or sending before continuing.
+
+A job description page with a visible `Apply` button remains readable evidence. The hard stop starts before application submission or form entry, not before extracting role, location, team, and technical signals from the JD.
 
 Text entry temporarily switches macOS to a Latin keyboard input source (`U.S.` or `ABC`) while sending CGEvent key codes, then restores the previous user input source. This prevents CJK input methods from converting ASCII queries while keeping the user's desktop input source intact after the action.
 

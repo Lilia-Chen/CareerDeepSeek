@@ -43,7 +43,7 @@ function linkedInFeedState(overrides: Partial<VisualState> = {}): VisualState {
   }
 }
 
-describe('LinkedIn search workflow controller', () => {
+describe('linkedin search workflow controller', () => {
   it('continues from an already-open LinkedIn feed by clicking the observed LinkedIn search box', () => {
     const decision = decideNextLinkedInSearchAction(
       {
