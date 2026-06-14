@@ -15,6 +15,39 @@ export {
   recognizeTextInImage,
 } from './ocr.js'
 
+// ── New modules ──
+
+export {
+  normalizeToSurfaceNodes,
+  inferObservationSource,
+} from './surface-node.js'
+export type {
+  NormalizeInput,
+} from './surface-node.js'
+
+export {
+  recognizeFromCapture,
+} from './recognition.js'
+
+export {
+  promoteCandidate,
+} from './candidate-promotion.js'
+export type {
+  PromotionOptions,
+} from './candidate-promotion.js'
+
+export {
+  detectHardStopSignals,
+  checkSafetyGate,
+  loadProfileConfig,
+} from './safety-gate.js'
+
+export {
+  TraceStore,
+} from './trace-store.js'
+
+// ── Types ──
+
 export type {
   ArtifactRecord,
   ArtifactRef,
@@ -49,6 +82,8 @@ export type {
   RunType,
   SafetyCheckResult,
   SafetyFailure,
+  Size2D,
+  Scale2D,
   SpanRecord,
   SurfaceNode,
   TraceState,

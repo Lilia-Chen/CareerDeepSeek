@@ -68,6 +68,7 @@ export class MacOSChromeDriver {
   #profileVerified = false
   #runId: string
   #spanId = 'session'
+  #lastCapture?: ChromeWindowCapture
 
   constructor(options: MacOSChromeDriverOptions) {
     if (!options.sessionId?.trim()) {
@@ -86,6 +87,10 @@ export class MacOSChromeDriver {
   // ═══════════════════════════════════════════════════════════════
   // NEW API — AUV two-path architecture
   // ═══════════════════════════════════════════════════════════════
+
+  get lastCapture(): ChromeWindowCapture | undefined {
+    return this.#lastCapture
+  }
 
   async observe(): Promise<ObservationSnapshot> {
     // Lazy profile load on first observe
@@ -108,6 +113,7 @@ export class MacOSChromeDriver {
     const capture = await captureChromeWindow({
       config: this.#config, sessionId: this.#sessionId, snapshotId, window: chromeContext.window,
     })
+    this.#lastCapture = capture
 
     // Record screenshot artifact
     const screenshotArtifactId = `screenshot_${snapshotId}`
@@ -258,7 +264,7 @@ export class MacOSChromeDriver {
       profile_verified: this.#profileVerified,
       chrome_foreground: chromeContext.isFrontmost,
       hard_stop_signals: hardStopSignals,
-      ttl_ms: 5000,
+      ttl_ms: 15_000,
       run_id: this.#runId,
       span_id: this.#spanId,
     })

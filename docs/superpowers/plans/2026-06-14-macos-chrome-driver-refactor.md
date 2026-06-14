@@ -403,7 +403,7 @@ export {
 - [ ] **Step 3: Run typecheck**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm run typecheck
+cd "${REPO_ROOT}" && pnpm run typecheck
 ```
 
 Expected: PASS (no new type errors introduced)
@@ -411,7 +411,7 @@ Expected: PASS (no new type errors introduced)
 - [ ] **Step 4: Run existing tests to confirm no regression**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm test
+cd "${REPO_ROOT}" && pnpm test
 ```
 
 Expected: All 93 existing tests PASS
@@ -569,7 +569,7 @@ describe('normalizeToSurfaceNodes', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/surfaceNode.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/surfaceNode.test.ts
 ```
 
 Expected: FAIL — "normalizeToSurfaceNodes is not a function" or module not found
@@ -769,7 +769,7 @@ function domRoleToSurfaceNodeKind(role: string): string {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/surfaceNode.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/surfaceNode.test.ts
 ```
 
 Expected: All 6 tests PASS
@@ -777,7 +777,7 @@ Expected: All 6 tests PASS
 - [ ] **Step 5: Run full test suite**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm test
+cd "${REPO_ROOT}" && pnpm test
 ```
 
 Expected: All existing + new tests PASS
@@ -923,7 +923,7 @@ describe('recognizeFromCapture', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/recognition.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/recognition.test.ts
 ```
 
 Expected: FAIL — module not found
@@ -1048,7 +1048,7 @@ function inferRecognitionSource(items: RecognizedItem[]): RecognitionResult['sou
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/recognition.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/recognition.test.ts
 ```
 
 Expected: All 8 tests PASS
@@ -1056,7 +1056,7 @@ Expected: All 8 tests PASS
 - [ ] **Step 5: Run typecheck**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm run typecheck
+cd "${REPO_ROOT}" && pnpm run typecheck
 ```
 
 Expected: PASS
@@ -1252,7 +1252,7 @@ describe('promoteCandidate', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/candidatePromotion.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/candidatePromotion.test.ts
 ```
 
 Expected: FAIL — module not found
@@ -1414,7 +1414,7 @@ function pointInsideBounds(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/candidatePromotion.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/candidatePromotion.test.ts
 ```
 
 Expected: All 9 tests PASS
@@ -1557,7 +1557,7 @@ describe('checkSafetyGate', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/safetyGate.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/safetyGate.test.ts
 ```
 
 Expected: FAIL
@@ -1669,7 +1669,7 @@ export async function loadProfileConfig(sessionRoot: string): Promise<ProfileCon
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/safetyGate.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/safetyGate.test.ts
 ```
 
 Expected: All 9 tests PASS
@@ -1792,7 +1792,7 @@ describe('TraceStore', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/traceStore.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/traceStore.test.ts
 ```
 
 Expected: FAIL
@@ -1916,7 +1916,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/traceStore.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/traceStore.test.ts
 ```
 
 Expected: All 6 tests PASS
@@ -2396,13 +2396,13 @@ it('observes Chrome through new ObservationSnapshot with SurfaceNode[]', async (
 - [ ] **Step 4: Run tests**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm vitest run test/computer-use/macosChromeDriver.test.ts
+cd "${REPO_ROOT}" && pnpm vitest run test/computer-use/macosChromeDriver.test.ts
 ```
 
 - [ ] **Step 5: Run typecheck + full test suite**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm run typecheck && pnpm test
+cd "${REPO_ROOT}" && pnpm run typecheck && pnpm test
 ```
 
 Expected: All tests pass, no type errors
@@ -2521,7 +2521,7 @@ Also update the type exports list in `src/computer-use/index.ts` to include new 
 - [ ] **Step 3: Run typecheck**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm run typecheck
+cd "${REPO_ROOT}" && pnpm run typecheck
 ```
 
 Expected: PASS
@@ -2580,7 +2580,7 @@ Keep `MacOSChromeObservationSnapshot` and `MacOSChromeRecognitionResult` as depr
 - [ ] **Step 5: Run full test suite**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm run typecheck && pnpm test
+cd "${REPO_ROOT}" && pnpm run typecheck && pnpm test
 ```
 
 Expected: All tests PASS, no type errors
@@ -2604,7 +2604,7 @@ git commit -m "feat: migrate callers to new driver API, remove deprecated types"
 
 Create file at the absolute path (NOT in the code repo):
 ```
-/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek-data/computer-use/profile.json
+${DATA_DIR}/computer-use/profile.json
 ```
 
 ```json
@@ -2618,7 +2618,7 @@ Create file at the absolute path (NOT in the code repo):
 - [ ] **Step 2: Run the smoke test**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm exec tsx scripts/run-discovery-task.ts "test query"
+cd "${REPO_ROOT}" && pnpm exec tsx scripts/run-discovery-task.ts "test query"
 ```
 
 This should:
@@ -2635,7 +2635,7 @@ ls .computer-use/traces/*/
 - [ ] **Step 3: Check lints**
 
 ```bash
-cd "/Users/alen/My Drive (chenalenavenger@gmail.com)/2026/AIcareer/CareerDeepSeek" && pnpm run lint
+cd "${REPO_ROOT}" && pnpm run lint
 ```
 
 - [ ] **Step 4: Final commit**

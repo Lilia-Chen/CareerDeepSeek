@@ -68,11 +68,18 @@ export function checkSafetyGate(
 }
 
 export async function loadProfileConfig(sessionRoot: string): Promise<ProfileConfig> {
-  const configPath = resolve(sessionRoot, '..', 'profile.json')
-  const raw = readFileSync(configPath, 'utf-8')
-  const config = JSON.parse(raw) as ProfileConfig
-  if (!config.profile_path?.trim()) {
-    throw new Error('profile.json missing profile_path')
+  const configPath = resolve(sessionRoot, 'profile.json')
+  try {
+    const raw = readFileSync(configPath, 'utf-8')
+    const config = JSON.parse(raw) as ProfileConfig
+    if (!config.profile_path?.trim()) {
+      throw new Error('profile.json missing profile_path')
+    }
+    return config
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Profile config not found at ${configPath}. Create CareerDeepSeek-data/computer-use/profile.json`)
+    }
+    throw err
   }
-  return config
 }

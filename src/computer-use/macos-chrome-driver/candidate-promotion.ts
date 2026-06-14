@@ -80,6 +80,7 @@ export function promoteCandidate(
 const ACTIONABLE_KINDS = new Set([
   'dom_button', 'dom_link', 'dom_textbox', 'dom_searchbox',
   'ax_button', 'ax_link', 'ax_textfield', 'ax_textarea', 'ax_combobox', 'ax_menu_item', 'ax_tab',
+  'ocr_text', 'ocr_row', 'visual_row',
 ])
 
 function isActionable(item: { kind: string; detail: Record<string, unknown> }): boolean {
