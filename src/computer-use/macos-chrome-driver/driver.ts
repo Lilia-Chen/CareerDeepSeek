@@ -499,8 +499,19 @@ export class MacOSChromeDriver {
   }
 
   async scroll(deltaY = 600, deltaX = 0): Promise<void> {
-    await this.#resolveChromeContext()
-    await executeScroll(this.#config, { deltaX, deltaY })
+    const context = await this.#resolveChromeContext()
+    // Move cursor to window center before scrolling (CGEvent scroll requires cursor over window)
+    const center = {
+      x: context.window.bounds.x + context.window.bounds.width / 2,
+      y: context.window.bounds.y + context.window.bounds.height / 2,
+    }
+    const pointerTrace = buildPointerTrace({
+      from: this.#lastCursorPosition,
+      to: center,
+      bounds: this.#config.allowedBounds,
+    })
+    await executeScroll(this.#config, { pointerTrace, deltaX, deltaY })
+    this.#lastCursorPosition = center
   }
 
   async #resolveChromeContext(): Promise<ChromeContextSnapshot> {
