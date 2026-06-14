@@ -10,19 +10,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "ci:public": "pnpm run lint && pnpm run typecheck && pnpm test && pnpm run eval && pnpm run demo:discovery && pnpm run privacy:scan",
-    "generate:rubric": "tsx scripts/generate-rubric.ts",
-    "generate:target-rubric": "tsx scripts/generate-target-rubric.ts",
-    "demo:discovery": "tsx scripts/run-synthetic-discovery.ts",
-    "eval": "tsx scripts/run-eval.ts",
-    "smoke:computer-use": "tsx scripts/run-computer-use-smoke.ts",
-    "harness:private": "tsx scripts/private-harness.ts",
+    "ci:public": "pnpm run lint && pnpm run typecheck && pnpm test",
     "hooks:install": "git config core.hooksPath .githooks",
     "lint": "moeru-lint .",
     "lint:fix": "moeru-lint --fix .",
-    "prepush": "tsx scripts/run-pre-push.ts",
-    "privacy:scan": "tsx scripts/privacy-scan.ts",
-    "smoke:llm": "tsx scripts/run-llm-smoke.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

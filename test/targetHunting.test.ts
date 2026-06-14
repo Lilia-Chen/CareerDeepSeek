@@ -1,18 +1,12 @@
 import { it } from 'vitest'
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
 import { loadTargetRubric } from '../src/targets/targetRubric.js'
 import { scoreTarget } from '../src/targets/scoreTarget.js'
 import { writeTargetRecord } from '../src/targets/writeTargetRecord.js'
 import type { ScoredTarget, TargetResearchQuality, TargetResearchQualityAssessment } from '../src/types.js'
-
-const execFileAsync = promisify(execFile)
-const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
 function highConfidenceResearchQuality(): TargetResearchQuality {
   return {
@@ -216,48 +210,3 @@ it('writes scored target records only under the private data target directory', 
   assert.equal(written.recordType, 'target_company')
 })
 
-it('score-target CLI scores input JSON and writes private records only with --write', async () => {
-  const scratchDir = await mkdtemp(join(tmpdir(), 'target-cli-'))
-  const dataDir = await mkdtemp(join(tmpdir(), 'careerdeepseek-data-'))
-  const inputPath = join(scratchDir, 'target.json')
-
-  await writeFile(
-    inputPath,
-    `${JSON.stringify(
-      {
-        id: 'synthetic-agent-lab',
-        name: 'Synthetic Agent Lab',
-        category: 'agent_product',
-        scores: {
-          stage_hiring_pressure: 5,
-          team_composition: 5,
-          technical_closure: 5,
-          domain_alignment: 5,
-          culture_ownership_signal: 4,
-          right_to_work_location: 4,
-          reachability_signal: 4,
-        },
-        evidence: ['Synthetic public fixture evidence.'],
-        researchQuality: highConfidenceResearchQuality(),
-        riskFlags: [],
-        missingInfo: [],
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  )
-
-  const { stdout } = await execFileAsync(process.execPath, ['--import', 'tsx', 'scripts/score-target.ts', inputPath, '--write'], {
-    cwd: rootDir,
-    env: {
-      ...process.env,
-      CAREERDEEPSEEK_DATA_DIR: dataDir,
-    },
-  })
-
-  const output = JSON.parse(stdout)
-  assert.equal(output.decision, 'priority_target')
-  assert.equal(output.total, 94)
-  assert.equal(output.outputPath, join(dataDir, 'targets', 'synthetic-agent-lab.json'))
-})

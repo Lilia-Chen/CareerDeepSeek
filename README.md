@@ -37,25 +37,6 @@ pnpm run demo:discovery
 pnpm run privacy:scan
 ```
 
-The scoring rubrics are edited in Markdown. Generate the runtime JSON after rubric edits:
-
-```bash
-pnpm run generate:rubric
-pnpm run generate:target-rubric
-```
-
-Score a target company/team JSON without writing private records:
-
-```bash
-pnpm exec tsx scripts/score-target.ts path/to/target.json
-```
-
-Write a scored target record only when `CAREERDEEPSEEK_DATA_DIR` points outside this repository:
-
-```bash
-CAREERDEEPSEEK_DATA_DIR=../CareerDeepSeek-data pnpm exec tsx scripts/score-target.ts path/to/target.json --write
-```
-
 Optional private data directory:
 
 ```bash
