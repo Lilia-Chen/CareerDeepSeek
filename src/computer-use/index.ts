@@ -8,16 +8,19 @@
  * Primary entry point: MacOSChromeDriver
  *
  * ```ts
- * import { MacOSChromeDriver, promoteChromeCandidate } from './computer-use/index.js'
+ * import { MacOSChromeDriver } from './computer-use/index.js'
  *
  * const driver = new MacOSChromeDriver({
  *   sessionId: 'discovery-2026-06-06',
  *   foregroundPolicy: 'auto_focus_chrome',
  * })
  *
- * const recognition = await driver.recognize({ kind: 'text_input', name: /search/i })
- * const candidate = promoteChromeCandidate(recognition)
- * await driver.click(candidate)
+ * const snapshot = await driver.observe()
+ * const recognition = await driver.recognizeFromCapture(snapshot.capture, { kind: 'text_input', name: /search/i })
+ * const promotion = await driver.promoteCandidate(recognition, snapshot.capture)
+ * if (promotion.status === 'promoted') {
+ *   await driver.click(promotion.candidate)
+ * }
  * ```
  */
 
@@ -27,6 +30,19 @@ export {
   promoteChromeCandidate,
   recognizeTextInImage,
 } from './macos-chrome-driver/index.js'
+
+// New module value exports
+export {
+  normalizeToSurfaceNodes,
+  inferObservationSource,
+  recognizeFromCapture,
+  promoteCandidate,
+  detectHardStopSignals,
+  checkSafetyGate,
+  loadProfileConfig,
+  TraceStore,
+} from './macos-chrome-driver/index.js'
+
 export type {
   ChromeCaptureContract,
   ChromeContextSnapshot,
@@ -41,6 +57,39 @@ export type {
   MacOSChromeRecognitionResult,
   OcrTextMatch,
   OcrTextSnapshot,
+} from './macos-chrome-driver/index.js'
+
+// New module type exports
+export type {
+  NormalizeInput,
+  PromotionOptions,
+  ArtifactRecord,
+  ArtifactRef,
+  CandidatePromotion,
+  EventRecord,
+  NodeRef,
+  ObservationSnapshot,
+  ObservationSource,
+  ProfileConfig,
+  PromotedCandidate,
+  PromotionRefusal,
+  RatioRegion,
+  RecognitionBox,
+  RecognitionResult,
+  RecognitionScope,
+  RecognitionSource,
+  RecognitionSurface,
+  RecognizedItem,
+  RunRecord,
+  RunType,
+  SafetyCheckResult,
+  SafetyFailure,
+  Size2D,
+  Scale2D,
+  SpanRecord,
+  SurfaceNode,
+  TraceState,
+  TraceStatusCode,
 } from './macos-chrome-driver/index.js'
 
 export { resolveComputerUseConfig } from './config.js'
