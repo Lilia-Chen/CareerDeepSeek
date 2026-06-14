@@ -1,0 +1,424 @@
+import type {
+  AXSnapshot,
+  Bounds,
+  ChromeDomObservation,
+  ScreenshotArtifact,
+  WindowDescriptor,
+} from '../types.js'
+
+export type ChromeForegroundPolicy = 'require_chrome' | 'auto_focus_chrome'
+
+export interface Size2D {
+  width: number
+  height: number
+}
+
+export interface Scale2D {
+  x: number
+  y: number
+}
+
+export interface ChromeWindowRef {
+  id: string
+  windowNumber: number
+  appName: string
+  ownerPid: number
+  ownerBundleId?: string
+  title: string | null
+  bounds: Bounds
+  layer: number
+}
+
+export interface ChromeContextSnapshot {
+  running: boolean
+  isFrontmost: boolean
+  frontmostAppName?: string
+  frontmostAppBundleId?: string
+  activeTabUrl: string | null
+  activeTabTitle: string | null
+  profile: {
+    status: 'verified' | 'mismatch' | 'unverified'
+    reason: string
+    profile_path?: string
+  }
+  window: ChromeWindowRef
+}
+
+export interface ChromeCaptureContract {
+  coordinateContractVersion: 1
+  captureSource: {
+    kind: 'window'
+    windowNumber: number
+    ownerPid: number
+    ownerBundleId?: string
+  }
+  sourceGlobalLogicalBounds: Bounds
+  screenshotPixelSize: Size2D
+  pixelToLogicalScale: Scale2D
+  logicalToPixelScale: Scale2D
+  capturedAt: string
+}
+
+export interface ChromeWindowCapture {
+  snapshotId: string
+  screenshot: ScreenshotArtifact
+  contract: ChromeCaptureContract
+}
+
+export interface OcrTextMatch {
+  matchIndex: number
+  text: string
+  confidence: number
+  bounds: Bounds
+}
+
+export interface OcrTextSnapshot {
+  recognizedAt: string
+  imagePath: string
+  imageWidth: number
+  imageHeight: number
+  matches: OcrTextMatch[]
+}
+
+/** @deprecated Use ObservationSnapshot instead. */
+export interface MacOSChromeObservationSnapshot {
+  kind: 'macos_chrome_observation'
+  snapshotId: string
+  sessionId: string
+  step: number
+  observedAt: string
+  chromeContext: ChromeContextSnapshot
+  capture: ChromeWindowCapture
+  axSnapshot?: AXSnapshot
+  chromeDomObservation?: ChromeDomObservation
+  ocr: OcrTextSnapshot
+  visibleText: string
+  signals: string[]
+}
+
+export type ChromeRecognitionTarget
+  = | {
+    kind: 'text_input'
+    name: string | RegExp
+  }
+  | {
+    kind: 'button'
+    text: string | RegExp
+  }
+  | {
+    kind: 'link'
+    text: string | RegExp
+  }
+  | {
+    kind: 'visible_text'
+    text: string | RegExp
+  }
+
+export type ChromeRecognitionSource = 'chrome_dom' | 'ax' | 'ocr'
+
+/** @deprecated Use RecognizedItem instead. */
+export interface ChromeRecognizedItem {
+  itemId: string
+  source: ChromeRecognitionSource
+  role: string
+  text: string
+  bounds: Bounds
+  center: { x: number, y: number }
+  confidence: number
+  actionable: boolean
+  href?: string | null
+  detail?: Record<string, unknown>
+}
+
+/** @deprecated Use ArtifactRef[] instead. */
+export interface ChromeRecognitionEvidence {
+  kind: 'screenshot' | 'chrome_dom' | 'ax' | 'ocr'
+  ref: string
+}
+
+/** @deprecated Use RecognitionResult instead. */
+export interface MacOSChromeRecognitionResult {
+  kind: 'macos_chrome_recognition'
+  recognitionId: string
+  target: ChromeRecognitionTarget
+  observation: MacOSChromeObservationSnapshot
+  found: boolean
+  best: ChromeRecognizedItem | null
+  filtered: ChromeRecognizedItem[]
+  all: ChromeRecognizedItem[]
+  evidence: ChromeRecognitionEvidence[]
+  knownLimits: string[]
+}
+
+/** @deprecated Use PromotedCandidate instead. */
+export interface MacOSChromeCandidateRef {
+  kind: 'macos_chrome_candidate'
+  candidateId: string
+  recognitionId: string
+  captureSnapshotId: string
+  source: ChromeRecognitionSource
+  role: string
+  text: string
+  bounds: Bounds
+  center: { x: number, y: number }
+  href?: string | null
+  window: ChromeWindowRef
+}
+
+export function requireWindowNumber(window: WindowDescriptor): number {
+  const windowNumber = window.windowNumber
+  if (typeof windowNumber !== 'number' || !Number.isInteger(windowNumber) || windowNumber <= 0) {
+    throw new Error('Chrome window observation is missing a real kCGWindowNumber.')
+  }
+  return windowNumber
+}
+
+// ── AUV-aligned types (v1) ──
+
+export interface RecognitionBox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface RatioRegion {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+export type RecognitionSource
+  = 'ocr_text'
+  | 'ocr_row'
+  | 'visual_row'
+  | 'segmented_region'
+  | 'icon_match'
+  | 'custom'
+  | 'chrome_dom'
+
+export type RecognitionSurface = 'screen' | 'display' | 'window' | 'region'
+
+export interface RecognitionScope {
+  surface: RecognitionSurface
+  display_ref?: string
+  native_display_id?: string
+  app_bundle_id?: string
+  window_title?: string
+  window_number?: number
+  region_hint?: RatioRegion
+  capture_artifact?: ArtifactRef
+  capture_contract_artifact?: ArtifactRef
+}
+
+export interface RecognizedItem {
+  item_id: string
+  kind: string
+  box: RecognitionBox
+  text?: string
+  provider_score?: number
+  detail: Record<string, unknown>
+}
+
+export interface RecognitionResult {
+  recognition_id: string
+  source: RecognitionSource
+  scope: RecognitionScope
+  best: RecognizedItem | null
+  filtered: RecognizedItem[]
+  all: RecognizedItem[]
+  detail: Record<string, unknown>
+  evidence: ArtifactRef[]
+  known_limits: string[]
+}
+
+export interface NodeRef {
+  run_id: string
+  span_id: string
+  node_id: string
+}
+
+export interface SurfaceNode {
+  node_ref: NodeRef
+  kind: string
+  label?: string
+  box: RecognitionBox
+  source_artifacts: string[]
+  recognition_id?: string
+  recognition_source?: RecognitionSource
+  recognition_surface?: RecognitionSurface
+  recognized_item_id?: string
+  recognized_item_kind?: string
+  provider_score?: number
+  detail: Record<string, unknown>
+  center?: { x: number; y: number }
+}
+
+export type ObservationSource = 'ax' | 'ocr' | 'visual' | 'merged' | 'chrome_dom'
+
+export interface ObservationSnapshot {
+  api_version: 'careerdeepseek.observation_snapshot.v1alpha1'
+  snapshot_id: string
+  run_id: string
+  span_id: string
+  captured_at_millis: number
+  source: ObservationSource
+  scope: RecognitionScope
+  capture_contract_ref?: ArtifactRef
+  evidence: ArtifactRef[]
+  nodes: SurfaceNode[]
+  detail: Record<string, unknown>
+  known_limits: string[]
+}
+
+export type CandidatePromotion =
+  | { status: 'promoted'; candidate: PromotedCandidate; residual_known_limits: string[] }
+  | { status: 'refused'; reasons: PromotionRefusal[] }
+
+export type PromotionRefusal =
+  | 'empty_recognition'
+  | 'no_unambiguous_target'
+  | 'no_runtime_evidence'
+  | 'missing_capture_artifact'
+  | 'item_not_actionable'
+  | 'item_outside_viewport'
+  | 'stale_capture'
+  | 'profile_mismatch'
+  | 'chrome_not_foreground'
+  | 'hard_stop_signal'
+  | 'projection_unavailable'
+
+export interface PromotedCandidate {
+  candidate_local_id: string
+  kind: string
+  label?: string
+  target_spec: {
+    grounding: 'coordinate'
+    box: RecognitionBox
+    anchor_text?: string
+    region_hint?: RatioRegion
+  }
+  evidence: {
+    capture_artifact: ArtifactRef
+    recognition_artifact: ArtifactRef
+    observation_blob: Record<string, unknown>
+  }
+  liveness: {
+    preconditions: {
+      window_ref: {
+        app_bundle_id: string
+        window_title_substring?: string
+        window_number?: number
+      }
+      anchor_recheck?: {
+        text: string
+        region_hint?: RatioRegion
+        expected_min_confidence: number
+        max_pixel_distance: number
+      }
+    }
+    ttl_hint_ms?: number
+  }
+  control: {
+    requires_app_frontmost: boolean
+    requires_window_focus: boolean
+  }
+  source_run_id: string
+  source_span_id: string
+  source_operation_id: string
+  source_artifact_id: string
+  known_limits: string[]
+}
+
+export interface ArtifactRef {
+  run_id: string
+  artifact_id: string
+  span_id: string
+  captured_event_id?: string
+}
+
+export const RUN_API_VERSION = 'careerdeepseek.run.v1alpha1'
+export const SPAN_API_VERSION = 'careerdeepseek.span.v1alpha1'
+export const EVENT_API_VERSION = 'careerdeepseek.event.v1alpha1'
+export const ARTIFACT_API_VERSION = 'careerdeepseek.artifact.v1alpha1'
+
+export type RunType = 'command' | 'execute' | 'probe' | 'analyze' | 'distill' | 'validate'
+export type TraceState = 'running' | 'ended'
+export type TraceStatusCode = 'unset' | 'ok' | 'error'
+
+export interface RunRecord {
+  api_version: string
+  run_id: string
+  trace_id: string
+  run_type: RunType
+  state: TraceState
+  status_code: TraceStatusCode
+  started_at_millis: number
+  finished_at_millis?: number
+  root_span_id: string
+  attributes: Record<string, unknown>
+  summary?: string
+  failure?: { message: string }
+}
+
+export interface SpanRecord {
+  api_version: string
+  span_id: string
+  parent_span_id?: string
+  name: string
+  state: TraceState
+  status_code: TraceStatusCode
+  started_at_millis: number
+  finished_at_millis?: number
+  attributes: Record<string, unknown>
+  summary?: string
+  failure?: { message: string }
+}
+
+export interface EventRecord {
+  api_version: string
+  event_id: string
+  span_id: string
+  name: string
+  timestamp_millis: number
+  attributes: Record<string, unknown>
+  message?: string
+  artifact_ids: string[]
+}
+
+export interface ArtifactRecord {
+  api_version: string
+  artifact_id: string
+  span_id: string
+  event_id?: string
+  role: string
+  mime_type: string
+  path: string
+  sha256?: string
+  attributes: Record<string, unknown>
+  summary?: string
+}
+
+export interface ProfileConfig {
+  profile_path: string
+  profile_name: string
+  verified_at: string
+}
+
+export interface SafetyCheckResult {
+  passed: boolean
+  checks: {
+    profile_verified: boolean
+    chrome_foreground: boolean
+    no_hard_stop_signal: boolean
+  }
+  failures: SafetyFailure[]
+}
+
+export interface SafetyFailure {
+  code: string
+  detail: string
+  observed: unknown
+  expected?: unknown
+}
