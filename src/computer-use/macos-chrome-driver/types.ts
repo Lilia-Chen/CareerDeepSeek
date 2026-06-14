@@ -222,6 +222,7 @@ export interface RecognizedItem {
 }
 
 export interface RecognitionResult {
+  found: boolean
   recognition_id: string
   source: RecognitionSource
   scope: RecognitionScope
