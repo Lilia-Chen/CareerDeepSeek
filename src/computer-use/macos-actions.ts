@@ -305,25 +305,45 @@ let input = (try? JSONSerialization.jsonObject(with: inputData)) as? [String: An
 let trace = input["pointerTrace"] as? [[String: Any]] ?? []
 let deltaX = input["deltaX"] as? Int32 ?? 0
 let deltaY = input["deltaY"] as? Int32 ?? 600
-let source = CGEventSource(stateID: .combinedSessionState)
 
-// Move cursor to target first if trace supplied.
+// Get target position from last trace point or current cursor
+let originalLocation = CGEvent(source: nil)?.location ?? CGPoint(x: 0, y: 0)
+var targetX = originalLocation.x
+var targetY = originalLocation.y
+
 for point in trace {
-  let x = point["x"] as? Double ?? 0
-  let y = point["y"] as? Double ?? 0
-  let delayMs = point["delayMs"] as? Int ?? 0
-  let location = CGPoint(x: x, y: y)
-  if let moveEvent = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: location, mouseButton: .left) {
-    moveEvent.post(tap: .cgSessionEventTap)
-  }
-  if delayMs > 0 {
-    usleep(useconds_t(delayMs * 1000))
-  }
+  targetX = point["x"] as? Double ?? targetX
+  targetY = point["y"] as? Double ?? targetY
 }
 
-if let scrollEvent = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: deltaY, wheel2: deltaX, wheel3: 0) {
-  scrollEvent.post(tap: .cgSessionEventTap)
+// Warp cursor to target (matching AUV pattern)
+let targetLocation = CGPoint(x: targetX, y: targetY)
+CGWarpMouseCursorPosition(targetLocation)
+
+// Post mouseMoved at HID level
+if let moveEvent = CGEvent(
+  mouseEventSource: nil,
+  mouseType: .mouseMoved,
+  mouseCursorPosition: targetLocation,
+  mouseButton: .left
+) {
+  moveEvent.post(tap: .cghidEventTap)
 }
+
+// Post scroll at HID level (matching AUV pattern)
+if let scrollEvent = CGEvent(
+  scrollWheelEvent2Source: nil,
+  units: .pixel,
+  wheelCount: 2,
+  wheel1: Int32(deltaY),
+  wheel2: Int32(deltaX),
+  wheel3: 0
+) {
+  scrollEvent.post(tap: .cghidEventTap)
+}
+
+// Restore original cursor position
+CGWarpMouseCursorPosition(originalLocation)
 
 print("{}")
 `
