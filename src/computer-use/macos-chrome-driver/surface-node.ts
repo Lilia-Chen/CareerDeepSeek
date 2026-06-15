@@ -1,4 +1,4 @@
-import type { AXSnapshot, ChromeDomObservation } from '../types.js'
+import type { AXSnapshot, Bounds, ChromeDomElement, ChromeDomObservation } from '../types.js'
 import type {
   ArtifactRef,
   ChromeCaptureContract,
@@ -92,32 +92,46 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
 
   // AX nodes → SurfaceNode (AUXILIARY)
   if (input.axSnapshot) {
-    walkAxTree(input.axSnapshot.root, (axNode) => {
+    const axSnapshot = input.axSnapshot
+    walkAxTree(axSnapshot.root, (axNode) => {
       const text = axNode.title || axNode.description || axNode.value || ''
       if (text.trim()) {
+        if (!validBounds(axNode.bounds))
+          return
+        const axBox = axNode.bounds
+        const blockingLimits = axActionabilityBlockingLimits(axNode, input.contract.sourceGlobalLogicalBounds)
+        const knownLimits = uniqueStrings([
+          ...axEvidenceKnownLimits(axSnapshot),
+          ...blockingLimits,
+        ])
         nodes.push({
           node_ref: {
             run_id: input.runId,
             span_id: input.spanId,
             node_id: `ax_${axNode.uid}`,
           },
-          kind: axRoleToSurfaceNodeKind(axNode.role),
+          kind: blockingLimits.length > 0 ? 'ax_evidence' : axRoleToSurfaceNodeKind(axNode.role),
           label: text,
-          box: {
-            x: axNode.bounds!.x,
-            y: axNode.bounds!.y,
-            width: axNode.bounds!.width,
-            height: axNode.bounds!.height,
-          },
-          source_artifacts: [],
+          box: axBox,
+          source_artifacts: sourceArtifacts,
           recognition_source: 'custom',
           recognition_surface: 'window',
           provider_score: 0.75,
           detail: {
+            evidence_role: 'read_only_observation',
             ax_role: axNode.role,
+            ax_title: axNode.title,
+            ax_value: axNode.value,
+            ax_description: axNode.description,
             focused: axNode.focused,
             enabled: axNode.enabled,
+            coordinate_spaces: axCoordinateSpaces(),
+            bounds: axBounds(axBox),
+            ax_snapshot: axSnapshotDetail(axSnapshot),
+            source_artifacts: sourceArtifactDetail(input),
+            known_limits: knownLimits,
           },
+          recognized_item_kind: axNode.role,
         })
       }
     })
@@ -125,34 +139,45 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
 
   // DOM elements → SurfaceNode (AUXILIARY)
   if (input.domObservation) {
-    const vp = input.viewportBounds ?? { x: 0, y: 0, width: 0, height: 0 }
-    for (const element of input.domObservation.elements) {
+    const vp = validBounds(input.viewportBounds) ? input.viewportBounds : { x: 0, y: 0, width: 0, height: 0 }
+    for (const [index, element] of input.domObservation.elements.entries()) {
+      if (!validBounds(element.bounds))
+        continue
+      const projectedBox = projectViewportLocalToSourceGlobal(element.bounds, vp)
+      const projectedCenter = validPoint(element.center)
+        ? projectViewportLocalPointToSourceGlobal(element.center, vp)
+        : undefined
+      const blockingLimits = domActionabilityBlockingLimits(element, input.viewportBounds)
+      const knownLimits = uniqueStrings(blockingLimits)
       nodes.push({
         node_ref: {
           run_id: input.runId,
           span_id: input.spanId,
-          node_id: `dom_${element.id}`,
+          node_id: `dom_${element.id ?? index}`,
         },
-        kind: domRoleToSurfaceNodeKind(element.role),
+        kind: blockingLimits.length > 0 ? 'dom_evidence' : domRoleToSurfaceNodeKind(element.role ?? 'generic'),
         label: element.name || element.text || element.role,
-        box: {
-          x: vp.x + element.bounds.x,
-          y: vp.y + element.bounds.y,
-          width: element.bounds.width,
-          height: element.bounds.height,
-        },
-        source_artifacts: [],
+        box: projectedBox,
+        source_artifacts: sourceArtifacts,
         recognition_source: 'chrome_dom',
         recognition_surface: 'window',
         provider_score: element.confidence,
-        center: {
-          x: vp.x + element.center.x,
-          y: vp.y + element.center.y,
-        },
+        center: projectedCenter,
         detail: {
+          evidence_role: 'read_only_observation',
+          dom_role: element.role,
+          dom_name: element.name,
+          dom_text: element.text,
           tag_name: element.tagName,
           href: element.href,
-          actionable: element.actionable,
+          states: element.states ?? {},
+          provider_actionable: element.actionable,
+          provider_confidence: element.confidence,
+          coordinate_spaces: domCoordinateSpaces(),
+          bounds: domBounds(element.bounds, vp, projectedBox),
+          center: projectedCenter ? domCenter(element.center, projectedCenter) : undefined,
+          source_artifacts: sourceArtifactDetail(input),
+          known_limits: knownLimits,
         },
         recognized_item_kind: element.role,
       })
@@ -210,6 +235,20 @@ function coordinateSpaces() {
   }
 }
 
+function domCoordinateSpaces() {
+  return {
+    provider: 'dom_viewport_local_logical',
+    projected: 'source_global_logical',
+  }
+}
+
+function axCoordinateSpaces() {
+  return {
+    source: 'source_global_logical',
+    note: 'AX bounds are provider source-global logical bounds, not OCR capture pixels',
+  }
+}
+
 function evidenceBounds(
   capturePixel: { x: number, y: number, width: number, height: number },
   sourceGlobalLogical: RecognitionBox,
@@ -217,6 +256,45 @@ function evidenceBounds(
   return {
     capture_pixel: capturePixel,
     source_global_logical: sourceGlobalLogical,
+  }
+}
+
+function domBounds(
+  domViewportLocal: Bounds,
+  viewportBounds: Bounds,
+  sourceGlobalLogical: RecognitionBox,
+) {
+  return {
+    dom_viewport_local_logical: domViewportLocal,
+    viewport_offset_logical: { x: viewportBounds.x, y: viewportBounds.y },
+    source_global_logical: sourceGlobalLogical,
+  }
+}
+
+function domCenter(
+  domViewportLocal: { x: number, y: number },
+  sourceGlobalLogical: { x: number, y: number },
+) {
+  return {
+    dom_viewport_local_logical: domViewportLocal,
+    source_global_logical: sourceGlobalLogical,
+  }
+}
+
+function axBounds(sourceGlobalLogical: RecognitionBox) {
+  return {
+    source_global_logical: sourceGlobalLogical,
+  }
+}
+
+function axSnapshotDetail(snapshot: AXSnapshot) {
+  return {
+    snapshot_id: snapshot.snapshotId,
+    pid: snapshot.pid,
+    app_name: snapshot.appName,
+    captured_at: snapshot.capturedAt,
+    max_depth: snapshot.maxDepth,
+    truncated: snapshot.truncated,
   }
 }
 
@@ -245,6 +323,114 @@ function confidenceKnownLimits(confidence: number | undefined): string[] {
     : ['invalid or missing confidence']
 }
 
+function domActionabilityBlockingLimits(element: Partial<ChromeDomElement>, viewportBounds: Bounds | undefined): string[] {
+  const limits: string[] = []
+  const bounds = validBounds(element.bounds) ? element.bounds : undefined
+  const center = validPoint(element.center) ? element.center : undefined
+  if (!bounds)
+    limits.push('DOM provider bounds missing or invalid')
+  if (!center)
+    limits.push('DOM provider center missing or invalid')
+  if (!validConfidence(element.confidence))
+    limits.push('DOM provider confidence invalid or outside 0..1')
+  if (element.actionable === false)
+    limits.push('DOM provider reports actionable=false; provider reports not actionable')
+  else if (element.actionable !== true)
+    limits.push('DOM provider actionability unavailable/uncertain')
+
+  if (!viewportBounds || !validBounds(viewportBounds)) {
+    limits.push('DOM viewport bounds unavailable; source-global projection assumes zero viewport offset')
+  }
+  else {
+    const viewportLocalBounds = { x: 0, y: 0, width: viewportBounds.width, height: viewportBounds.height }
+    if (bounds && !boundsIntersect(bounds, viewportLocalBounds))
+      limits.push('DOM provider bounds do not intersect the reported viewport; visibility/actionability uncertain')
+    if (center && ((bounds && !pointInsideBounds(center, bounds)) || !pointInsideBounds(center, viewportLocalBounds)))
+      limits.push('DOM provider center outside bounds or viewport; visibility/actionability uncertain')
+  }
+
+  for (const limit of domStateKnownLimits(element.states))
+    limits.push(limit)
+
+  return uniqueStrings(limits)
+}
+
+function domStateKnownLimits(states: Record<string, unknown> | undefined): string[] {
+  const observedStates = states ?? {}
+  const limits: string[] = []
+  if (truthyState(observedStates.hidden) || truthyState(observedStates['aria-hidden']) || truthyState(observedStates.ariaHidden) || observedStates.visible === false)
+    limits.push('DOM provider state indicates hidden evidence')
+  if (truthyState(observedStates.offscreen))
+    limits.push('DOM provider state indicates offscreen evidence')
+  if (truthyState(observedStates.covered))
+    limits.push('DOM provider state indicates covered evidence')
+  if (truthyState(observedStates.disabled))
+    limits.push('DOM provider state indicates disabled evidence')
+  return limits
+}
+
+function axEvidenceKnownLimits(snapshot: AXSnapshot): string[] {
+  return snapshot.truncated
+    ? ['AX snapshot truncated; descendant evidence may be incomplete']
+    : []
+}
+
+function axActionabilityBlockingLimits(
+  node: { enabled?: boolean, bounds?: Bounds },
+  captureSourceBounds: Bounds,
+): string[] {
+  const limits: string[] = []
+  if (node.enabled === false)
+    limits.push('AX node reports enabled=false; provider actionability is not clean action truth')
+  else if (node.enabled !== true)
+    limits.push('AX provider enabled unavailable/uncertain')
+  if (!validBounds(node.bounds))
+    limits.push('AX provider bounds invalid')
+  else if (!boundsIntersect(node.bounds, captureSourceBounds))
+    limits.push('AX provider bounds do not intersect the capture source; visibility/actionability uncertain')
+  return uniqueStrings(limits)
+}
+
+function validConfidence(confidence: number | undefined): boolean {
+  return Number.isFinite(confidence) && confidence! >= 0 && confidence! <= 1
+}
+
+function validPoint(point: { x: number, y: number } | null | undefined): point is { x: number, y: number } {
+  return typeof point === 'object'
+    && point !== null
+    && Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+}
+
+function validBounds(bounds: Bounds | null | undefined): bounds is Bounds {
+  return typeof bounds === 'object'
+    && bounds !== null
+    && Number.isFinite(bounds.x)
+    && Number.isFinite(bounds.y)
+    && Number.isFinite(bounds.width)
+    && Number.isFinite(bounds.height)
+    && bounds.width > 0
+    && bounds.height > 0
+}
+
+function boundsIntersect(a: Bounds, b: Bounds): boolean {
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y
+}
+
+function pointInsideBounds(point: { x: number, y: number }, bounds: Bounds): boolean {
+  return point.x >= bounds.x
+    && point.x <= bounds.x + bounds.width
+    && point.y >= bounds.y
+    && point.y <= bounds.y + bounds.height
+}
+
+function truthyState(value: unknown): boolean {
+  return value === true || value === 'true'
+}
+
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values))
 }
@@ -261,11 +447,33 @@ function projectPixelToLogical(
   }
 }
 
+function projectViewportLocalToSourceGlobal(
+  viewportLocalBounds: Bounds,
+  viewportBounds: Bounds,
+): { x: number, y: number, width: number, height: number } {
+  return {
+    x: viewportBounds.x + viewportLocalBounds.x,
+    y: viewportBounds.y + viewportLocalBounds.y,
+    width: viewportLocalBounds.width,
+    height: viewportLocalBounds.height,
+  }
+}
+
+function projectViewportLocalPointToSourceGlobal(
+  viewportLocalPoint: { x: number, y: number },
+  viewportBounds: Bounds,
+): { x: number, y: number } {
+  return {
+    x: viewportBounds.x + viewportLocalPoint.x,
+    y: viewportBounds.y + viewportLocalPoint.y,
+  }
+}
+
 function walkAxTree(
   node: { uid: string, role: string, title?: string, description?: string, value?: string, bounds?: { x: number, y: number, width: number, height: number }, enabled?: boolean, focused?: boolean, children: unknown[] },
   visitor: (node: { uid: string, role: string, title?: string, description?: string, value?: string, bounds?: { x: number, y: number, width: number, height: number }, enabled?: boolean, focused?: boolean }) => void,
 ) {
-  if (node.bounds && node.bounds.width > 0 && node.bounds.height > 0) {
+  if (node.bounds) {
     visitor(node)
   }
   for (const child of node.children) {

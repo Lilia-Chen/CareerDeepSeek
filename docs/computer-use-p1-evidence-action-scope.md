@@ -193,11 +193,29 @@ AUV reference points:
 - DOM/AX evidence can participate in recognition, audit, and liveness.
 - P1 forbids DOM/AX action paths.
 
+Actionability normalization contract:
+
+- DOM provider `actionable` is read-only actionability evidence, not action truth.
+- While downstream recognition and promotion still consume kind allowlists, normalization must prevent DOM nodes with negative or uncertain actionability from emitting downstream-actionable kinds.
+- DOM nodes may keep provider actionable kinds such as `dom_button`, `dom_link`, `dom_textbox`, `dom_searchbox`, or `dom_combobox` only when `actionable === true` and bounds, center, confidence, viewport mapping, and state evidence are all clean.
+- DOM `actionable === false` must emit `dom_evidence` and carry a `known_limits` entry that the provider reports the element is not actionable.
+- DOM `actionable !== true`, including missing actionability evidence, must emit `dom_evidence` and carry a `known_limits` entry that provider actionability is unavailable or uncertain.
+- AX provider `enabled` is optional read-only actionability evidence, not action truth.
+- AX nodes may keep provider actionable kinds such as `ax_button`, `ax_link`, `ax_textfield`, `ax_textarea`, `ax_combobox`, `ax_menu_item`, or `ax_tab` only when `enabled === true` and bounds/capture visibility evidence is clean.
+- AX `enabled === false` must emit `ax_evidence` and carry a disabled `known_limits` entry.
+- AX `enabled === undefined` must emit `ax_evidence` and carry an enabled-unavailable or enabled-uncertain `known_limits` entry.
+- AX snapshot truncation alone is evidence uncertainty, not an actionability-blocking condition. A node with `enabled === true` and otherwise clean bounds/capture visibility may keep its provider actionable kind while carrying the truncation `known_limits` entry.
+- Downgraded DOM/AX evidence must preserve provider role, text/name/title/value/description, bounds, states where available, source artifacts, coordinate spaces, original provider role in detail, and `known_limits`.
+- This contract is limited to `SurfaceNode` normalization. It is not P1-3 cross-source audit, P1-4 candidate promotion, or an action path.
+
 Acceptance criteria:
 
 - DOM/AX evidence is captured as read-only observation/audit evidence.
 - DOM/AX hidden, offscreen, covered, or non-visible items cannot become action targets merely because DOM/AX reports them.
 - Any uncertainty in DOM/AX visibility, bounds, actionability, or mapping to the screenshot is carried in `known_limits`.
+- DOM nodes with provider actionability `false`, missing, or uncertain cannot emit downstream-actionable DOM kinds; they must be downgraded to `dom_evidence` with provider role and actionability retained as detail evidence.
+- AX nodes with `enabled === false` or missing enabled evidence cannot emit downstream-actionable AX kinds; they must be downgraded to `ax_evidence` with provider role and enabled state retained as detail evidence.
+- AX snapshot truncation-only evidence does not force downgrade when `enabled === true` and bounds/capture visibility are clean, but truncation must remain visible in `known_limits`.
 - Tests assert that DOM/CDP/Playwright/page-executed action routes remain unavailable.
 
 Explicit forbidden items:
@@ -207,6 +225,9 @@ Explicit forbidden items:
 - OCR-to-AX click.
 - Background dispatch.
 - Treating read-only DOM/AX evidence as an action path.
+- Letting DOM `actionable === false`, missing DOM actionability, or uncertain DOM actionability emit `dom_button`, `dom_link`, `dom_textbox`, `dom_searchbox`, `dom_combobox`, or another downstream-actionable DOM kind.
+- Letting AX `enabled === false` or missing AX enabled evidence emit `ax_button`, `ax_link`, `ax_textfield`, `ax_textarea`, `ax_combobox`, `ax_menu_item`, `ax_tab`, or another downstream-actionable AX kind.
+- Treating AX snapshot truncation alone as an actionability-blocking condition when the node has `enabled === true` and otherwise clean bounds/capture visibility evidence.
 
 ### 4. P1-3 Cross-source Audit / Refinement
 

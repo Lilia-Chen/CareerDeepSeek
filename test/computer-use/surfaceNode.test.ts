@@ -1,8 +1,10 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
-import { normalizeToSurfaceNodes } from '../../src/computer-use/macos-chrome-driver/surface-node.js'
+import * as surfaceNodeModule from '../../src/computer-use/macos-chrome-driver/surface-node.js'
 import type { ArtifactRef, OcrTextMatch } from '../../src/computer-use/macos-chrome-driver/types.js'
 import type { AXSnapshot, ChromeDomObservation } from '../../src/computer-use/types.js'
+
+const { normalizeToSurfaceNodes } = surfaceNodeModule
 
 const contract = {
   coordinateContractVersion: 1 as const,
@@ -18,6 +20,29 @@ const runId = 'run_1'
 const spanId = 'span_1'
 const captureArtifact: ArtifactRef = { run_id: runId, artifact_id: 'screenshot_mco_1', span_id: spanId }
 const captureContractArtifact: ArtifactRef = { run_id: runId, artifact_id: 'capture_contract_mco_1', span_id: spanId }
+const downstreamActionableKinds = new Set([
+  'dom_button',
+  'dom_link',
+  'dom_textbox',
+  'dom_searchbox',
+  'dom_combobox',
+  'ax_button',
+  'ax_link',
+  'ax_textfield',
+  'ax_textarea',
+  'ax_combobox',
+  'ax_menu_item',
+  'ax_tab',
+])
+
+function validSurfaceBox(box: { x: number, y: number, width: number, height: number }): boolean {
+  return Number.isFinite(box.x)
+    && Number.isFinite(box.y)
+    && Number.isFinite(box.width)
+    && Number.isFinite(box.height)
+    && box.width > 0
+    && box.height > 0
+}
 
 describe('normalizeToSurfaceNodes', () => {
   it('converts OCR matches to SurfaceNode with correct coordinate projection', () => {
@@ -170,6 +195,7 @@ describe('normalizeToSurfaceNodes', () => {
         uid: 'btn-1',
         role: 'AXButton',
         title: 'Accept',
+        enabled: true,
         bounds: { x: 520, y: 280, width: 280, height: 44 },
         children: [],
       },
@@ -188,6 +214,233 @@ describe('normalizeToSurfaceNodes', () => {
     assert.equal(node.recognition_source, 'custom')
     assert.equal(node.provider_score, 0.75)
     assert.equal(node.node_ref.node_id, 'ax_btn-1')
+  })
+
+  it('preserves AX read-only evidence detail with source-global logical bounds and capture refs', () => {
+    const axSnapshot: AXSnapshot = {
+      snapshotId: 'ax-1',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXApplication',
+        children: [{
+          uid: 'btn-1',
+          role: 'AXButton',
+          title: 'Accept',
+          value: 'Accepted value',
+          description: 'Accept cookies',
+          enabled: false,
+          focused: true,
+          bounds: { x: 520, y: 280, width: 280, height: 44 },
+          children: [],
+        }],
+      },
+    }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
+      captureArtifact,
+      captureContractArtifact,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.kind, 'ax_evidence')
+    assert.equal(node.label, 'Accept')
+    assert.equal(node.recognized_item_kind, 'AXButton')
+    assert.deepEqual(node.source_artifacts, ['screenshot_mco_1', 'capture_contract_mco_1'])
+    assert.deepEqual(node.box, { x: 520, y: 280, width: 280, height: 44 })
+    assert.equal(node.detail.ax_role, 'AXButton')
+    assert.equal(node.detail.ax_title, 'Accept')
+    assert.equal(node.detail.ax_value, 'Accepted value')
+    assert.equal(node.detail.ax_description, 'Accept cookies')
+    assert.equal(node.detail.enabled, false)
+    assert.equal(node.detail.focused, true)
+    assert.deepEqual(node.detail.coordinate_spaces, {
+      source: 'source_global_logical',
+      note: 'AX bounds are provider source-global logical bounds, not OCR capture pixels',
+    })
+    assert.deepEqual(node.detail.bounds, {
+      source_global_logical: { x: 520, y: 280, width: 280, height: 44 },
+    })
+    assert.deepEqual(node.detail.ax_snapshot, {
+      snapshot_id: 'ax-1',
+      pid: 123,
+      app_name: 'Google Chrome',
+      captured_at: '2026-06-14T00:00:00.000Z',
+      max_depth: 5,
+      truncated: false,
+    })
+    assert.deepEqual(node.detail.source_artifacts, {
+      capture_artifact: captureArtifact,
+      capture_contract_artifact: captureContractArtifact,
+    })
+    assert.ok((node.detail.known_limits as string[]).includes('AX node reports enabled=false; provider actionability is not clean action truth'))
+    assert.equal('actionable' in node.detail, false)
+  })
+
+  it('keeps truncation-only AX evidence as provider actionable kind while carrying known_limit', () => {
+    const axSnapshot: AXSnapshot = {
+      snapshotId: 'ax-truncated',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: true,
+      root: {
+        uid: 'root',
+        role: 'AXApplication',
+        children: [{
+          uid: 'btn-truncated',
+          role: 'AXButton',
+          title: 'Continue',
+          enabled: true,
+          focused: false,
+          bounds: { x: 120, y: 160, width: 180, height: 44 },
+          children: [],
+        }],
+      },
+    }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'ax_button')
+    assert.equal(downstreamActionableKinds.has(node.kind), true)
+    assert.equal(node.detail.ax_role, 'AXButton')
+    assert.ok((node.detail.known_limits as string[]).includes('AX snapshot truncated; descendant evidence may be incomplete'))
+    assert.equal((node.detail.known_limits as string[]).some(limit => limit.includes('enabled=false')), false)
+    assert.equal(validSurfaceBox(node.box), true)
+  })
+
+  it('downgrades AX evidence with unavailable enabled state while preserving provider role', () => {
+    const axSnapshot: AXSnapshot = {
+      snapshotId: 'ax-enabled-missing',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXApplication',
+        children: [{
+          uid: 'btn-enabled-missing',
+          role: 'AXButton',
+          title: 'Continue',
+          bounds: { x: 120, y: 160, width: 180, height: 44 },
+          children: [],
+        }],
+      },
+    }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'ax_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.recognized_item_kind, 'AXButton')
+    assert.equal(node.detail.ax_role, 'AXButton')
+    assert.equal(node.detail.enabled, undefined)
+    assert.ok((node.detail.known_limits as string[]).includes('AX provider enabled unavailable/uncertain'))
+    assert.equal(validSurfaceBox(node.box), true)
+  })
+
+  it('downgrades disabled AX evidence while preserving provider role and known_limit', () => {
+    const axSnapshot: AXSnapshot = {
+      snapshotId: 'ax-disabled',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXApplication',
+        children: [{
+          uid: 'btn-disabled',
+          role: 'AXButton',
+          title: 'Disabled continue',
+          enabled: false,
+          bounds: { x: 120, y: 160, width: 180, height: 44 },
+          children: [],
+        }],
+      },
+    }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'ax_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.recognized_item_kind, 'AXButton')
+    assert.equal(node.detail.ax_role, 'AXButton')
+    assert.ok((node.detail.known_limits as string[]).includes('AX node reports enabled=false; provider actionability is not clean action truth'))
+    assert.equal(validSurfaceBox(node.box), true)
+  })
+
+  it('skips AX nodes with invalid bounds instead of emitting invalid boxes', () => {
+    const axSnapshot: AXSnapshot = {
+      snapshotId: 'ax-invalid',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXApplication',
+        children: [{
+          uid: 'btn-invalid',
+          role: 'AXButton',
+          title: 'Invalid',
+          enabled: true,
+          bounds: { x: Number.NaN, y: 160, width: 0, height: 44 },
+          children: [],
+        }],
+      },
+    }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
+    })
+
+    assert.equal(nodes.length, 0)
+    assert.equal(nodes.every(node => validSurfaceBox(node.box)), true)
   })
 
   it('converts DOM elements to SurfaceNode', () => {
@@ -230,6 +483,367 @@ describe('normalizeToSurfaceNodes', () => {
     assert.equal(node.box.y, 0)
     assert.equal(node.detail.href, '/home')
     assert.ok(node.center !== undefined)
+  })
+
+  it('preserves DOM read-only evidence detail with viewport-local and source-global bounds', () => {
+    const domObservation: ChromeDomObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Apply now',
+      signals: [],
+      elements: [{
+        id: 'apply',
+        tagName: 'a',
+        role: 'link',
+        name: 'Apply now',
+        text: 'Apply now',
+        href: 'https://example.com/apply',
+        bounds: { x: 20, y: 30, width: 120, height: 40 },
+        center: { x: 80, y: 50 },
+        confidence: 0.82,
+        actionable: true,
+        states: { visited: false },
+      }],
+    }
+    const viewportBounds = { x: 100, y: 80, width: 900, height: 700 }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds,
+      captureArtifact,
+      captureContractArtifact,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'dom_link')
+    assert.equal(node.label, 'Apply now')
+    assert.deepEqual(node.box, { x: 120, y: 110, width: 120, height: 40 })
+    assert.deepEqual(node.center, { x: 180, y: 130 })
+    assert.deepEqual(node.source_artifacts, ['screenshot_mco_1', 'capture_contract_mco_1'])
+    assert.equal(node.detail.dom_role, 'link')
+    assert.equal(node.detail.dom_name, 'Apply now')
+    assert.equal(node.detail.dom_text, 'Apply now')
+    assert.equal(node.detail.tag_name, 'a')
+    assert.equal(node.detail.href, 'https://example.com/apply')
+    assert.deepEqual(node.detail.states, { visited: false })
+    assert.equal(node.detail.provider_actionable, true)
+    assert.equal(node.detail.provider_confidence, 0.82)
+    assert.deepEqual(node.detail.coordinate_spaces, {
+      provider: 'dom_viewport_local_logical',
+      projected: 'source_global_logical',
+    })
+    assert.deepEqual(node.detail.bounds, {
+      dom_viewport_local_logical: { x: 20, y: 30, width: 120, height: 40 },
+      viewport_offset_logical: { x: 100, y: 80 },
+      source_global_logical: { x: 120, y: 110, width: 120, height: 40 },
+    })
+    assert.deepEqual(node.detail.center, {
+      dom_viewport_local_logical: { x: 80, y: 50 },
+      source_global_logical: { x: 180, y: 130 },
+    })
+    assert.deepEqual(node.detail.source_artifacts, {
+      capture_artifact: captureArtifact,
+      capture_contract_artifact: captureContractArtifact,
+    })
+    assert.deepEqual(node.detail.known_limits, [])
+    assert.equal('actionable' in node.detail, false)
+  })
+
+  it('downgrades DOM evidence when provider reports not actionable while preserving provider role', () => {
+    const domObservation: ChromeDomObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Apply',
+      signals: [],
+      elements: [{
+        id: 'apply-disabled',
+        tagName: 'button',
+        role: 'button',
+        name: 'Apply',
+        text: 'Apply',
+        href: null,
+        bounds: { x: 20, y: 30, width: 120, height: 40 },
+        center: { x: 80, y: 50 },
+        confidence: 0.82,
+        actionable: false,
+        states: {},
+      }],
+    }
+    const viewportBounds = { x: 100, y: 80, width: 900, height: 700 }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'dom_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.recognized_item_kind, 'button')
+    assert.equal(node.detail.dom_role, 'button')
+    assert.equal(node.detail.provider_actionable, false)
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider reports actionable=false; provider reports not actionable'))
+    assert.equal(validSurfaceBox(node.box), true)
+  })
+
+  it('downgrades DOM evidence when provider actionability is unavailable while preserving provider role', () => {
+    const domObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Apply',
+      signals: [],
+      elements: [{
+        id: 'apply-actionability-missing',
+        tagName: 'button',
+        role: 'button',
+        name: 'Apply',
+        text: 'Apply',
+        href: null,
+        bounds: { x: 20, y: 30, width: 120, height: 40 },
+        center: { x: 80, y: 50 },
+        confidence: 0.82,
+        states: {},
+      }],
+    } as unknown as ChromeDomObservation
+    const viewportBounds = { x: 100, y: 80, width: 900, height: 700 }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'dom_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.recognized_item_kind, 'button')
+    assert.equal(node.detail.dom_role, 'button')
+    assert.equal(node.detail.provider_actionable, undefined)
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider actionability unavailable/uncertain'))
+    assert.equal(validSurfaceBox(node.box), true)
+  })
+
+  it('downgrades DOM evidence when provider center is outside bounds and viewport', () => {
+    const domObservation: ChromeDomObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Apply',
+      signals: [],
+      elements: [{
+        id: 'apply-impossible-center',
+        tagName: 'button',
+        role: 'button',
+        name: 'Apply',
+        text: 'Apply',
+        href: null,
+        bounds: { x: 20, y: 30, width: 120, height: 40 },
+        center: { x: 9999, y: 9999 },
+        confidence: 0.82,
+        actionable: true,
+        states: {},
+      }],
+    }
+    const viewportBounds = { x: 100, y: 80, width: 900, height: 700 }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'dom_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.recognized_item_kind, 'button')
+    assert.equal(node.detail.dom_role, 'button')
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider center outside bounds or viewport; visibility/actionability uncertain'))
+    assert.equal(validSurfaceBox(node.box), true)
+  })
+
+  it('marks uncertain DOM evidence limits instead of representing provider actionability as clean truth', () => {
+    const domObservation: ChromeDomObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Hidden apply',
+      signals: [],
+      elements: [{
+        id: 'hidden-apply',
+        tagName: 'button',
+        role: 'button',
+        name: 'Hidden apply',
+        text: 'Hidden apply',
+        href: null,
+        bounds: { x: -260, y: 10, width: 120, height: 40 },
+        center: { x: -200, y: 30 },
+        confidence: 1.7,
+        actionable: true,
+        states: { hidden: true, offscreen: true },
+      }],
+    }
+    const viewportBounds = { x: 100, y: 80, width: 900, height: 700 }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.kind, 'dom_evidence')
+    assert.equal(node.recognized_item_kind, 'button')
+    assert.equal(node.detail.dom_role, 'button')
+    assert.equal(node.detail.provider_actionable, true)
+    assert.equal(node.detail.provider_confidence, 1.7)
+    assert.equal('actionable' in node.detail, false)
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider confidence invalid or outside 0..1'))
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider state indicates hidden evidence'))
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider state indicates offscreen evidence'))
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider bounds do not intersect the reported viewport; visibility/actionability uncertain'))
+  })
+
+  it('handles invalid or missing DOM geometry fields without throwing or emitting invalid boxes', () => {
+    const domObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Broken apply',
+      signals: [],
+      elements: [
+        {
+          id: 'invalid-bounds',
+          tagName: 'button',
+          role: 'button',
+          name: 'Invalid bounds',
+          text: 'Invalid bounds',
+          href: null,
+          bounds: { x: Number.NaN, y: 10, width: 120, height: 40 },
+          center: { x: 60, y: 30 },
+          confidence: 0.8,
+          actionable: true,
+          states: {},
+        },
+        {
+          id: 'missing-bounds',
+          tagName: 'button',
+          role: 'button',
+          name: 'Missing bounds',
+          text: 'Missing bounds',
+          href: null,
+          confidence: 0.8,
+          actionable: true,
+        },
+        {
+          id: 'missing-center-states',
+          tagName: 'button',
+          role: 'button',
+          name: 'Missing center and states',
+          text: 'Missing center and states',
+          href: null,
+          bounds: { x: 20, y: 30, width: 120, height: 40 },
+          confidence: 0.8,
+          actionable: true,
+        },
+      ],
+    } as unknown as ChromeDomObservation
+    const viewportBounds = { x: 100, y: 80, width: 900, height: 700 }
+    let nodes: ReturnType<typeof normalizeToSurfaceNodes> = []
+
+    assert.doesNotThrow(() => {
+      nodes = normalizeToSurfaceNodes({
+        ocrMatches: [],
+        domObservation,
+        contract,
+        runId,
+        spanId,
+        viewportBounds,
+      })
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(validSurfaceBox(node.box), true)
+    assert.equal(node.kind, 'dom_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.equal(node.recognized_item_kind, 'button')
+    assert.equal(node.center, undefined)
+    assert.ok((node.detail.known_limits as string[]).includes('DOM provider center missing or invalid'))
+  })
+
+  it('downgrades DOM evidence with invalid viewport bounds without emitting invalid boxes', () => {
+    const domObservation: ChromeDomObservation = {
+      url: 'https://example.com/jobs',
+      title: 'Jobs',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Apply',
+      signals: [],
+      elements: [{
+        id: 'apply',
+        tagName: 'button',
+        role: 'button',
+        name: 'Apply',
+        text: 'Apply',
+        href: null,
+        bounds: { x: 20, y: 30, width: 120, height: 40 },
+        center: { x: 80, y: 50 },
+        confidence: 0.8,
+        actionable: true,
+        states: {},
+      }],
+    }
+    const invalidViewportBounds = { x: Number.NaN, y: 80, width: 900, height: 700 }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds: invalidViewportBounds,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(validSurfaceBox(node.box), true)
+    assert.deepEqual(node.box, { x: 20, y: 30, width: 120, height: 40 })
+    assert.equal(node.kind, 'dom_evidence')
+    assert.equal(downstreamActionableKinds.has(node.kind), false)
+    assert.ok((node.detail.known_limits as string[]).includes('DOM viewport bounds unavailable; source-global projection assumes zero viewport offset'))
+    const detailBounds = node.detail.bounds as { viewport_offset_logical: { x: number, y: number } }
+    assert.deepEqual(detailBounds.viewport_offset_logical, { x: 0, y: 0 })
+  })
+
+  it('exports only read-only normalization helpers and no DOM, CDP, Playwright, page, or AX action routes', () => {
+    const exportedSymbols = Object.keys(surfaceNodeModule).sort()
+    assert.deepEqual(exportedSymbols, ['inferObservationSource', 'normalizeToSurfaceNodes'])
+    assert.equal(exportedSymbols.some(symbol => /click|press|focus|write|smartPress|playwright|cdp|page|execute|action/i.test(symbol)), false)
   })
 
   it('returns empty array for empty input', () => {
