@@ -1,5 +1,6 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { checkSafetyGate, detectHardStopSignals } from '../../src/computer-use/macos-chrome-driver/safety-gate.js'
 import type { ChromeContextSnapshot, ProfileConfig } from '../../src/computer-use/macos-chrome-driver/types.js'
 
@@ -11,13 +12,14 @@ const profileConfig: ProfileConfig = {
 
 function makeContext(overrides: Partial<ChromeContextSnapshot> = {}): ChromeContextSnapshot {
   return {
-    running: true, isFrontmost: true,
-    frontmostAppName: 'Google Chrome', frontmostAppBundleId: 'com.google.Chrome',
-    activeTabUrl: 'https://example.com', activeTabTitle: 'Test',
+    running: true,
+    isFrontmost: true,
+    frontmostAppName: 'Google Chrome',
+    frontmostAppBundleId: 'com.google.Chrome',
+    activeTabUrl: 'https://example.com',
+    activeTabTitle: 'Test',
     profile: { status: 'verified', reason: 'checked', profile_path: 'Profile 4' },
-    window: { id: '42', windowNumber: 42, appName: 'Google Chrome', ownerPid: 123,
-      ownerBundleId: 'com.google.Chrome', title: 'Test',
-      bounds: { x: 0, y: 40, width: 1000, height: 800 }, layer: 0 },
+    window: { id: '42', windowNumber: 42, appName: 'Google Chrome', ownerPid: 123, ownerBundleId: 'com.google.Chrome', title: 'Test', bounds: { x: 0, y: 40, width: 1000, height: 800 }, layer: 0 },
     ...overrides,
   }
 }
@@ -65,5 +67,11 @@ describe('checkSafetyGate', () => {
   })
   it('fails on hard-stop signal in text', () => {
     assert.equal(checkSafetyGate(makeContext(), 'verify you are human', profileConfig).passed, false)
+  })
+
+  it('does not contain the old chrome://version tab-based profile probe', () => {
+    const source = readFileSync(new URL('../../src/computer-use/macos-chrome-driver/safety-gate.ts', import.meta.url), 'utf-8')
+    assert.equal(source.includes('chrome://version'), false)
+    assert.equal(source.includes('chrome.Tab'), false)
   })
 })

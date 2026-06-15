@@ -1,5 +1,6 @@
 import type {
   CandidatePromotion,
+  ArtifactRef,
   ChromeCaptureContract,
   ChromeWindowRef,
   PromotedCandidate,
@@ -14,6 +15,8 @@ export interface PromotionOptions {
   ttl_ms: number
   run_id: string
   span_id: string
+  capture_artifact?: ArtifactRef
+  recognition_artifact?: ArtifactRef
 }
 
 export function promoteCandidate(
@@ -24,21 +27,37 @@ export function promoteCandidate(
 ): CandidatePromotion {
   const reasons: PromotionRefusal[] = []
 
-  if (recognition.all.length === 0) reasons.push('empty_recognition')
-  if (recognition.best === null) reasons.push('no_unambiguous_target')
-  if (recognition.evidence.length === 0) reasons.push('no_runtime_evidence')
+  if (recognition.all.length === 0)
+    reasons.push('empty_recognition')
+  if (recognition.best === null)
+    reasons.push('no_unambiguous_target')
+  if (recognition.evidence.length === 0)
+    reasons.push('no_runtime_evidence')
+  const captureArtifact = options.capture_artifact ?? recognition.scope.capture_artifact
+  const recognitionArtifact = options.recognition_artifact
+  if (!captureArtifact)
+    reasons.push('missing_capture_artifact')
+  if (!recognitionArtifact)
+    reasons.push('no_runtime_evidence')
 
-  if (recognition.best && !isActionable(recognition.best)) reasons.push('item_not_actionable')
-  if (recognition.best && !pointInsideWindow(recognition.best.box, window.bounds)) reasons.push('item_outside_viewport')
+  if (recognition.best && !isActionable(recognition.best))
+    reasons.push('item_not_actionable')
+  if (recognition.best && !pointInsideWindow(recognition.best.box, window.bounds))
+    reasons.push('item_outside_viewport')
 
   const captureAge = Date.now() - new Date(capture.capturedAt).getTime()
-  if (captureAge > options.ttl_ms) reasons.push('stale_capture')
+  if (captureAge > options.ttl_ms)
+    reasons.push('stale_capture')
 
-  if (!options.profile_verified) reasons.push('profile_mismatch')
-  if (!options.chrome_foreground) reasons.push('chrome_not_foreground')
-  if (options.hard_stop_signals.length > 0) reasons.push('hard_stop_signal')
+  if (!options.profile_verified)
+    reasons.push('profile_mismatch')
+  if (!options.chrome_foreground)
+    reasons.push('chrome_not_foreground')
+  if (options.hard_stop_signals.length > 0)
+    reasons.push('hard_stop_signal')
 
-  if (reasons.length > 0) return { status: 'refused', reasons }
+  if (reasons.length > 0)
+    return { status: 'refused', reasons }
 
   const best = recognition.best!
   const candidate: PromotedCandidate = {
@@ -47,8 +66,8 @@ export function promoteCandidate(
     label: best.text,
     target_spec: { grounding: 'coordinate', box: best.box, anchor_text: best.text },
     evidence: {
-      capture_artifact: { run_id: options.run_id, artifact_id: `capture_${recognition.recognition_id}`, span_id: options.span_id },
-      recognition_artifact: { run_id: options.run_id, artifact_id: `recognition_${recognition.recognition_id}`, span_id: options.span_id },
+      capture_artifact: captureArtifact!,
+      recognition_artifact: recognitionArtifact!,
       observation_blob: {},
     },
     liveness: {
@@ -58,11 +77,13 @@ export function promoteCandidate(
           window_title_substring: window.title ?? undefined,
           window_number: window.windowNumber,
         },
-        anchor_recheck: best.text ? {
-          text: best.text,
-          expected_min_confidence: 0.3,
-          max_pixel_distance: 50,
-        } : undefined,
+        anchor_recheck: best.text
+          ? {
+              text: best.text,
+              expected_min_confidence: 0.3,
+              max_pixel_distance: 50,
+            }
+          : undefined,
       },
       ttl_hint_ms: options.ttl_ms,
     },
@@ -70,7 +91,7 @@ export function promoteCandidate(
     source_run_id: options.run_id,
     source_span_id: options.span_id,
     source_operation_id: recognition.recognition_id,
-    source_artifact_id: `recognition_${recognition.recognition_id}`,
+    source_artifact_id: recognitionArtifact!.artifact_id,
     known_limits: recognition.known_limits,
   }
 
@@ -78,19 +99,32 @@ export function promoteCandidate(
 }
 
 const ACTIONABLE_KINDS = new Set([
-  'dom_button', 'dom_link', 'dom_textbox', 'dom_searchbox', 'dom_combobox',
-  'ax_button', 'ax_link', 'ax_textfield', 'ax_textarea', 'ax_combobox', 'ax_menu_item', 'ax_tab',
-  'ocr_text', 'ocr_row', 'visual_row',
+  'dom_button',
+  'dom_link',
+  'dom_textbox',
+  'dom_searchbox',
+  'dom_combobox',
+  'ax_button',
+  'ax_link',
+  'ax_textfield',
+  'ax_textarea',
+  'ax_combobox',
+  'ax_menu_item',
+  'ax_tab',
+  'ocr_text',
+  'ocr_row',
+  'visual_row',
 ])
 
-function isActionable(item: { kind: string; detail: Record<string, unknown> }): boolean {
-  if (ACTIONABLE_KINDS.has(item.kind)) return true
+function isActionable(item: { kind: string, detail: Record<string, unknown> }): boolean {
+  if (ACTIONABLE_KINDS.has(item.kind))
+    return true
   return item.detail?.actionable === true
 }
 
 function pointInsideWindow(
-  box: { x: number; y: number; width: number; height: number },
-  bounds: { x: number; y: number; width: number; height: number },
+  box: { x: number, y: number, width: number, height: number },
+  bounds: { x: number, y: number, width: number, height: number },
 ): boolean {
   const cx = box.x + box.width / 2
   const cy = box.y + box.height / 2

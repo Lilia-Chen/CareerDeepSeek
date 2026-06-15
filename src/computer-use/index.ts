@@ -5,57 +5,45 @@
  * control for bounded browser research automation. The driver uses OS-level
  * capture and input APIs; browser-internal scripts are read-only observers.
  *
- * Primary entry point: MacOSChromeDriver
+ * Primary low-level entry point: MacOSChromeDriver
+ * Primary agent-facing entry point: MacOSChromeAgentHarness
  *
  * ```ts
- * import { MacOSChromeDriver } from './computer-use/index.js'
+ * import { MacOSChromeAgentHarness, MacOSChromeDriver } from './computer-use/index.js'
  *
  * const driver = new MacOSChromeDriver({
  *   sessionId: 'discovery-2026-06-06',
  *   foregroundPolicy: 'auto_focus_chrome',
  * })
  *
- * const snapshot = await driver.observe()
- * const recognition = await driver.recognizeFromCapture(snapshot.capture, { kind: 'text_input', name: /search/i })
- * const promotion = await driver.promoteCandidate(recognition, snapshot.capture)
- * if (promotion.status === 'promoted') {
- *   await driver.click(promotion.candidate)
- * }
+ * const browser = new MacOSChromeAgentHarness(driver)
+ * await browser.clickObservedButton(/Hide sponsored result/i, {
+ *   reason: 'Collapse sponsored results before judging organic sources.',
+ * })
  * ```
  */
 
 export {
+  MacOSChromeAgentHarness,
   MacOSChromeDriver,
-  captureChromeWindow,
-  promoteChromeCandidate,
-  recognizeTextInImage,
-} from './macos-chrome-driver/index.js'
-
-// New module value exports
-export {
-  normalizeToSurfaceNodes,
-  inferObservationSource,
-  recognizeFromCapture,
-  promoteCandidate,
-  detectHardStopSignals,
-  checkSafetyGate,
-  loadProfileConfig,
-  TraceStore,
 } from './macos-chrome-driver/index.js'
 
 export type {
+  AgentActionResult,
+  AgentHarnessActionOptions,
+  AgentHarnessScrollOptions,
+  AgentPageObservation,
   ChromeCaptureContract,
   ChromeContextSnapshot,
   ChromeForegroundPolicy,
   ChromeRecognitionTarget,
-  ChromeRecognizedItem,
   ChromeWindowCapture,
   ChromeWindowRef,
-  MacOSChromeCandidateRef,
+  MacOSChromeAgentDriver,
   MacOSChromeDriverOptions,
-  MacOSChromeObservationSnapshot,
-  MacOSChromeRecognitionResult,
+  MacOSChromeScrollOptions,
   OcrTextMatch,
+  OverlayDismissResult,
   OcrTextSnapshot,
 } from './macos-chrome-driver/index.js'
 
@@ -67,6 +55,7 @@ export type {
   ArtifactRef,
   CandidatePromotion,
   EventRecord,
+  ChromeContextLease,
   NodeRef,
   ObservationSnapshot,
   ObservationSource,
@@ -94,33 +83,3 @@ export type {
 
 export { resolveComputerUseConfig } from './config.js'
 export type { ComputerUseConfig } from './config.js'
-
-export { captureScreenshot } from './screenshot.js'
-export { observeWindows } from './window-observation.js'
-export { captureAXTree, extractInteractableAXNodes } from './ax-tree.js'
-export { captureChromeDom } from './chrome-dom.js'
-export { buildChromeContext, classifyBrowserPage } from './page-context.js'
-export { detectBlockingStopSignal, planOverlayDismissal } from './overlay-resolver.js'
-export type { BlockingStopSignal, OverlayDismissalDecision, OverlayDismissalKind } from './overlay-resolver.js'
-
-export { buildPointerTrace } from './pointer-trace.js'
-
-export {
-  executeMoveAndClick,
-  executeTypeText,
-  executePressKeys,
-  executeScroll,
-  executeOpenApp,
-} from './macos-actions.js'
-
-export type {
-  Bounds,
-  WindowDescriptor,
-  WindowObservation,
-  ScreenshotArtifact,
-  AXNode,
-  AXSnapshot,
-  ChromeDomElement,
-  ChromeDomObservation,
-  PointerTracePoint,
-} from './types.js'

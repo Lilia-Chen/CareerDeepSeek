@@ -149,6 +149,48 @@ describe('resolveComputerUseConfig', () => {
 })
 
 // ---------------------------------------------------------------------------
+// public barrel — driver-level computer-use API only
+// ---------------------------------------------------------------------------
+
+describe('computer-use public barrel', () => {
+  it('does not expose raw observation or action primitives', async () => {
+    const [publicApi, source] = await Promise.all([
+      import('../../src/computer-use/index.js'),
+      readFile(new URL('../../src/computer-use/index.ts', import.meta.url), 'utf8'),
+    ])
+
+    const forbiddenRuntimeExports = [
+      'captureScreenshot',
+      'observeWindows',
+      'captureAXTree',
+      'captureChromeDom',
+      'buildPointerTrace',
+      'executeMoveAndClick',
+      'executeTypeText',
+      'executePressKeys',
+      'executeScroll',
+      'executeOpenApp',
+      'executeWindowTargetedScroll',
+    ]
+
+    for (const exportName of forbiddenRuntimeExports) {
+      assert.equal(exportName in publicApi, false, `${exportName} must not be exported from the public barrel`)
+      assert.doesNotMatch(
+        source,
+        new RegExp(`\\b${exportName}\\b`),
+        `workflow-facing computer-use barrel must not re-export ${exportName}`,
+      )
+    }
+
+    assert.doesNotMatch(
+      source,
+      /\bWindowTargetedScrollInput\b/,
+      'workflow-facing computer-use barrel must not re-export the raw window-targeted scroll input type',
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
 // chrome-dom — read-only JXA observer safety
 // ---------------------------------------------------------------------------
 
@@ -234,6 +276,17 @@ describe('chrome DOM observer script', () => {
   })
 })
 
+describe('macOS scroll foreground HID fallback', () => {
+  it('restores the real mouse position before settle sleep', async () => {
+    const source = await readFile(new URL('../../src/computer-use/macos-actions.ts', import.meta.url), 'utf8')
+
+    assert.match(
+      source,
+      /scrollEvent\.post\(tap: \.cghidEventTap\)[\s\S]*CGWarpMouseCursorPosition\(originalLocation\)[\s\S]*if settleMs > 0/,
+      'foreground HID scroll must restore the cursor after posting the scroll event and before settle sleep',
+    )
+  })
+})
 
 describe('opencode browser-use skill', () => {
   it('documents the computer-use workflow boundary and LinkedIn page workflow', async () => {
@@ -385,6 +438,30 @@ describe('macOS action scripts', () => {
       source,
       /restorePreviousInputSource\(\)/,
       'typing should restore the user input source after CGEvent text entry',
+    )
+  })
+
+  it('routes window-targeted scroll events with AUV-compatible pid, window, and local-point fields', async () => {
+    const source = await readFile(new URL('../../src/computer-use/macos-actions.ts', import.meta.url), 'utf8')
+
+    assert.match(source, /scrollEvent\.location = screenLocation/)
+    assert.match(source, /\.eventTargetUnixProcessID,\s*value: pid/)
+    assert.match(source, /setRawIntegerField\(scrollEvent,\s*40,\s*pid\)/)
+    assert.match(source, /setRawIntegerField\(scrollEvent,\s*51,\s*windowNumber\)/)
+    assert.match(source, /setRawIntegerField\(scrollEvent,\s*91,\s*windowNumber\)/)
+    assert.match(source, /setRawIntegerField\(scrollEvent,\s*92,\s*windowNumber\)/)
+    assert.match(source, /CGEventSetWindowLocation/)
+    assert.match(source, /slEventPostToPid\(pid_t\(pid\),\s*scrollEvent\)/)
+    assert.match(source, /scrollEvent\.postToPid\(pid_t\(pid\)\)/)
+  })
+
+  it('restores the real cursor location after foreground HID scroll fallback', async () => {
+    const source = await readFile(new URL('../../src/computer-use/macos-actions.ts', import.meta.url), 'utf8')
+
+    assert.match(source, /let originalLocation = CGEvent\(source: nil\)\?\.location \?\? location/)
+    assert.match(
+      source,
+      /scrollEvent\.post\(tap: \.cghidEventTap\)[\s\S]*CGWarpMouseCursorPosition\(originalLocation\)[\s\S]*if settleMs > 0/,
     )
   })
 })

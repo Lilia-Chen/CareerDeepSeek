@@ -209,4 +209,3 @@ it('writes scored target records only under the private data target directory', 
   assert.equal(written.decision, 'priority_target')
   assert.equal(written.recordType, 'target_company')
 })
-

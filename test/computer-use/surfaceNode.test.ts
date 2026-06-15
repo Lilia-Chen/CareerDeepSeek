@@ -41,15 +41,26 @@ describe('normalizeToSurfaceNodes', () => {
 
   it('converts AX nodes with bounds and text to SurfaceNode', () => {
     const axSnapshot: AXSnapshot = {
-      snapshotId: 'ax-1', pid: 123, appName: 'Google Chrome',
-      capturedAt: '2026-06-14T00:00:00.000Z', maxDepth: 5, truncated: false,
+      snapshotId: 'ax-1',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: false,
       root: {
-        uid: 'btn-1', role: 'AXButton', title: 'Accept',
-        bounds: { x: 520, y: 280, width: 280, height: 44 }, children: [],
+        uid: 'btn-1',
+        role: 'AXButton',
+        title: 'Accept',
+        bounds: { x: 520, y: 280, width: 280, height: 44 },
+        children: [],
       },
     }
     const nodes = normalizeToSurfaceNodes({
-      ocrMatches: [], axSnapshot, contract, runId, spanId, 
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
     })
     assert.equal(nodes.length, 1)
     const node = nodes[0]!
@@ -62,17 +73,33 @@ describe('normalizeToSurfaceNodes', () => {
 
   it('converts DOM elements to SurfaceNode', () => {
     const domObservation: ChromeDomObservation = {
-      url: 'https://example.com', title: 'Test', observedAt: '2026-06-14T00:00:00.000Z',
-      visibleText: 'Home', signals: [],
+      url: 'https://example.com',
+      title: 'Test',
+      observedAt: '2026-06-14T00:00:00.000Z',
+      visibleText: 'Home',
+      signals: [],
       elements: [{
-        id: 'link-1', tagName: 'a', role: 'link', name: 'Home', text: 'Home',
-        href: '/home', bounds: { x: 0, y: 0, width: 80, height: 30 },
-        center: { x: 40, y: 15 }, confidence: 0.9, actionable: true, states: {},
+        id: 'link-1',
+        tagName: 'a',
+        role: 'link',
+        name: 'Home',
+        text: 'Home',
+        href: '/home',
+        bounds: { x: 0, y: 0, width: 80, height: 30 },
+        center: { x: 40, y: 15 },
+        confidence: 0.9,
+        actionable: true,
+        states: {},
       }],
     }
     const viewportBounds = { x: 100, y: 0, width: 900, height: 800 }
     const nodes = normalizeToSurfaceNodes({
-      ocrMatches: [], domObservation, contract, runId, spanId, viewportBounds,
+      ocrMatches: [],
+      domObservation,
+      contract,
+      runId,
+      spanId,
+      viewportBounds,
     })
     assert.equal(nodes.length, 1)
     const node = nodes[0]!

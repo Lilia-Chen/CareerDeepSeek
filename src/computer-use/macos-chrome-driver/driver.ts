@@ -1,24 +1,21 @@
 import type { ComputerUseConfig } from '../config.js'
-import type { AXNode, AXSnapshot, Bounds, ChromeDomElement, WindowDescriptor, WindowObservation } from '../types.js'
+import type { AXNode, AXSnapshot, Bounds, WindowDescriptor, WindowObservation } from '../types.js'
 import type {
   CandidatePromotion,
+  ArtifactRef,
+  ChromeContextLease,
   ChromeContextSnapshot,
   ChromeForegroundPolicy,
-  ChromeRecognitionEvidence,
-  ChromeRecognitionSource,
   ChromeRecognitionTarget,
-  ChromeRecognizedItem,
   ChromeWindowCapture,
   ChromeWindowRef,
-  MacOSChromeCandidateRef,
-  MacOSChromeObservationSnapshot,
-  MacOSChromeRecognitionResult,
   ObservationSnapshot,
-  OcrTextMatch,
   ProfileConfig,
   PromotedCandidate,
   RecognizedItem,
   RecognitionResult as NewRecognitionResult,
+  SafetyCheckResult,
+  SafetyFailure,
 } from './types.js'
 
 import { resolveComputerUseConfig } from '../config.js'
@@ -30,6 +27,7 @@ import {
   executePressKeys,
   executeScroll,
   executeTypeText,
+  executeWindowTargetedScroll,
 } from '../macos-actions.js'
 import { observeWindows } from '../window-observation.js'
 import { buildPointerTrace } from '../pointer-trace.js'
@@ -37,11 +35,11 @@ import { captureChromeWindow } from './capture.js'
 import { recognizeTextInImage } from './ocr.js'
 import { requireWindowNumber } from './types.js'
 
-// AUV two-path imports
-import { normalizeToSurfaceNodes, inferObservationSource } from './surface-node.js'
+// AUV-aligned observation / recognition imports
+import { inferObservationSource, normalizeToSurfaceNodes } from './surface-node.js'
 import { recognizeFromCapture } from './recognition.js'
 import { promoteCandidate as doPromoteCandidate } from './candidate-promotion.js'
-import { loadProfileConfig, detectHardStopSignals, findAndActivateProfileWindow } from './safety-gate.js'
+import { checkSafetyGate, detectHardStopSignals, loadProfileConfig } from './safety-gate.js'
 import { TraceStore } from './trace-store.js'
 
 export interface MacOSChromeDriverOptions {
@@ -50,6 +48,13 @@ export interface MacOSChromeDriverOptions {
   foregroundPolicy?: ChromeForegroundPolicy
 }
 
+export interface MacOSChromeScrollOptions {
+  windowLocalPoint?: { x: number, y: number }
+  settleMs?: number
+}
+
+type ActionType = 'click' | 'typeText' | 'pressKey' | 'scroll'
+
 const NORMAL_CHROME_MIN_WIDTH = 480
 const NORMAL_CHROME_MIN_HEIGHT = 300
 
@@ -57,19 +62,21 @@ export class MacOSChromeDriver {
   readonly #sessionId: string
   readonly #config: ComputerUseConfig
   readonly #foregroundPolicy: ChromeForegroundPolicy
-  #step = 0
   #nextObservationId = 1
   #nextRecognitionId = 1
+  #nextActionId = 1
   #lastCursorPosition?: { x: number, y: number }
 
-  // AUV two-path fields
+  // AUV-aligned trace and capture state
   #traceStore?: TraceStore
   #profileConfig?: ProfileConfig
-  #profileVerified = false
+  #chromeContextLease?: ChromeContextLease
   #runId: string
   #spanId = 'session'
   #lastCapture?: ChromeWindowCapture
   #lastObservation?: ObservationSnapshot
+  #recognitionArtifacts = new Map<string, ArtifactRef>()
+  #promotedCandidateArtifacts = new Map<string, ArtifactRef>()
 
   constructor(options: MacOSChromeDriverOptions) {
     if (!options.sessionId?.trim()) {
@@ -86,7 +93,7 @@ export class MacOSChromeDriver {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // NEW API — AUV two-path architecture
+  // AUV-aligned API
   // ═══════════════════════════════════════════════════════════════
 
   get lastCapture(): ChromeWindowCapture | undefined {
@@ -94,94 +101,53 @@ export class MacOSChromeDriver {
   }
 
   async observe(): Promise<ObservationSnapshot> {
-    // Lazy profile load + verify on first observe
-    if (!this.#profileConfig) {
-      try {
-        this.#profileConfig = await loadProfileConfig(this.#config.sessionRoot)
-        // Find and activate the Chrome window that uses the expected profile
-        const result = await findAndActivateProfileWindow(this.#profileConfig.profile_path)
-        this.#profileVerified = result.verified
-        if (!result.verified) {
-          const msg = `Profile "${this.#profileConfig.profile_path}" not found in any Chrome window: ${result.error ?? 'unknown'}`
-          this.#traceStore?.recordEvent({
-            event_id: `evt_profile_mismatch_${Date.now()}`,
-            span_id: this.#spanId,
-            name: 'profile_verification_failed',
-            timestamp_millis: Date.now(),
-            attributes: {
-              expected: this.#profileConfig.profile_path,
-              error: result.error ?? null,
-            },
-            message: msg,
-            artifact_ids: [],
-          })
-        } else {
-          this.#traceStore?.recordEvent({
-            event_id: `evt_profile_verified_${Date.now()}`,
-            span_id: this.#spanId,
-            name: 'profile_verified',
-            timestamp_millis: Date.now(),
-            attributes: {
-              profile: result.observedPath ?? '',
-              window_index: result.windowIndex ?? -1,
-            },
-            message: `Profile verified and activated: ${result.observedPath} (window ${result.windowIndex})`,
-            artifact_ids: [],
-          })
-          // Wait briefly for Chrome window to come to foreground
-          await new Promise(r => setTimeout(r, 500))
-        }
-      } catch (err) {
-        this.#profileVerified = false
-        this.#traceStore?.recordEvent({
-          event_id: `evt_profile_error_${Date.now()}`,
-          span_id: this.#spanId,
-          name: 'profile_verification_failed',
-          timestamp_millis: Date.now(),
-          attributes: { error: (err as Error).message },
-          message: (err as Error).message,
-          artifact_ids: [],
-        })
-      }
-    }
+    await this.#ensureChromeContextLease()
 
-    this.#step++
     const snapshotId = `mco_${this.#nextObservationId++}`
     const spanId = `observe_${snapshotId}`
 
     this.#traceStore?.startSpan(spanId, this.#spanId, 'observe')
 
-    const chromeContext = await this.#resolveChromeContext()
+    const chromeContext = await this.#requireLeasedChromeContext()
     const capture = await captureChromeWindow({
-      config: this.#config, sessionId: this.#sessionId, snapshotId, window: chromeContext.window,
+      config: this.#config,
+      sessionId: this.#sessionId,
+      snapshotId,
+      window: chromeContext.window,
     })
     this.#lastCapture = capture
 
     // Record screenshot artifact
     const screenshotArtifactId = `screenshot_${snapshotId}`
     this.#traceStore?.recordArtifact({
-      artifact_id: screenshotArtifactId, span_id: spanId, role: 'screenshot',
-      mime_type: 'image/png', path: capture.screenshot.path,
+      artifact_id: screenshotArtifactId,
+      span_id: spanId,
+      role: 'screenshot',
+      mime_type: 'image/png',
+      path: capture.screenshot.path,
       attributes: { width: capture.screenshot.width, height: capture.screenshot.height },
     })
 
-    // Record capture contract artifact
     const contractArtifactId = `capture_contract_${snapshotId}`
-    this.#traceStore?.recordArtifact({
-      artifact_id: contractArtifactId, span_id: spanId, role: 'capture_contract',
-      mime_type: 'application/json',
-      path: `${this.#config.sessionRoot}/traces/${this.#sessionId}/contract_${snapshotId}.json`,
+    this.#traceStore?.writeJsonArtifact({
+      artifact_id: contractArtifactId,
+      span_id: spanId,
+      role: 'capture-contract',
+      payload: capture.contract,
       attributes: { coordinate_contract_version: capture.contract.coordinateContractVersion },
     })
 
     // Parallel observation: AX, DOM, OCR
     const [axResult, domResult, ocrResult] = await Promise.allSettled([
       captureAXTree(this.#config, {
-        pid: chromeContext.window.ownerPid, maxDepth: 15, maxNodes: 3000,
+        pid: chromeContext.window.ownerPid,
+        maxDepth: 15,
+        maxNodes: 3000,
       }),
       captureChromeDom(this.#config),
       recognizeTextInImage(this.#config, {
-        imagePath: capture.screenshot.path, maxObservations: 256,
+        imagePath: capture.screenshot.path,
+        maxObservations: 256,
       }),
     ])
 
@@ -216,16 +182,6 @@ export class MacOSChromeDriver {
     const visibleText = nodes.map(n => n.label ?? '').join('\n')
     const signals = detectHardStopSignals(visibleText)
 
-    // Record observation snapshot artifact
-    this.#traceStore?.recordArtifact({
-      artifact_id: `observation_${snapshotId}`, span_id: spanId,
-      role: 'observation_snapshot', mime_type: 'application/json',
-      path: `${this.#config.sessionRoot}/traces/${this.#sessionId}/observation_${snapshotId}.json`,
-      attributes: { node_count: nodes.length, source },
-    })
-
-    this.#traceStore?.endSpan(spanId, 'ok', `observed ${nodes.length} nodes`)
-
     const result: ObservationSnapshot = {
       api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
       snapshot_id: snapshotId,
@@ -244,12 +200,25 @@ export class MacOSChromeDriver {
       evidence: [{ run_id: this.#runId, artifact_id: screenshotArtifactId, span_id: spanId }],
       nodes,
       detail: {
-        chrome_context: { active_tab_url: chromeContext.activeTabUrl, active_tab_title: chromeContext.activeTabTitle },
+        chrome_context: {
+          active_tab_url: chromeContext.activeTabUrl,
+          active_tab_title: chromeContext.activeTabTitle,
+          lease: chromeContext.lease,
+        },
         signals,
         ocr_match_count: ocr.matches.length,
       },
-      known_limits: [this.#profileVerified ? 'profile loaded' : 'profile config missing, actions blocked'],
+      known_limits: [this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked'],
     }
+
+    this.#traceStore?.writeJsonArtifact({
+      artifact_id: `observation_${snapshotId}`,
+      span_id: spanId,
+      role: 'observation-snapshot',
+      payload: result,
+      attributes: { node_count: nodes.length, source },
+    })
+    this.#traceStore?.endSpan(spanId, 'ok', `observed ${nodes.length} nodes`)
 
     this.#lastObservation = result
     return result
@@ -264,7 +233,8 @@ export class MacOSChromeDriver {
 
     // OCR-first
     const ocr = await recognizeTextInImage(this.#config, {
-      imagePath: capture.screenshot.path, maxObservations: 256,
+      imagePath: capture.screenshot.path,
+      maxObservations: 256,
     }).catch(() => ({
       recognizedAt: new Date().toISOString(),
       imagePath: capture.screenshot.path,
@@ -311,9 +281,34 @@ export class MacOSChromeDriver {
       }
     }
 
+    const evidence = this.#captureEvidenceRefs(capture)
     const result = recognizeFromCapture(
-      allItems, target, capture.contract, capture.screenshot.path, this.#runId, spanId,
+      allItems,
+      target,
+      capture.contract,
+      capture.screenshot.path,
+      this.#runId,
+      spanId,
+      evidence,
     )
+
+    const recognitionArtifactId = `recognition_${result.recognition_id}`
+    this.#traceStore?.writeJsonArtifact({
+      artifact_id: recognitionArtifactId,
+      span_id: spanId,
+      role: 'recognition-result',
+      payload: result,
+      attributes: {
+        found: result.found,
+        filtered_count: result.filtered.length,
+        total_count: result.all.length,
+      },
+    })
+    this.#recognitionArtifacts.set(result.recognition_id, {
+      run_id: this.#runId,
+      artifact_id: recognitionArtifactId,
+      span_id: spanId,
+    })
 
     this.#nextRecognitionId++
     this.#traceStore?.endSpan(spanId, 'ok')
@@ -324,201 +319,393 @@ export class MacOSChromeDriver {
     recognition: NewRecognitionResult,
     capture: ChromeWindowCapture,
   ): Promise<CandidatePromotion> {
-    const chromeContext = await this.#resolveChromeContext()
+    const chromeContext = await this.#requireLeasedChromeContext()
     const hardStopSignals = detectHardStopSignals(
       recognition.all.map(i => i.text ?? '').join('\n'),
     )
 
-    return doPromoteCandidate(recognition, capture.contract, chromeContext.window, {
-      profile_verified: this.#profileVerified,
+    const promotion = doPromoteCandidate(recognition, capture.contract, chromeContext.window, {
+      profile_verified: true,
       chrome_foreground: chromeContext.isFrontmost,
       hard_stop_signals: hardStopSignals,
       ttl_ms: 15_000,
       run_id: this.#runId,
       span_id: this.#spanId,
+      capture_artifact: recognition.scope.capture_artifact ?? this.#captureEvidenceRefs(capture).find(ref => ref.artifact_id.startsWith('screenshot')),
+      recognition_artifact: this.#recognitionArtifacts.get(recognition.recognition_id),
     })
+    if (promotion.status === 'promoted') {
+      const promotedArtifact = this.#traceStore?.writeJsonArtifact({
+        artifact_id: `promoted_${sanitizeArtifactId(recognition.recognition_id)}`,
+        span_id: this.#spanId,
+        role: 'promoted-candidate',
+        payload: promotion.candidate,
+        attributes: {
+          recognition_id: recognition.recognition_id,
+          candidate_local_id: promotion.candidate.candidate_local_id,
+        },
+      })
+      if (promotedArtifact) {
+        this.#promotedCandidateArtifacts.set(promotion.candidate.candidate_local_id, {
+          run_id: this.#runId,
+          artifact_id: promotedArtifact.artifact_id,
+          span_id: promotedArtifact.span_id,
+        })
+      }
+    }
+    return promotion
   }
 
   async click(candidate: PromotedCandidate): Promise<void> {
-    // Safety gate: profile must be verified
-    if (!this.#profileVerified) {
-      throw new Error('Safety gate: profile not verified, refusing click.')
-    }
+    const candidateArtifactRef = this.#promotedCandidateArtifacts.get(candidate.candidate_local_id) ?? null
+    await this.#executeAction('click', candidateArtifactRef, async (context) => {
+      const winNumber = candidate.liveness.preconditions.window_ref.window_number
+      if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
+        throw new Error('Refusing click: Chrome window changed after candidate promotion.')
+      }
 
-    const context = await this.#resolveChromeContext()
+      const box = candidate.target_spec.box
+      const center = centerOf(box)
 
-    // Window number check from candidate's liveness preconditions
-    const winNumber = candidate.liveness.preconditions.window_ref.window_number
-    if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
-      throw new Error('Refusing click: Chrome window changed after candidate promotion.')
-    }
+      if (!pointInsideBounds(center, context.window.bounds)) {
+        throw new Error('Refusing click: candidate point is outside the active Chrome window.')
+      }
 
-    const box = candidate.target_spec.box
-    const center = centerOf(box)
-
-    if (!pointInsideBounds(center, context.window.bounds)) {
-      throw new Error('Refusing click: candidate point is outside the active Chrome window.')
-    }
-
-    const pointerTrace = buildPointerTrace({
-      from: this.#lastCursorPosition,
-      to: center,
-      bounds: this.#config.allowedBounds,
-    })
-    await executeMoveAndClick(this.#config, {
-      pointerTrace,
-      button: 0,
-      clickCount: 1,
-    })
-    this.#lastCursorPosition = center
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // LEGACY API — deprecated, kept for backward compatibility
-  // ═══════════════════════════════════════════════════════════════
-
-  /** @deprecated Use observe() which returns ObservationSnapshot instead. */
-  async observeLegacy(): Promise<MacOSChromeObservationSnapshot> {
-    const step = this.#step++
-    const snapshotId = `mco_${this.#nextObservationId++}`
-    const chromeContext = await this.#resolveChromeContext()
-    const capture = await captureChromeWindow({
-      config: this.#config,
-      sessionId: this.#sessionId,
-      snapshotId,
-      window: chromeContext.window,
-    })
-
-    const [axResult, domResult, ocrResult] = await Promise.allSettled([
-      captureAXTree(this.#config, {
-        pid: chromeContext.window.ownerPid,
-        maxDepth: 15,
-        maxNodes: 3000,
-      }),
-      captureChromeDom(this.#config),
-      recognizeTextInImage(this.#config, {
-        imagePath: capture.screenshot.path,
-        maxObservations: 256,
-      }),
-    ])
-
-    const axSnapshot = axResult.status === 'fulfilled' ? axResult.value : undefined
-    const chromeDomObservation
-      = domResult.status === 'fulfilled' && domResult.value ? domResult.value : undefined
-    const ocr = ocrResult.status === 'fulfilled'
-      ? ocrResult.value
+      const pointerTrace = buildPointerTrace({
+        from: this.#lastCursorPosition,
+        to: center,
+        bounds: this.#config.allowedBounds,
+      })
+      await executeMoveAndClick(this.#config, {
+        pointerTrace,
+        button: 0,
+        clickCount: 1,
+      })
+      this.#lastCursorPosition = center
+    }, candidateArtifactRef
+      ? undefined
       : {
-          recognizedAt: new Date().toISOString(),
-          imagePath: capture.screenshot.path,
-          imageWidth: capture.screenshot.width ?? 0,
-          imageHeight: capture.screenshot.height ?? 0,
-          matches: [],
-        }
-
-    const signals = uniqueStrings([
-      ...(chromeDomObservation?.signals ?? []),
-      ...deriveRiskSignals(`${chromeDomObservation?.visibleText ?? ''}\n${ocr.matches.map(item => item.text).join('\n')}`),
-    ])
-
-    return {
-      kind: 'macos_chrome_observation',
-      snapshotId,
-      sessionId: this.#sessionId,
-      step,
-      observedAt: new Date().toISOString(),
-      chromeContext,
-      capture,
-      axSnapshot,
-      chromeDomObservation,
-      ocr,
-      visibleText: visibleTextFromSources(chromeDomObservation?.visibleText, ocr.matches),
-      signals,
-    }
-  }
-
-  /** @deprecated Use recognizeFromCapture() with the new two-path flow instead. */
-  async recognizeLegacy(target: ChromeRecognitionTarget): Promise<MacOSChromeRecognitionResult> {
-    const observation = await this.observeLegacy()
-    const all = collectRecognizedItems(observation)
-    const filtered = all
-      .filter(item => matchesTarget(item, target))
-      .sort(compareRecognizedItems)
-    const best = filtered[0] ?? null
-
-    return {
-      kind: 'macos_chrome_recognition',
-      recognitionId: `mcr_${this.#nextRecognitionId++}`,
-      target,
-      observation,
-      found: best !== null,
-      best,
-      filtered,
-      all,
-      evidence: recognitionEvidence(observation),
-      knownLimits: [
-        'Chrome profile identity is not yet machine-verified by this driver.',
-        'DOM coordinates are projected through AXWebArea when available and through the Chrome window bounds otherwise.',
-      ],
-    }
-  }
-
-  /** @deprecated Use click(PromotedCandidate) with the new two-path flow instead. */
-  async clickLegacy(candidate: MacOSChromeCandidateRef): Promise<void> {
-    const context = await this.#resolveChromeContext()
-    if (context.window.windowNumber !== candidate.window.windowNumber) {
-      throw new Error('Refusing click: Chrome window changed after candidate recognition.')
-    }
-    if (!pointInsideBounds(candidate.center, context.window.bounds)) {
-      throw new Error('Refusing click: candidate point is outside the active Chrome window.')
-    }
-
-    const pointerTrace = buildPointerTrace({
-      from: this.#lastCursorPosition,
-      to: candidate.center,
-      bounds: this.#config.allowedBounds,
-    })
-    await executeMoveAndClick(this.#config, {
-      pointerTrace,
-      button: 0,
-      clickCount: 1,
-    })
-    this.#lastCursorPosition = candidate.center
+          code: 'missing_promoted_candidate_artifact',
+          detail: 'Click candidate was not promoted by this driver session.',
+          observed: candidate.candidate_local_id,
+          expected: 'promoted-candidate artifact written by driver.promoteCandidate()',
+        })
   }
 
   async typeText(text: string): Promise<void> {
-    await this.#resolveChromeContext()
-    await executeTypeText(this.#config, {
+    await this.#executeAction('typeText', null, async () => executeTypeText(this.#config, {
       pointerTrace: [],
       text,
-    })
+    }))
   }
 
   async pressKey(key: string, modifiers: string[] = []): Promise<void> {
-    await this.#resolveChromeContext()
-    await executePressKeys(this.#config, { keys: [key], modifiers })
+    await this.#executeAction('pressKey', null, async () => executePressKeys(this.#config, { keys: [key], modifiers }))
   }
 
-  async scroll(deltaY = 600, deltaX = 0): Promise<void> {
-    const context = await this.#resolveChromeContext()
-    // Move cursor to window center before scrolling (CGEvent scroll requires cursor over window)
-    const center = {
-      x: context.window.bounds.x + context.window.bounds.width / 2,
-      y: context.window.bounds.y + context.window.bounds.height / 2,
-    }
-    const pointerTrace = buildPointerTrace({
-      from: this.#lastCursorPosition,
-      to: center,
-      bounds: this.#config.allowedBounds,
+  async scroll(deltaY = 600, deltaX = 0, options: MacOSChromeScrollOptions = {}): Promise<void> {
+    await this.#executeAction('scroll', null, async (context) => {
+      const anchor = resolveScrollAnchor(context.window.bounds, options)
+
+      try {
+        await executeWindowTargetedScroll(this.#config, {
+          pid: context.window.ownerPid,
+          windowNumber: context.window.windowNumber,
+          screenPoint: anchor.screenPoint,
+          windowLocalPoint: anchor.windowLocalPoint,
+          deltaX,
+          deltaY,
+          settleMs: options.settleMs,
+        })
+        return
+      }
+      catch {
+        // Fall back to foreground HID delivery when the private window-targeted
+        // route is unavailable. The Swift fallback restores the real cursor.
+      }
+
+      const pointerTrace = buildPointerTrace({
+        from: this.#lastCursorPosition,
+        to: anchor.screenPoint,
+        bounds: this.#config.allowedBounds,
+      })
+      await executeScroll(this.#config, {
+        pointerTrace,
+        deltaX,
+        deltaY,
+        settleMs: options.settleMs,
+      })
     })
-    await executeScroll(this.#config, { pointerTrace, deltaX, deltaY })
-    this.#lastCursorPosition = center
   }
 
-  async #resolveChromeContext(): Promise<ChromeContextSnapshot> {
+  async #executeAction(
+    actionType: ActionType,
+    candidateRef: ArtifactRef | null,
+    executor: (context: ChromeContextSnapshot) => Promise<void>,
+    callerPreconditionFailure?: SafetyFailure,
+  ): Promise<void> {
+    const actionId = `action_${this.#nextActionId++}`
+    const spanId = `${actionId}_${actionType}`
+    this.#traceStore?.startSpan(spanId, this.#spanId, actionType)
+
+    const precondition = await this.#checkActionPreconditions()
+    const preconditionResult = callerPreconditionFailure
+      ? appendSafetyFailure(precondition.result, callerPreconditionFailure)
+      : precondition.result
+    const context = preconditionResult.passed ? precondition.context : null
+    if (!context || !preconditionResult.passed) {
+      const reasons = preconditionResult.failures.map(failure => failure.code)
+      this.#recordActionExecution({
+        actionId,
+        actionType,
+        spanId,
+        candidateRef,
+        preconditionResult,
+        executed: false,
+        refused: true,
+        refusalReasons: reasons,
+        knownLimits: ['action refused before macOS event delivery'],
+      })
+      this.#traceStore?.endSpan(spanId, 'error', `refused: ${reasons.join(', ')}`)
+      throw new Error(actionRefusalMessage(actionType, reasons))
+    }
+
+    try {
+      await executor(context)
+      this.#recordActionExecution({
+        actionId,
+        actionType,
+        spanId,
+        candidateRef,
+        preconditionResult,
+        executed: true,
+        refused: false,
+        refusalReasons: [],
+        knownLimits: [],
+      })
+      this.#traceStore?.endSpan(spanId, 'ok')
+    }
+    catch (err) {
+      const failureResult = appendSafetyFailure(preconditionResult, {
+        code: 'action_execution_error',
+        detail: (err as Error).message,
+        observed: (err as Error).message,
+      })
+      this.#recordActionExecution({
+        actionId,
+        actionType,
+        spanId,
+        candidateRef,
+        preconditionResult: failureResult,
+        executed: false,
+        refused: true,
+        refusalReasons: ['action_execution_error'],
+        knownLimits: ['action failed after passing precondition gate'],
+      })
+      this.#traceStore?.endSpan(spanId, 'error', (err as Error).message)
+      throw err
+    }
+  }
+
+  async #checkActionPreconditions(): Promise<{
+    context: ChromeContextSnapshot | null
+    result: SafetyCheckResult
+  }> {
+    const failures: SafetyFailure[] = []
+    const lease = this.#chromeContextLease
+    if (!lease) {
+      failures.push({
+        code: 'chrome_context_lease_missing',
+        detail: 'Chrome context lease has not been established. Run observe() to bootstrap the managed Chrome context.',
+        observed: null,
+        expected: 'managed Chrome context lease',
+      })
+      return {
+        context: null,
+        result: safetyResultFromFailures(failures),
+      }
+    }
+    if (!this.#profileConfig) {
+      failures.push({
+        code: 'profile_mismatch',
+        detail: 'Profile config has not been loaded for the managed Chrome context.',
+        observed: null,
+        expected: 'loaded profile config',
+      })
+    }
+    if (!lease || !this.#profileConfig) {
+      return {
+        context: null,
+        result: safetyResultFromFailures(failures),
+      }
+    }
+
+    const observation = await observeWindows(this.#config, { limit: 120 })
+    const chromeWindow = findLeasedChromeWindow(observation, lease)
+    if (!chromeWindow) {
+      failures.push({
+        code: 'chrome_context_lease_invalid',
+        detail: 'The leased Chrome window identity is no longer present.',
+        observed: observation.windows.map(window => ({
+          windowNumber: window.windowNumber,
+          ownerPid: window.ownerPid,
+          ownerBundleId: window.ownerBundleId,
+        })),
+        expected: {
+          windowNumber: lease.windowNumber,
+          ownerPid: lease.ownerPid,
+          ownerBundleId: lease.ownerBundleId,
+        },
+      })
+      return {
+        context: null,
+        result: safetyResultFromFailures(failures),
+      }
+    }
+
+    const context = await this.#chromeContextFromWindowObservation(observation, chromeWindow, lease)
+    const safety = checkSafetyGate(context, this.#visibleTextForSafety(), this.#profileConfig)
+    return {
+      context: safety.passed ? context : null,
+      result: failures.length > 0 ? mergeSafetyFailures(safety, failures) : safety,
+    }
+  }
+
+  #recordActionExecution(input: {
+    actionId: string
+    actionType: ActionType
+    spanId: string
+    candidateRef: ArtifactRef | null
+    preconditionResult: SafetyCheckResult
+    executed: boolean
+    refused: boolean
+    refusalReasons: string[]
+    knownLimits: string[]
+  }): void {
+    this.#traceStore?.writeJsonArtifact({
+      artifact_id: `action_execution_${input.actionId}`,
+      span_id: input.spanId,
+      role: 'action-execution',
+      payload: {
+        action_id: input.actionId,
+        action_type: input.actionType,
+        run_id: this.#runId,
+        span_id: input.spanId,
+        candidate_ref: input.candidateRef,
+        precondition_result: input.preconditionResult,
+        executed: input.executed,
+        refused: input.refused,
+        refusal_reasons: input.refusalReasons,
+        timestamp_millis: Date.now(),
+        known_limits: input.knownLimits,
+      },
+      attributes: {
+        action_type: input.actionType,
+        executed: input.executed,
+        refused: input.refused,
+      },
+    })
+  }
+
+  #captureEvidenceRefs(capture: ChromeWindowCapture): ArtifactRef[] {
+    const refs: ArtifactRef[] = []
+    const observation = this.#lastObservation
+    const screenshotRef = observation?.evidence.find(ref => ref.artifact_id === `screenshot_${capture.snapshotId}`)
+    const contractRef = observation?.capture_contract_ref?.artifact_id === `capture_contract_${capture.snapshotId}`
+      ? observation.capture_contract_ref
+      : undefined
+    if (screenshotRef)
+      refs.push(screenshotRef)
+    if (contractRef)
+      refs.push(contractRef)
+    return refs
+  }
+
+  #visibleTextForSafety(): string {
+    return (this.#lastObservation?.nodes ?? [])
+      .map(node => node.label ?? '')
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  async #ensureChromeContextLease(): Promise<void> {
+    if (this.#chromeContextLease) {
+      return
+    }
+
+    this.#profileConfig = await loadProfileConfig(this.#config.sessionRoot)
+    const profileDir = profileDirFromPath(this.#profileConfig.profile_path)
+    await executeOpenApp(this.#config, 'Google Chrome', {
+      args: [`--profile-directory=${profileDir}`],
+    })
+    await sleep(500)
+
+    const chromeContext = await this.#resolveChromeContext({ activateIfNeeded: true })
+    const now = new Date().toISOString()
+    this.#chromeContextLease = {
+      leaseId: `lease_${this.#runId}_${chromeContext.window.windowNumber}`,
+      sessionId: this.#sessionId,
+      runId: this.#runId,
+      profileMode: 'managed',
+      profileDir,
+      profilePath: this.#profileConfig.profile_path,
+      ownerPid: chromeContext.window.ownerPid,
+      windowNumber: chromeContext.window.windowNumber,
+      ownerBundleId: chromeContext.window.ownerBundleId,
+      appBundleId: chromeContext.window.ownerBundleId,
+      createdAt: now,
+      verifiedAt: now,
+    }
+
+    this.#traceStore?.recordEvent({
+      event_id: `evt_chrome_context_lease_${Date.now()}`,
+      span_id: this.#spanId,
+      name: 'chrome_context_lease_established',
+      timestamp_millis: Date.now(),
+      attributes: {
+        lease_id: this.#chromeContextLease.leaseId,
+        profile_path: this.#chromeContextLease.profilePath,
+        window_number: this.#chromeContextLease.windowNumber,
+        owner_pid: this.#chromeContextLease.ownerPid,
+        owner_bundle_id: this.#chromeContextLease.ownerBundleId,
+      },
+      message: `Managed Chrome context lease established for window ${this.#chromeContextLease.windowNumber}.`,
+      artifact_ids: [],
+    })
+  }
+
+  async #requireLeasedChromeContext(): Promise<ChromeContextSnapshot> {
+    const lease = this.#chromeContextLease
+    if (!lease) {
+      throw new Error('Chrome context lease has not been established. Run observe() to bootstrap the managed Chrome context.')
+    }
+
+    let observation = await observeWindows(this.#config, { limit: 120 })
+    if (!isChromeApp(observation.frontmostAppName) && this.#foregroundPolicy === 'auto_focus_chrome') {
+      await executeOpenApp(this.#config, 'Google Chrome')
+      await sleep(500)
+      observation = await observeWindows(this.#config, { limit: 120 })
+    }
+
+    const chromeWindow = findLeasedChromeWindow(observation, lease)
+    if (!chromeWindow) {
+      throw new Error('Chrome context lease is no longer valid. Run observe() in a new driver session to bootstrap the managed Chrome context again.')
+    }
+    if (!isChromeApp(observation.frontmostAppName)) {
+      throw new Error(
+        `Google Chrome must be the foreground app for the active lease; current frontmost app is ${observation.frontmostAppName ?? 'unknown'}.`,
+      )
+    }
+
+    lease.verifiedAt = new Date().toISOString()
+    return this.#chromeContextFromWindowObservation(observation, chromeWindow, lease)
+  }
+
+  async #resolveChromeContext(options: { activateIfNeeded?: boolean } = {}): Promise<ChromeContextSnapshot> {
     let observation = await observeWindows(this.#config, { limit: 120 })
     let chromeWindow = findChromeWindow(observation)
     if (!isChromeApp(observation.frontmostAppName) || !chromeWindow) {
-      if (this.#foregroundPolicy === 'auto_focus_chrome') {
+      if (options.activateIfNeeded || this.#foregroundPolicy === 'auto_focus_chrome') {
         await executeOpenApp(this.#config, 'Google Chrome')
         await sleep(500)
         observation = await observeWindows(this.#config, { limit: 120 })
@@ -535,6 +722,14 @@ export class MacOSChromeDriver {
       )
     }
 
+    return this.#chromeContextFromWindowObservation(observation, chromeWindow)
+  }
+
+  async #chromeContextFromWindowObservation(
+    observation: WindowObservation,
+    chromeWindow: WindowDescriptor,
+    lease?: ChromeContextLease,
+  ): Promise<ChromeContextSnapshot> {
     const window = chromeWindowRef(chromeWindow)
     const tab = await captureChromeDom(this.#config).catch(() => null)
     return {
@@ -545,37 +740,15 @@ export class MacOSChromeDriver {
       activeTabUrl: tab?.url ?? null,
       activeTabTitle: tab?.title ?? observation.frontmostWindowTitle ?? null,
       profile: {
-        status: 'unverified',
-        reason: 'Chrome does not expose active profile identity through the current local driver contract.',
+        status: lease ? 'verified' : 'unverified',
+        reason: lease
+          ? 'Managed Chrome context lease is valid for the observed OS window; profile identity was fixed during bootstrap config load.'
+          : 'Chrome profile identity is not verified by tab inspection.',
+        profile_path: lease?.profilePath,
       },
       window,
+      lease,
     }
-  }
-}
-
-export function promoteChromeCandidate(
-  recognition: MacOSChromeRecognitionResult,
-): MacOSChromeCandidateRef {
-  if (!recognition.found || !recognition.best) {
-    throw new Error('Cannot promote Chrome candidate: recognition did not find a target.')
-  }
-  if (!recognition.best.actionable) {
-    throw new Error('Cannot promote Chrome candidate: recognized item is not actionable.')
-  }
-
-  const candidateId = `${recognition.recognitionId}:${recognition.best.itemId}`
-  return {
-    kind: 'macos_chrome_candidate',
-    candidateId,
-    recognitionId: recognition.recognitionId,
-    captureSnapshotId: recognition.observation.capture.snapshotId,
-    source: recognition.best.source,
-    role: recognition.best.role,
-    text: recognition.best.text,
-    bounds: recognition.best.bounds,
-    center: recognition.best.center,
-    href: recognition.best.href,
-    window: recognition.observation.chromeContext.window,
   }
 }
 
@@ -594,6 +767,18 @@ function findChromeWindow(observation: WindowObservation): WindowDescriptor | un
   )
 }
 
+function findLeasedChromeWindow(observation: WindowObservation, lease: ChromeContextLease): WindowDescriptor | undefined {
+  return observation.windows.find(window =>
+    window.isOnScreen
+    && isChromeApp(window.appName)
+    && requireWindowNumber(window) === lease.windowNumber
+    && window.ownerPid === lease.ownerPid
+    && (!lease.ownerBundleId || window.ownerBundleId === lease.ownerBundleId)
+    && window.bounds.width >= NORMAL_CHROME_MIN_WIDTH
+    && window.bounds.height >= NORMAL_CHROME_MIN_HEIGHT,
+  )
+}
+
 function chromeWindowRef(window: WindowDescriptor): ChromeWindowRef {
   return {
     id: window.id,
@@ -607,130 +792,8 @@ function chromeWindowRef(window: WindowDescriptor): ChromeWindowRef {
   }
 }
 
-function collectRecognizedItems(observation: MacOSChromeObservationSnapshot): ChromeRecognizedItem[] {
-  return [
-    ...domRecognizedItems(observation),
-    ...axRecognizedItems(observation),
-    ...ocrRecognizedItems(observation),
-  ]
-}
-
-function domRecognizedItems(observation: MacOSChromeObservationSnapshot): ChromeRecognizedItem[] {
-  const dom = observation.chromeDomObservation
-  if (!dom)
-    return []
-  const viewport = findChromeViewportBounds(observation.axSnapshot) ?? observation.chromeContext.window.bounds
-  return dom.elements.map((element): ChromeRecognizedItem => {
-    const text = element.name || element.text || element.role
-    const bounds = offsetBounds(element.bounds, viewport)
-    return {
-      itemId: `dom:${element.id}`,
-      source: 'chrome_dom',
-      role: normalizeDomRole(element),
-      text,
-      bounds,
-      center: {
-        x: viewport.x + element.center.x,
-        y: viewport.y + element.center.y,
-      },
-      confidence: element.confidence,
-      actionable: element.actionable,
-      href: element.href,
-      detail: { tagName: element.tagName },
-    }
-  })
-}
-
-function axRecognizedItems(observation: MacOSChromeObservationSnapshot): ChromeRecognizedItem[] {
-  const ax = observation.axSnapshot
-  if (!ax)
-    return []
-  const items: ChromeRecognizedItem[] = []
-  function walk(node: AXNode) {
-    if (node.bounds && node.bounds.width > 0 && node.bounds.height > 0) {
-      const text = node.title || node.description || node.value || ''
-      if (text.trim()) {
-        items.push({
-          itemId: `ax:${node.uid}`,
-          source: 'ax',
-          role: node.role,
-          text,
-          bounds: node.bounds,
-          center: centerOf(node.bounds),
-          confidence: 0.75,
-          actionable: axRoleIsActionable(node.role),
-          detail: {
-            focused: node.focused,
-            enabled: node.enabled,
-          },
-        })
-      }
-    }
-    for (const child of node.children) {
-      walk(child)
-    }
-  }
-  walk(ax.root)
-  return items
-}
-
-function ocrRecognizedItems(observation: MacOSChromeObservationSnapshot): ChromeRecognizedItem[] {
-  const contract = observation.capture.contract
-  return observation.ocr.matches.map((match): ChromeRecognizedItem => {
-    const bounds = projectOcrBounds(match.bounds, contract.sourceGlobalLogicalBounds, contract.pixelToLogicalScale)
-    return {
-      itemId: `ocr:${match.matchIndex}`,
-      source: 'ocr',
-      role: 'text',
-      text: match.text,
-      bounds,
-      center: centerOf(bounds),
-      confidence: match.confidence,
-      actionable: false,
-    }
-  })
-}
-
-function matchesTarget(item: ChromeRecognizedItem, target: ChromeRecognitionTarget): boolean {
-  switch (target.kind) {
-    case 'text_input':
-      return isTextInputRole(item.role) && textMatches(item.text, target.name)
-    case 'button':
-      return isButtonRole(item.role) && textMatches(item.text, target.text)
-    case 'link':
-      return isLinkRole(item.role) && textMatches(item.text, target.text)
-    case 'visible_text':
-      return textMatches(item.text, target.text)
-  }
-}
-
-function compareRecognizedItems(a: ChromeRecognizedItem, b: ChromeRecognizedItem): number {
-  const sourcePriority: Record<ChromeRecognitionSource, number> = {
-    chrome_dom: 0,
-    ax: 1,
-    ocr: 2,
-  }
-  const actionableDelta = Number(b.actionable) - Number(a.actionable)
-  if (actionableDelta !== 0)
-    return actionableDelta
-  const sourceDelta = sourcePriority[a.source] - sourcePriority[b.source]
-  if (sourceDelta !== 0)
-    return sourceDelta
-  return b.confidence - a.confidence
-}
-
-function recognitionEvidence(observation: MacOSChromeObservationSnapshot): ChromeRecognitionEvidence[] {
-  const evidence: ChromeRecognitionEvidence[] = [
-    { kind: 'screenshot', ref: observation.capture.screenshot.path },
-    { kind: 'ocr', ref: observation.ocr.imagePath },
-  ]
-  if (observation.chromeDomObservation) {
-    evidence.push({ kind: 'chrome_dom', ref: observation.chromeDomObservation.url })
-  }
-  if (observation.axSnapshot) {
-    evidence.push({ kind: 'ax', ref: observation.axSnapshot.snapshotId })
-  }
-  return evidence
+function profileDirFromPath(profilePath: string): string {
+  return profilePath.split('/').filter(Boolean).at(-1) ?? profilePath
 }
 
 /**
@@ -757,89 +820,36 @@ function findChromeViewportBounds(axSnapshot?: AXSnapshot): Bounds | undefined {
   return result
 }
 
-function normalizeDomRole(element: ChromeDomElement): string {
-  if (element.role === 'textbox' && element.tagName === 'input')
-    return 'textbox'
-  return element.role
-}
-
-function isTextInputRole(role: string): boolean {
-  const normalized = role.toLowerCase()
-  return normalized === 'textbox'
-    || normalized === 'searchbox'
-    || normalized === 'combobox'
-    || normalized === 'axtextfield'
-    || normalized === 'axtextarea'
-}
-
-function isButtonRole(role: string): boolean {
-  const normalized = role.toLowerCase()
-  return normalized === 'button' || normalized === 'axbutton'
-}
-
-function isLinkRole(role: string): boolean {
-  const normalized = role.toLowerCase()
-  return normalized === 'link' || normalized === 'axlink'
-}
-
-function axRoleIsActionable(role: string): boolean {
-  return [
-    'AXButton',
-    'AXLink',
-    'AXTextField',
-    'AXTextArea',
-    'AXComboBox',
-    'AXMenuItem',
-    'AXTab',
-  ].includes(role)
-}
-
-function textMatches(text: string, expected: string | RegExp): boolean {
-  if (expected instanceof RegExp)
-    return expected.test(text)
-  return text.toLowerCase().includes(expected.toLowerCase())
-}
-
-function visibleTextFromSources(domText: string | undefined, ocrMatches: OcrTextMatch[]): string {
-  return uniqueStrings([
-    domText?.trim() ?? '',
-    ...ocrMatches.map(match => match.text.trim()),
-  ]).join('\n')
-}
-
-function deriveRiskSignals(text: string): string[] {
-  const signals: string[] = []
-  if (/\b(?:captcha|verify you are human|human verification)\b/i.test(text))
-    signals.push('captcha')
-  if (/\b(?:payment details|billing details|credit card|pay now|checkout)\b/i.test(text))
-    signals.push('payment_required')
-  if (/\b(?:sign in|log in|login).{0,40}(?:to continue|required)\b/i.test(text))
-    signals.push('login_required')
-  return signals
-}
-
-function offsetBounds(bounds: Bounds, offset: Bounds): Bounds {
-  return {
-    x: offset.x + bounds.x,
-    y: offset.y + bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-  }
-}
-
-function projectOcrBounds(bounds: Bounds, globalBounds: Bounds, scale: { x: number, y: number }): Bounds {
-  return {
-    x: globalBounds.x + bounds.x * scale.x,
-    y: globalBounds.y + bounds.y * scale.y,
-    width: bounds.width * scale.x,
-    height: bounds.height * scale.y,
-  }
-}
-
 function centerOf(bounds: Bounds): { x: number, y: number } {
   return {
     x: bounds.x + bounds.width / 2,
     y: bounds.y + bounds.height / 2,
+  }
+}
+
+function resolveScrollAnchor(
+  windowBounds: Bounds,
+  options: MacOSChromeScrollOptions,
+): {
+  screenPoint: { x: number, y: number }
+  windowLocalPoint: { x: number, y: number }
+} {
+  const rawOptions = options as Record<string, unknown>
+  if (Object.hasOwn(rawOptions, 'screenPoint')) {
+    throw new Error('MacOSChromeDriver.scroll does not accept screenPoint; pass windowLocalPoint so the driver can derive screen coordinates from the leased window.')
+  }
+
+  const windowLocalPoint = options.windowLocalPoint ?? {
+    x: windowBounds.width / 2,
+    y: windowBounds.height / 2,
+  }
+
+  return {
+    screenPoint: {
+      x: windowBounds.x + windowLocalPoint.x,
+      y: windowBounds.y + windowLocalPoint.y,
+    },
+    windowLocalPoint,
   }
 }
 
@@ -854,8 +864,47 @@ function isChromeApp(appName: string | undefined): boolean {
   return typeof appName === 'string' && appName.toLowerCase().includes('chrome')
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.map(value => value.trim()).filter(Boolean))]
+function safetyResultFromFailures(failures: SafetyFailure[]): SafetyCheckResult {
+  return {
+    passed: failures.length === 0,
+    checks: {
+      profile_verified: !failures.some(failure => failure.code === 'profile_mismatch'),
+      chrome_foreground: !failures.some(failure => failure.code === 'chrome_not_foreground'),
+      no_hard_stop_signal: !failures.some(failure => failure.code === 'hard_stop_signal'),
+    },
+    failures,
+  }
+}
+
+function mergeSafetyFailures(result: SafetyCheckResult, failures: SafetyFailure[]): SafetyCheckResult {
+  const merged = [...failures, ...result.failures]
+  return {
+    ...result,
+    passed: merged.length === 0,
+    failures: merged,
+  }
+}
+
+function appendSafetyFailure(result: SafetyCheckResult, failure: SafetyFailure): SafetyCheckResult {
+  return {
+    ...result,
+    passed: false,
+    failures: [...result.failures, failure],
+  }
+}
+
+function actionRefusalMessage(actionType: ActionType, reasons: string[]): string {
+  if (reasons.includes('chrome_context_lease_missing')) {
+    return 'Chrome context lease has not been established. Run observe() to bootstrap the managed Chrome context.'
+  }
+  if (reasons.includes('chrome_context_lease_invalid')) {
+    return 'Chrome context lease is no longer valid. Run observe() in a new driver session to bootstrap the managed Chrome context again.'
+  }
+  return `Safety gate refused ${actionType}: ${reasons.join(', ')}`
+}
+
+function sanitizeArtifactId(value: string): string {
+  return value.replace(/[^\w.-]/g, '_').slice(0, 120)
 }
 
 function sleep(ms: number): Promise<void> {

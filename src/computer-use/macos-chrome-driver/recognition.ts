@@ -1,4 +1,4 @@
-import type { ChromeCaptureContract, ChromeRecognitionTarget, RecognitionResult, RecognitionScope, RecognizedItem } from './types.js'
+import type { ArtifactRef, ChromeCaptureContract, ChromeRecognitionTarget, RecognitionResult, RecognitionScope, RecognizedItem } from './types.js'
 
 const BUTTON_KINDS = new Set(['dom_button', 'ax_button'])
 const TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'dom_combobox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
@@ -11,6 +11,7 @@ export function recognizeFromCapture(
   screenshotPath: string,
   runId = 'standalone',
   spanId = 'standalone',
+  evidence: ArtifactRef[] = [],
 ): RecognitionResult {
   const filtered = items
     .filter(item => matchesTarget(item, target))
@@ -18,14 +19,12 @@ export function recognizeFromCapture(
 
   const best = filtered[0] ?? null
 
-  const evidence = [
-    { run_id: runId, artifact_id: `screenshot_${runId}`, span_id: spanId },
-  ]
-
   const scope: RecognitionScope = {
     surface: 'window',
     window_number: contract.captureSource.windowNumber,
     app_bundle_id: contract.captureSource.ownerBundleId,
+    capture_artifact: evidence.find(ref => ref.artifact_id.startsWith('screenshot')),
+    capture_contract_artifact: evidence.find(ref => ref.artifact_id.startsWith('capture_contract') || ref.artifact_id.startsWith('capture-contract')),
   }
 
   const knownLimits: string[] = []
@@ -43,6 +42,8 @@ export function recognizeFromCapture(
     all: items,
     detail: {
       provider: 'careerdeepseek.macos_chrome_driver',
+      run_id: runId,
+      span_id: spanId,
       screenshot_path: screenshotPath,
       total_input_items: items.length,
       filtered_count: filtered.length,
@@ -55,7 +56,8 @@ export function recognizeFromCapture(
 function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): boolean {
   const itemText = item.text ?? ''
   function textMatches(expected: string | RegExp): boolean {
-    if (expected instanceof RegExp) return expected.test(itemText)
+    if (expected instanceof RegExp)
+      return expected.test(itemText)
     return itemText.toLowerCase().includes(expected.toLowerCase())
   }
   switch (target.kind) {
@@ -69,24 +71,38 @@ function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): b
 function compareForBest(a: RecognizedItem, b: RecognizedItem): number {
   const aActionable = isActionable(a)
   const bActionable = isActionable(b)
-  if (aActionable !== bActionable) return Number(bActionable) - Number(aActionable)
+  if (aActionable !== bActionable)
+    return Number(bActionable) - Number(aActionable)
   return (b.provider_score ?? 0) - (a.provider_score ?? 0)
 }
 
 const ACTIONABLE_KINDS = new Set([
-  'dom_button', 'dom_link', 'dom_textbox', 'dom_searchbox',
-  'ax_button', 'ax_link', 'ax_textfield', 'ax_textarea', 'ax_combobox', 'ax_menu_item', 'ax_tab',
+  'dom_button',
+  'dom_link',
+  'dom_textbox',
+  'dom_searchbox',
+  'ax_button',
+  'ax_link',
+  'ax_textfield',
+  'ax_textarea',
+  'ax_combobox',
+  'ax_menu_item',
+  'ax_tab',
 ])
 
 function isActionable(item: RecognizedItem): boolean {
-  if (ACTIONABLE_KINDS.has(item.kind)) return true
+  if (ACTIONABLE_KINDS.has(item.kind))
+    return true
   return item.detail?.actionable === true
 }
 
 function inferRecognitionSource(items: RecognizedItem[]): RecognitionResult['source'] {
-  if (items.length === 0) return 'custom'
+  if (items.length === 0)
+    return 'custom'
   const first = items[0]!
-  if (first.kind.startsWith('dom_')) return 'chrome_dom'
-  if (first.kind.startsWith('ax_')) return 'custom'
+  if (first.kind.startsWith('dom_'))
+    return 'chrome_dom'
+  if (first.kind.startsWith('ax_'))
+    return 'custom'
   return 'ocr_row'
 }

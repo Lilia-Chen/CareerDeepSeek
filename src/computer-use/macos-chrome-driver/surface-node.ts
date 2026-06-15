@@ -118,19 +118,25 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
 export function inferObservationSource(nodes: SurfaceNode[]): ObservationSource {
   const sources = new Set(nodes.map(n => n.recognition_source))
   let count = 0
-  if (sources.has('ocr_text') || sources.has('ocr_row')) count++
-  if (sources.has('chrome_dom')) count++
-  if (sources.has('custom')) count++ // AX → 'custom'
-  if (count > 1) return 'merged'
-  if (sources.has('chrome_dom')) return 'chrome_dom'
-  if (sources.has('custom')) return 'ax'
+  if (sources.has('ocr_text') || sources.has('ocr_row'))
+    count++
+  if (sources.has('chrome_dom'))
+    count++
+  if (sources.has('custom'))
+    count++ // AX → 'custom'
+  if (count > 1)
+    return 'merged'
+  if (sources.has('chrome_dom'))
+    return 'chrome_dom'
+  if (sources.has('custom'))
+    return 'ax'
   return 'ocr'
 }
 
 function projectPixelToLogical(
-  pixelBounds: { x: number; y: number; width: number; height: number },
+  pixelBounds: { x: number, y: number, width: number, height: number },
   contract: ChromeCaptureContract,
-): { x: number; y: number; width: number; height: number } {
+): { x: number, y: number, width: number, height: number } {
   return {
     x: contract.sourceGlobalLogicalBounds.x + pixelBounds.x * contract.pixelToLogicalScale.x,
     y: contract.sourceGlobalLogicalBounds.y + pixelBounds.y * contract.pixelToLogicalScale.y,
@@ -140,8 +146,8 @@ function projectPixelToLogical(
 }
 
 function walkAxTree(
-  node: { uid: string; role: string; title?: string; description?: string; value?: string; bounds?: { x: number; y: number; width: number; height: number }; enabled?: boolean; focused?: boolean; children: unknown[] },
-  visitor: (node: { uid: string; role: string; title?: string; description?: string; value?: string; bounds?: { x: number; y: number; width: number; height: number }; enabled?: boolean; focused?: boolean }) => void,
+  node: { uid: string, role: string, title?: string, description?: string, value?: string, bounds?: { x: number, y: number, width: number, height: number }, enabled?: boolean, focused?: boolean, children: unknown[] },
+  visitor: (node: { uid: string, role: string, title?: string, description?: string, value?: string, bounds?: { x: number, y: number, width: number, height: number }, enabled?: boolean, focused?: boolean }) => void,
 ) {
   if (node.bounds && node.bounds.width > 0 && node.bounds.height > 0) {
     visitor(node)

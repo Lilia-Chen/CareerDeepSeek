@@ -1,7 +1,5 @@
 import type {
-  AXSnapshot,
   Bounds,
-  ChromeDomObservation,
   ScreenshotArtifact,
   WindowDescriptor,
 } from '../types.js'
@@ -29,6 +27,21 @@ export interface ChromeWindowRef {
   layer: number
 }
 
+export interface ChromeContextLease {
+  leaseId: string
+  sessionId: string
+  runId: string
+  profileMode: 'managed'
+  profileDir: string
+  profilePath: string
+  ownerPid: number
+  windowNumber: number
+  ownerBundleId?: string
+  appBundleId?: string
+  createdAt: string
+  verifiedAt: string
+}
+
 export interface ChromeContextSnapshot {
   running: boolean
   isFrontmost: boolean
@@ -42,6 +55,7 @@ export interface ChromeContextSnapshot {
     profile_path?: string
   }
   window: ChromeWindowRef
+  lease?: ChromeContextLease
 }
 
 export interface ChromeCaptureContract {
@@ -80,22 +94,6 @@ export interface OcrTextSnapshot {
   matches: OcrTextMatch[]
 }
 
-/** @deprecated Use ObservationSnapshot instead. */
-export interface MacOSChromeObservationSnapshot {
-  kind: 'macos_chrome_observation'
-  snapshotId: string
-  sessionId: string
-  step: number
-  observedAt: string
-  chromeContext: ChromeContextSnapshot
-  capture: ChromeWindowCapture
-  axSnapshot?: AXSnapshot
-  chromeDomObservation?: ChromeDomObservation
-  ocr: OcrTextSnapshot
-  visibleText: string
-  signals: string[]
-}
-
 export type ChromeRecognitionTarget
   = | {
     kind: 'text_input'
@@ -113,57 +111,6 @@ export type ChromeRecognitionTarget
     kind: 'visible_text'
     text: string | RegExp
   }
-
-export type ChromeRecognitionSource = 'chrome_dom' | 'ax' | 'ocr'
-
-/** @deprecated Use RecognizedItem instead. */
-export interface ChromeRecognizedItem {
-  itemId: string
-  source: ChromeRecognitionSource
-  role: string
-  text: string
-  bounds: Bounds
-  center: { x: number, y: number }
-  confidence: number
-  actionable: boolean
-  href?: string | null
-  detail?: Record<string, unknown>
-}
-
-/** @deprecated Use ArtifactRef[] instead. */
-export interface ChromeRecognitionEvidence {
-  kind: 'screenshot' | 'chrome_dom' | 'ax' | 'ocr'
-  ref: string
-}
-
-/** @deprecated Use RecognitionResult instead. */
-export interface MacOSChromeRecognitionResult {
-  kind: 'macos_chrome_recognition'
-  recognitionId: string
-  target: ChromeRecognitionTarget
-  observation: MacOSChromeObservationSnapshot
-  found: boolean
-  best: ChromeRecognizedItem | null
-  filtered: ChromeRecognizedItem[]
-  all: ChromeRecognizedItem[]
-  evidence: ChromeRecognitionEvidence[]
-  knownLimits: string[]
-}
-
-/** @deprecated Use PromotedCandidate instead. */
-export interface MacOSChromeCandidateRef {
-  kind: 'macos_chrome_candidate'
-  candidateId: string
-  recognitionId: string
-  captureSnapshotId: string
-  source: ChromeRecognitionSource
-  role: string
-  text: string
-  bounds: Bounds
-  center: { x: number, y: number }
-  href?: string | null
-  window: ChromeWindowRef
-}
 
 export function requireWindowNumber(window: WindowDescriptor): number {
   const windowNumber = window.windowNumber
@@ -191,12 +138,12 @@ export interface RatioRegion {
 
 export type RecognitionSource
   = 'ocr_text'
-  | 'ocr_row'
-  | 'visual_row'
-  | 'segmented_region'
-  | 'icon_match'
-  | 'custom'
-  | 'chrome_dom'
+    | 'ocr_row'
+    | 'visual_row'
+    | 'segmented_region'
+    | 'icon_match'
+    | 'custom'
+    | 'chrome_dom'
 
 export type RecognitionSurface = 'screen' | 'display' | 'window' | 'region'
 
@@ -253,7 +200,7 @@ export interface SurfaceNode {
   recognized_item_kind?: string
   provider_score?: number
   detail: Record<string, unknown>
-  center?: { x: number; y: number }
+  center?: { x: number, y: number }
 }
 
 export type ObservationSource = 'ax' | 'ocr' | 'visual' | 'merged' | 'chrome_dom'
@@ -273,22 +220,22 @@ export interface ObservationSnapshot {
   known_limits: string[]
 }
 
-export type CandidatePromotion =
-  | { status: 'promoted'; candidate: PromotedCandidate; residual_known_limits: string[] }
-  | { status: 'refused'; reasons: PromotionRefusal[] }
+export type CandidatePromotion
+  = | { status: 'promoted', candidate: PromotedCandidate, residual_known_limits: string[] }
+    | { status: 'refused', reasons: PromotionRefusal[] }
 
-export type PromotionRefusal =
-  | 'empty_recognition'
-  | 'no_unambiguous_target'
-  | 'no_runtime_evidence'
-  | 'missing_capture_artifact'
-  | 'item_not_actionable'
-  | 'item_outside_viewport'
-  | 'stale_capture'
-  | 'profile_mismatch'
-  | 'chrome_not_foreground'
-  | 'hard_stop_signal'
-  | 'projection_unavailable'
+export type PromotionRefusal
+  = | 'empty_recognition'
+    | 'no_unambiguous_target'
+    | 'no_runtime_evidence'
+    | 'missing_capture_artifact'
+    | 'item_not_actionable'
+    | 'item_outside_viewport'
+    | 'stale_capture'
+    | 'profile_mismatch'
+    | 'chrome_not_foreground'
+    | 'hard_stop_signal'
+    | 'projection_unavailable'
 
 export interface PromotedCandidate {
   candidate_local_id: string

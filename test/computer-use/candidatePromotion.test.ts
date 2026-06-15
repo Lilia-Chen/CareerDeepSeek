@@ -1,15 +1,18 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
 import { promoteCandidate } from '../../src/computer-use/macos-chrome-driver/candidate-promotion.js'
-import type { ChromeCaptureContract, ChromeWindowRef, RecognitionResult, RecognizedItem } from '../../src/computer-use/macos-chrome-driver/types.js'
+import type { ArtifactRef, ChromeCaptureContract, ChromeWindowRef, RecognitionResult, RecognizedItem } from '../../src/computer-use/macos-chrome-driver/types.js'
 
-function makeRecognition(overrides: Partial<RecognitionResult> & { best: RecognizedItem | null; all: RecognizedItem[]; filtered: RecognizedItem[] }): RecognitionResult {
+const captureArtifact: ArtifactRef = { run_id: 'r1', artifact_id: 'screenshot_mco_1', span_id: 'observe_mco_1' }
+const recognitionArtifact: ArtifactRef = { run_id: 'r1', artifact_id: 'recognition_mcr_1', span_id: 'recognize_1' }
+
+function makeRecognition(overrides: Partial<RecognitionResult> & { best: RecognizedItem | null, all: RecognizedItem[], filtered: RecognizedItem[] }): RecognitionResult {
   return {
     recognition_id: 'mcr_1',
     source: 'ocr_row',
     scope: { surface: 'window', window_number: 42, app_bundle_id: 'com.google.Chrome' },
     detail: {},
-    evidence: [{ run_id: 'r1', artifact_id: 'a1', span_id: 's1' }],
+    evidence: [captureArtifact],
     known_limits: [],
     found: false,
     ...overrides,
@@ -38,8 +41,14 @@ const capture: ChromeCaptureContract = {
 }
 
 const window: ChromeWindowRef = {
-  id: '42', windowNumber: 42, appName: 'Google Chrome', ownerPid: 123,
-  ownerBundleId: 'com.google.Chrome', title: 'Test', bounds: { x: 0, y: 40, width: 1000, height: 800 }, layer: 0,
+  id: '42',
+  windowNumber: 42,
+  appName: 'Google Chrome',
+  ownerPid: 123,
+  ownerBundleId: 'com.google.Chrome',
+  title: 'Test',
+  bounds: { x: 0, y: 40, width: 1000, height: 800 },
+  layer: 0,
 }
 
 describe('promoteCandidate', () => {
@@ -47,65 +56,128 @@ describe('promoteCandidate', () => {
     const best = makeItem({ item_id: '0' })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: true, chrome_foreground: true, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
     assert.equal(result.status, 'promoted')
     if (result.status === 'promoted') {
       assert.equal(result.candidate.kind, 'dom_button')
       assert.ok(result.candidate.candidate_local_id.includes('mcr_1'))
       assert.equal(result.candidate.source_run_id, 'r1')
+      assert.deepEqual(result.candidate.evidence.capture_artifact, captureArtifact)
+      assert.deepEqual(result.candidate.evidence.recognition_artifact, recognitionArtifact)
+      assert.equal(result.candidate.source_artifact_id, recognitionArtifact.artifact_id)
+      assert.equal(result.candidate.evidence.capture_artifact.artifact_id.startsWith('capture_'), false)
+    }
+  })
+
+  it('refuses promotion instead of inventing missing capture or recognition artifact refs', () => {
+    const best = makeItem({ item_id: '0' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true, evidence: [] })
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+    })
+    assert.equal(result.status, 'refused')
+    if (result.status === 'refused') {
+      assert.ok(result.reasons.includes('missing_capture_artifact'))
+      assert.ok(result.reasons.includes('no_runtime_evidence'))
     }
   })
 
   it('refuses with empty_recognition when all is empty', () => {
     const recognition = makeRecognition({ best: null, all: [], filtered: [], found: false })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: true, chrome_foreground: true, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
     assert.equal(result.status, 'refused')
-    if (result.status === 'refused') assert.ok(result.reasons.includes('empty_recognition'))
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('empty_recognition'))
   })
 
   it('refuses with profile_mismatch', () => {
     const best = makeItem({ item_id: '0' })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: false, chrome_foreground: true, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: false,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
-    if (result.status === 'refused') assert.ok(result.reasons.includes('profile_mismatch'))
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('profile_mismatch'))
   })
 
   it('refuses with chrome_not_foreground', () => {
     const best = makeItem({ item_id: '0' })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: true, chrome_foreground: false, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: true,
+      chrome_foreground: false,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
-    if (result.status === 'refused') assert.ok(result.reasons.includes('chrome_not_foreground'))
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('chrome_not_foreground'))
   })
 
   it('refuses with hard_stop_signal', () => {
     const best = makeItem({ item_id: '0' })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: true, chrome_foreground: true, hard_stop_signals: ['captcha'], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: ['captcha'],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
-    if (result.status === 'refused') assert.ok(result.reasons.includes('hard_stop_signal'))
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('hard_stop_signal'))
   })
 
   it('refuses with item_outside_viewport', () => {
     const best = makeItem({ item_id: '0', box: { x: 2000, y: 2000, width: 100, height: 40 } })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: true, chrome_foreground: true, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
-    if (result.status === 'refused') assert.ok(result.reasons.includes('item_outside_viewport'))
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('item_outside_viewport'))
   })
 
   it('refuses with stale_capture', () => {
@@ -113,18 +185,31 @@ describe('promoteCandidate', () => {
     const staleCapture = { ...capture, capturedAt: new Date(Date.now() - 6000).toISOString() }
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, staleCapture, window, {
-      profile_verified: true, chrome_foreground: true, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
-    if (result.status === 'refused') assert.ok(result.reasons.includes('stale_capture'))
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('stale_capture'))
   })
 
   it('accumulates multiple refusal reasons', () => {
     const best = makeItem({ item_id: '0' })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
-      profile_verified: false, chrome_foreground: false, hard_stop_signals: [], ttl_ms: 5000,
-      run_id: 'r1', span_id: 's1',
+      profile_verified: false,
+      chrome_foreground: false,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
     })
     if (result.status === 'refused') {
       assert.ok(result.reasons.length >= 2)

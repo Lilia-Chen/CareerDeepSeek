@@ -3,7 +3,8 @@
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
-import { MacOSChromeDriver, promoteChromeCandidate } from '../computer-use/index.js'
+import { MacOSChromeAgentHarness, MacOSChromeDriver } from '../computer-use/index.js'
+import type { AgentPageObservation } from '../computer-use/index.js'
 import type { VisualAction, VisualElement, VisualState } from '../types.js'
 
 const HARD_STOP_SIGNALS = new Set([
@@ -111,16 +112,17 @@ export async function runLinkedInSearchExperiment(params: {
     sessionId: params.sessionId ?? `linkedin-${Date.now()}`,
     foregroundPolicy: 'auto_focus_chrome',
   })
+  const browser = new MacOSChromeAgentHarness(driver)
   const trace: LinkedInSearchTraceStep[] = []
 
-  const observation = await driver.observeLegacy()
-  let state = workflowStateFromChromeObservation(observation)
+  const observation = await browser.observePage()
+  let state = workflowStateFromPageObservation(observation)
   for (let i = 0; i < 8; i++) {
     const decision = decideNextLinkedInSearchAction({ state, query: params.query })
 
     if (decision.kind === 'observe') {
-      const afterObservation = await driver.observeLegacy()
-      const after = workflowStateFromChromeObservation(afterObservation)
+      const afterObservation = await browser.observePage()
+      const after = workflowStateFromPageObservation(afterObservation)
       trace.push({
         phase: 'observe',
         decision: decision.kind,
@@ -133,15 +135,14 @@ export async function runLinkedInSearchExperiment(params: {
     }
 
     if (decision.kind === 'action') {
-      const searchBox = await driver.recognizeLegacy({
-        kind: 'text_input',
-        name: /^search$/i,
+      await browser.typeIntoObservedInput(/^search$/i, params.query, {
+        reason: 'Focus the observed LinkedIn page search box and type the requested query.',
       })
-      await driver.clickLegacy(promoteChromeCandidate(searchBox))
-      await driver.typeText(params.query)
-      await driver.pressKey('enter')
+      await browser.pressEnter({
+        reason: 'Submit the typed LinkedIn search query.',
+      })
       await wait(2500)
-      const after = workflowStateFromChromeObservation(await driver.observeLegacy())
+      const after = workflowStateFromPageObservation(await browser.observePage())
       trace.push({
         phase: 'linkedin_search_submit',
         decision: decision.kind,
@@ -166,35 +167,19 @@ export async function runLinkedInSearchExperiment(params: {
   return { status: 'max_steps', trace, finalState: state }
 }
 
-function workflowStateFromChromeObservation(
-  observation: Awaited<ReturnType<MacOSChromeDriver['observeLegacy']>>,
-): WorkflowState {
+function workflowStateFromPageObservation(observation: AgentPageObservation): WorkflowState {
+  const { visualState } = observation
   return {
-    sessionId: observation.sessionId,
-    step: observation.step,
-    url: observation.chromeContext.activeTabUrl ?? 'about:blank',
-    title: observation.chromeContext.activeTabTitle ?? 'Chrome',
-    sourceType: 'company_site',
-    observedAt: observation.observedAt,
-    screenshot: {
-      id: observation.capture.snapshotId,
-      width: observation.capture.screenshot.width ?? 1,
-      height: observation.capture.screenshot.height ?? 1,
-    },
-    visibleText: observation.visibleText,
-    elements: [],
-    signals: observation.signals,
-    evidence: [],
-    extracted: {},
+    ...visualState,
     chrome: {
-      isFrontmost: observation.chromeContext.isFrontmost,
-      activeTabUrl: observation.chromeContext.activeTabUrl,
-      domAvailable: Boolean(observation.chromeDomObservation),
+      isFrontmost: true,
+      activeTabUrl: observation.url,
+      domAvailable: observation.snapshot.nodes.some(node => node.kind.startsWith('dom_')),
     },
     page: {
-      className: observation.chromeContext.activeTabUrl?.includes('/search/results/')
+      className: observation.url?.includes('/search/results/')
         ? 'linkedin_search_results'
-        : observation.chromeContext.activeTabUrl?.includes('linkedin.com/feed')
+        : observation.url?.includes('linkedin.com/feed')
           ? 'linkedin_feed'
           : 'unknown',
     },

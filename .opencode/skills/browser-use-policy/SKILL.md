@@ -12,10 +12,32 @@ Current workflow mode:
 - Treat yourself as the workflow controller.
 - For company or team target research, also load `company-research-workflow`. This policy controls browser safety and visible actions; the research workflow controls evidence depth, source coverage, stop criteria, and final recommendations.
 - The computer-use adapter is an atomic observation/action tool, not the workflow.
+- P0 browser-use scope is frozen by `docs/computer-use-auv-scope-freeze.md`. The target is the CareerDeepSeek Chrome window driver, not a full AUV desktop driver.
+- Prefer the registered `MacOSChromeAgentHarness` for interactive browser work. It wraps `observe -> recognize -> promote -> act -> observe` and avoids ad hoc glue mistakes. Do not bypass it unless debugging the driver itself.
+- Use only the AUV-aligned `MacOSChromeDriver` / `MacOSChromeAgentHarness` APIs. Legacy observation, recognition, candidate-promotion, and click helpers are removed and must not be recreated in workflow code.
+- Do not recreate legacy paths under new names. Do not invent `open_url`, direct DOM action, Playwright, CDP, raw HTTP, or page-executed action routes.
+- Do not let an individual capability slice expand the contract locally. New artifact roles, trace payload fields, action result schemas, driver APIs, or workflow helpers require a scope-freeze update first.
+- Use the P0B contract as the implementation input for Chrome window capture, `ObservationSnapshot`, `RecognitionResult`, `SurfaceNode`, `PromotedCandidate`, `ArtifactRef`, `TraceStore` payload discipline, and Chrome lease/profile/foreground/hard-stop action gates.
 - Treat yourself as the semantic research controller for internet research. Computer-use can show what is visible and perform allowed clicks/typing/scrolling; it cannot decide whether a page is valuable, whether a source answers the research question, or which company deserves deeper work.
 - Every browser step must run `observe -> decide -> act -> observe`.
 - Do not invent tools at runtime.
 - Do not bypass computer-use with raw browser automation, Playwright, CDP, direct HTTP, or page-executed actions.
+
+Testing and QA boundary:
+
+- Deterministic tests verify primitive contracts: event payloads, candidate promotion, safety gates, coordinate projection, and forbidden action surfaces.
+- P0 deterministic tests should assert kebab-case trace artifact roles: `screenshot`, `capture-contract`, `observation-snapshot`, `recognition-result`, `promoted-candidate`, `action-execution`.
+- All frozen P0 roles are not metadata-only. P0B must not mark any artifact referenced by the frozen contract as metadata-only. Metadata-only roles can only be added by a later scope-freeze update.
+- Artifacts referenced by `ArtifactRef` for frozen P0 roles must have real paths and parse according to MIME type. Screenshots must be real PNG files. `capture-contract` must be JSON containing the coordinate system, window source, scale, and captured timestamp.
+- `action-execution` must be JSON containing action id/type, run/span, candidate/ref, precondition result, executed/refused status, timestamp, and known limits.
+- Click/pointer actions must consume a traced `promoted-candidate` artifact produced by `driver.promoteCandidate()`. Missing promoted-candidate artifact ref is a hard refusal, not metadata-only, and not a `candidate_ref:null` success.
+- On that refusal, `action-execution` must still be written with `executed:false`, `refused:true`, `candidate_ref:null`, and `missing_promoted_candidate_artifact`.
+- `typeText`, `pressKey`, and `scroll` may use `candidate_ref:null` because they are not candidate-click actions.
+- Deterministic tests must not encode a fixed Google, LinkedIn, or company-research workflow and treat that as research quality.
+- Agent QA is separate. It evaluates whether the workflow controller uses observation, recognition, scrolling, overlay handling, and semantic source judgment correctly on real pages.
+- Agent QA may use the harness as a convenience layer. It must not call a fixed task script that already decides the research path.
+- Agent QA should produce a trace and a research result. It must not bypass the agent by calling a fixed task script that already decides every step.
+- A passing unit test means the primitive contract is intact. It does not prove the company-research workflow is good.
 
 Research workflow:
 
@@ -61,6 +83,7 @@ Production agent mode:
 - May only call pre-registered tools.
 - Must not create tools, register action types, modify policy, or bypass the computer-use harness.
 - Must let hardcoded workflow logic decide stop/dismiss behavior before any model action.
+- Must not modify browser-use scope, add legacy compatibility wrappers, or introduce non-P0 AUV desktop capabilities during a workflow run.
 
 Allowed:
 

@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
 import { recognizeFromCapture } from '../../src/computer-use/macos-chrome-driver/recognition.js'
-import type { ChromeCaptureContract, ChromeRecognitionTarget, RecognizedItem } from '../../src/computer-use/macos-chrome-driver/types.js'
+import type { ArtifactRef, ChromeCaptureContract, ChromeRecognitionTarget, RecognizedItem } from '../../src/computer-use/macos-chrome-driver/types.js'
 
 const screenshotPath = '/tmp/test-chrome.png'
 
@@ -78,11 +78,25 @@ describe('recognizeFromCapture', () => {
     assert.equal(result.filtered.length, 1)
   })
 
-  it('includes evidence artifact refs', () => {
+  it('does not invent screenshot artifact refs when no evidence refs are supplied', () => {
     const items = [makeItem({ item_id: '0' })]
     const target: ChromeRecognitionTarget = { kind: 'visible_text', text: /search/i }
-    const result = recognizeFromCapture(items, target, contract, screenshotPath)
-    assert.ok(result.evidence.length >= 1)
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1')
+    assert.equal(result.evidence.some(ref => ref.artifact_id === 'screenshot_run_1'), false)
+    assert.equal(result.evidence.length, 0)
+  })
+
+  it('uses caller-supplied evidence artifact refs', () => {
+    const items = [makeItem({ item_id: '0' })]
+    const target: ChromeRecognitionTarget = { kind: 'visible_text', text: /search/i }
+    const evidence: ArtifactRef[] = [
+      { run_id: 'run_1', artifact_id: 'screenshot_mco_1', span_id: 'observe_mco_1' },
+      { run_id: 'run_1', artifact_id: 'capture_contract_mco_1', span_id: 'observe_mco_1' },
+    ]
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    assert.deepEqual(result.evidence, evidence)
+    assert.equal(result.scope.capture_artifact?.artifact_id, 'screenshot_mco_1')
+    assert.equal(result.scope.capture_contract_artifact?.artifact_id, 'capture_contract_mco_1')
   })
 
   it('links scope to window metadata', () => {
