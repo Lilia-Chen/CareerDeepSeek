@@ -15,10 +15,6 @@ The repository is designed to be public. Real job leads, contacts, CVs, cover le
 - Provide OpenCode/Codex project instructions for bounded work sessions.
 - Generate drafts and CRM records in a private data directory, not in this repository.
 
-## Contributors
-
-- codex
-
 ## Non-goals
 
 - No raw HTTP scraping.
