@@ -1,26 +1,34 @@
 import type { AXSnapshot, ChromeDomObservation } from '../types.js'
 import type {
+  ArtifactRef,
   ChromeCaptureContract,
   ObservationSource,
+  OcrRowEvidence,
   OcrTextMatch,
+  RecognitionBox,
   SurfaceNode,
 } from './types.js'
 
 export interface NormalizeInput {
   ocrMatches: OcrTextMatch[]
+  ocrRows?: OcrRowEvidence[]
   axSnapshot?: AXSnapshot
   domObservation?: ChromeDomObservation
   contract: ChromeCaptureContract
   runId: string
   spanId: string
   viewportBounds?: { x: number, y: number, width: number, height: number }
+  captureArtifact?: ArtifactRef
+  captureContractArtifact?: ArtifactRef
 }
 
 export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   const nodes: SurfaceNode[] = []
+  const sourceArtifacts = sourceArtifactIds(input)
 
   // OCR matches → SurfaceNode (PRIMARY source)
   for (const match of input.ocrMatches) {
+    const projectedBox = projectPixelToLogical(match.bounds, input.contract)
     nodes.push({
       node_ref: {
         run_id: input.runId,
@@ -29,11 +37,56 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
       },
       kind: 'ocr_text',
       label: match.text,
-      box: projectPixelToLogical(match.bounds, input.contract),
-      source_artifacts: [],
+      box: projectedBox,
+      source_artifacts: sourceArtifacts,
       recognition_source: 'ocr_text',
       provider_score: match.confidence,
-      detail: { match_index: match.matchIndex, raw_pixel_bounds: match.bounds },
+      detail: {
+        match_index: match.matchIndex,
+        text: match.text,
+        confidence: match.confidence,
+        raw_pixel_bounds: match.bounds,
+        coordinate_spaces: coordinateSpaces(),
+        bounds: evidenceBounds(match.bounds, projectedBox),
+        projection: projectionDetail(input.contract),
+        source_artifacts: sourceArtifactDetail(input),
+        known_limits: confidenceKnownLimits(match.confidence),
+      },
+    })
+  }
+
+  for (const row of input.ocrRows ?? []) {
+    const projectedBox = projectPixelToLogical(row.bounds, input.contract)
+    const rowKnownLimits = uniqueStrings([
+      ...(Number.isFinite(row.confidence) ? [] : ['row confidence unavailable from provider']),
+      ...(row.textFragments.length === 0 ? ['row text fragments empty'] : []),
+      ...(row.knownLimits ?? []),
+    ])
+    nodes.push({
+      node_ref: {
+        run_id: input.runId,
+        span_id: input.spanId,
+        node_id: `${row.source}_${row.rowIndex}`,
+      },
+      kind: row.source,
+      label: row.textFragments.map(fragment => fragment.text).join(' ').trim() || undefined,
+      box: projectedBox,
+      source_artifacts: sourceArtifacts,
+      recognition_source: row.source,
+      recognition_surface: 'window',
+      provider_score: row.confidence,
+      detail: {
+        row_index: row.rowIndex,
+        source: row.source,
+        confidence: row.confidence,
+        coordinate_spaces: coordinateSpaces(),
+        row_bounds: evidenceBounds(row.bounds, projectedBox),
+        projection: projectionDetail(input.contract),
+        text_fragments: row.textFragments.map(fragment => fragment.text),
+        fragment_evidence: row.textFragments.map(fragment => fragmentEvidence(fragment, input.contract)),
+        source_artifacts: sourceArtifactDetail(input),
+        known_limits: rowKnownLimits,
+      },
     })
   }
 
@@ -118,7 +171,8 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
 export function inferObservationSource(nodes: SurfaceNode[]): ObservationSource {
   const sources = new Set(nodes.map(n => n.recognition_source))
   let count = 0
-  if (sources.has('ocr_text') || sources.has('ocr_row'))
+  const hasOcr = sources.has('ocr_text') || sources.has('ocr_row')
+  if (hasOcr)
     count++
   if (sources.has('chrome_dom'))
     count++
@@ -131,6 +185,68 @@ export function inferObservationSource(nodes: SurfaceNode[]): ObservationSource 
   if (sources.has('custom'))
     return 'ax'
   return 'ocr'
+}
+
+function sourceArtifactIds(input: NormalizeInput): string[] {
+  return [
+    input.captureArtifact?.artifact_id,
+    input.captureContractArtifact?.artifact_id,
+  ].filter((artifactId): artifactId is string => typeof artifactId === 'string')
+}
+
+function sourceArtifactDetail(input: NormalizeInput): Record<string, ArtifactRef> {
+  const detail: Record<string, ArtifactRef> = {}
+  if (input.captureArtifact)
+    detail.capture_artifact = input.captureArtifact
+  if (input.captureContractArtifact)
+    detail.capture_contract_artifact = input.captureContractArtifact
+  return detail
+}
+
+function coordinateSpaces() {
+  return {
+    raw: 'capture_pixel',
+    projected: 'source_global_logical',
+  }
+}
+
+function evidenceBounds(
+  capturePixel: { x: number, y: number, width: number, height: number },
+  sourceGlobalLogical: RecognitionBox,
+) {
+  return {
+    capture_pixel: capturePixel,
+    source_global_logical: sourceGlobalLogical,
+  }
+}
+
+function projectionDetail(contract: ChromeCaptureContract) {
+  return {
+    contract_version: contract.coordinateContractVersion,
+    pixel_to_logical_scale: contract.pixelToLogicalScale,
+    source_global_logical_bounds: contract.sourceGlobalLogicalBounds,
+  }
+}
+
+function fragmentEvidence(fragment: OcrRowEvidence['textFragments'][number], contract: ChromeCaptureContract) {
+  const projected = fragment.bounds ? projectPixelToLogical(fragment.bounds, contract) : undefined
+  return {
+    match_index: fragment.matchIndex,
+    text: fragment.text,
+    confidence: fragment.confidence,
+    bounds: fragment.bounds && projected ? evidenceBounds(fragment.bounds, projected) : undefined,
+    known_limits: fragment.knownLimits ?? [],
+  }
+}
+
+function confidenceKnownLimits(confidence: number | undefined): string[] {
+  return Number.isFinite(confidence) && confidence! >= 0 && confidence! <= 1
+    ? []
+    : ['invalid or missing confidence']
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values))
 }
 
 function projectPixelToLogical(

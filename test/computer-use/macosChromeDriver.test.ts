@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   executeWindowTargetedScroll: vi.fn(),
   loadProfileConfig: vi.fn(),
   observeWindows: vi.fn(),
+  produceOcrRows: vi.fn(),
   recognizeTextInImage: vi.fn(),
   detectHardStopSignals: vi.fn(),
   checkSafetyGate: vi.fn(),
@@ -87,6 +88,7 @@ vi.mock('../../src/computer-use/window-observation.js', () => ({
 }))
 
 vi.mock('../../src/computer-use/macos-chrome-driver/ocr.js', () => ({
+  produceOcrRows: mocks.produceOcrRows,
   recognizeTextInImage: mocks.recognizeTextInImage,
 }))
 
@@ -145,20 +147,47 @@ describe('macOS Chrome driver', () => {
       verified_at: '2026-06-14T00:00:00.000Z',
     })
     mocks.observeWindows.mockResolvedValue(chromeWindowObservation())
-    mocks.recognizeTextInImage.mockResolvedValue({
-      recognizedAt: '2026-06-14T00:00:00.000Z',
-      imagePath: '/tmp/chrome.png',
-      imageWidth: 1000,
-      imageHeight: 800,
-      matches: [
-        {
-          matchIndex: 0,
-          text: 'Search',
-          confidence: 0.97,
-          bounds: { x: 92, y: 78, width: 120, height: 34 },
-        },
-      ],
-    })
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([
+      {
+        matchIndex: 0,
+        text: 'Search',
+        confidence: 0.97,
+        bounds: { x: 92, y: 78, width: 120, height: 34 },
+      },
+    ]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => ({
+      strategy: 'ocr-text',
+      imagePath: textSnapshot.imagePath,
+      imageWidth: textSnapshot.imageWidth,
+      imageHeight: textSnapshot.imageHeight,
+      rawMatchCount: textSnapshot.rawMatchCount,
+      filteredMatchCount: textSnapshot.filteredMatchCount,
+      rowCount: textSnapshot.matches.length > 0 ? 1 : 0,
+      rows: textSnapshot.matches.length > 0
+        ? [{
+            rowIndex: 0,
+            source: 'ocr_row',
+            bounds: { x: 80, y: 70, width: 180, height: 56 },
+            textFragments: textSnapshot.matches.map((match: {
+              matchIndex: number
+              text: string
+              confidence: number
+              bounds: { x: number, y: number, width: number, height: number }
+            }) => ({
+              matchIndex: match.matchIndex,
+              text: match.text,
+              confidence: match.confidence,
+              bounds: match.bounds,
+            })),
+            knownLimits: ['row grouping is heuristic within current capture'],
+          }]
+        : [],
+      providerDetail: {
+        provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+        originalStrategy: 'ocr-text',
+      },
+      knownLimits: ['row grouping is heuristic within current capture'],
+    }))
     mocks.detectHardStopSignals.mockReturnValue([])
     mocks.checkSafetyGate.mockReturnValue({
       passed: true,
@@ -219,7 +248,27 @@ describe('macOS Chrome driver', () => {
     assert.equal(snapshot.scope.app_bundle_id, 'com.google.Chrome')
     assert.equal(snapshot.capture_contract_ref?.artifact_id, 'capture_contract_mco_1')
     assert.ok(snapshot.evidence.some(item => item.artifact_id === 'screenshot_mco_1'))
+    assert.ok(snapshot.evidence.some(item => item.artifact_id === 'capture_contract_mco_1'))
     assert.ok(snapshot.nodes.some(node => node.label === 'Search'))
+    const ocrNode = snapshot.nodes.find(node => node.kind === 'ocr_text')
+    assert.ok(ocrNode)
+    assert.deepEqual(ocrNode.source_artifacts, ['screenshot_mco_1', 'capture_contract_mco_1'])
+    assert.deepEqual(ocrNode.detail.source_artifacts, {
+      capture_artifact: { run_id: snapshot.run_id, artifact_id: 'screenshot_mco_1', span_id: snapshot.span_id },
+      capture_contract_artifact: { run_id: snapshot.run_id, artifact_id: 'capture_contract_mco_1', span_id: snapshot.span_id },
+    })
+    const rowNode = snapshot.nodes.find(node => node.kind === 'ocr_row')
+    assert.ok(rowNode)
+    assert.deepEqual(rowNode.source_artifacts, ['screenshot_mco_1', 'capture_contract_mco_1'])
+    assert.equal(rowNode.label, 'Search')
+    assert.deepEqual(snapshot.detail.ocr_rows, {
+      strategy: 'ocr-text',
+      row_count: 1,
+      raw_match_count: 1,
+      filtered_match_count: 1,
+      known_limits: ['row grouping is heuristic within current capture'],
+    })
+    assert.equal(mocks.produceOcrRows.mock.calls.length, 1)
     assert.equal('targetCandidates' in snapshot, false)
   })
 
@@ -236,12 +285,14 @@ describe('macOS Chrome driver', () => {
     const screenshot = records.find(record => record.role === 'screenshot')
     const contract = records.find(record => record.role === 'capture-contract')
     const observation = records.find(record => record.role === 'observation-snapshot')
+    const rowReport = records.find(record => record.role === 'ocr-row-report')
 
     assert.ok(screenshot)
     assert.equal(existsSync(screenshot.path), true)
     assert.equal(readFileSync(screenshot.path).subarray(0, 8).toString('hex'), '89504e470d0a1a0a')
     assert.ok(contract)
     assert.ok(observation)
+    assert.ok(rowReport)
     assert.equal(records.some(record => record.role === 'capture_contract'), false)
     assert.equal(records.some(record => record.role === 'observation_snapshot'), false)
 
@@ -260,6 +311,233 @@ describe('macOS Chrome driver', () => {
     assert.equal(observationPayload.api_version, 'careerdeepseek.observation_snapshot.v1alpha1')
     assert.equal(observationPayload.capture_contract_ref.artifact_id, contract.artifact_id)
     assert.ok(observationPayload.evidence.some((ref: { artifact_id: string }) => ref.artifact_id === screenshot.artifact_id))
+    assert.ok(observationPayload.evidence.some((ref: { artifact_id: string }) => ref.artifact_id === contract.artifact_id))
+    assert.ok(observationPayload.evidence.some((ref: { artifact_id: string }) => ref.artifact_id === rowReport.artifact_id))
+
+    const rowReportPayload = JSON.parse(readFileSync(rowReport.path, 'utf-8'))
+    assert.equal(rowReportPayload.strategy, 'ocr-text')
+    assert.equal(rowReportPayload.rowCount, 1)
+    assert.equal(rowReportPayload.rawMatchCount, 1)
+    assert.equal(rowReportPayload.filteredMatchCount, 1)
+    assert.equal(Array.isArray(rowReportPayload.rows), true)
+  })
+
+  it('does not decode screenshot pixels or pass visualImage for P1-1 OCR row evidence', async () => {
+    mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([
+      {
+        matchIndex: 0,
+        text: 'Runtime OCR row',
+        confidence: 0.91,
+        bounds: { x: 52, y: 130, width: 210, height: 22 },
+      },
+    ]))
+    mocks.produceOcrRows.mockImplementationOnce(async (input) => {
+      assert.equal('visualImage' in input, false)
+      assert.equal('visualRows' in input, false)
+      assert.equal('visualOptions' in input, false)
+      const textSnapshot = input.textSnapshot
+      return {
+        strategy: 'ocr-text',
+        imagePath: textSnapshot.imagePath,
+        imageWidth: textSnapshot.imageWidth,
+        imageHeight: textSnapshot.imageHeight,
+        rawMatchCount: textSnapshot.rawMatchCount,
+        filteredMatchCount: textSnapshot.filteredMatchCount,
+        rowCount: 1,
+        rows: [{
+          rowIndex: 0,
+          source: 'ocr_row' as const,
+          bounds: { x: 40, y: 120, width: 420, height: 48 },
+          textFragments: [
+            {
+              matchIndex: 0,
+              text: 'Runtime OCR row',
+              confidence: 0.84,
+              bounds: { x: 52, y: 130, width: 210, height: 22 },
+            },
+          ],
+          confidence: 0.82,
+          knownLimits: ['row grouping is heuristic within current capture'],
+        }],
+        providerDetail: {
+          provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+          originalStrategy: 'ocr-text',
+        },
+        knownLimits: ['row grouping is heuristic within current capture'],
+      }
+    })
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const snapshot = await driver.observe()
+
+    const rowNode = snapshot.nodes.find(node => node.kind === 'ocr_row')
+    assert.ok(rowNode)
+    assert.equal(rowNode.label, 'Runtime OCR row')
+    assert.deepEqual(rowNode.source_artifacts, ['screenshot_mco_1', 'capture_contract_mco_1'])
+    assert.equal(rowNode.detail.source, 'ocr_row')
+    assert.deepEqual(rowNode.detail.row_bounds, {
+      capture_pixel: { x: 40, y: 120, width: 420, height: 48 },
+      source_global_logical: { x: 40, y: 160, width: 420, height: 48 },
+    })
+    assert.ok((rowNode.detail.known_limits as string[]).some(limit => limit.includes('row grouping')))
+    assert.deepEqual(snapshot.detail.ocr_rows, {
+      strategy: 'ocr-text',
+      row_count: 1,
+      raw_match_count: 1,
+      filtered_match_count: 1,
+      known_limits: ['row grouping is heuristic within current capture'],
+    })
+
+    const rowReportPayload = readLastJsonArtifactByRole('ocr-row-report')
+    assert.equal(rowReportPayload.strategy, 'ocr-text')
+    assert.equal(rowReportPayload.rowCount, 1)
+    assert.equal(rowReportPayload.rows[0].source, 'ocr_row')
+    assert.equal(rowReportPayload.rows[0].textFragments[0].text, 'Runtime OCR row')
+  })
+
+  it('recognizes OCR runtime items with projection detail and capture refs from the normalizer path', async () => {
+    mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'visible_text', text: /search/i })
+
+    assert.equal(result.found, true)
+    assert.equal(result.best?.kind, 'ocr_text')
+    assert.deepEqual(result.best?.detail.source_artifacts, {
+      capture_artifact: { run_id: result.scope.capture_artifact?.run_id, artifact_id: 'screenshot_mco_1', span_id: 'observe_mco_1' },
+      capture_contract_artifact: { run_id: result.scope.capture_contract_artifact?.run_id, artifact_id: 'capture_contract_mco_1', span_id: 'observe_mco_1' },
+    })
+    assert.deepEqual(result.best?.detail.bounds, {
+      capture_pixel: { x: 92, y: 78, width: 120, height: 34 },
+      source_global_logical: { x: 92, y: 118, width: 120, height: 34 },
+    })
+    assert.equal(result.known_limits.some(limit => limit.includes('invalid bounds or projection detail')), false)
+  })
+
+  it('recognizes visible text from OCR row evidence emitted by the runtime producer', async () => {
+    mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([
+      {
+        matchIndex: 0,
+        text: 'Acme',
+        confidence: 0.91,
+        bounds: { x: 100, y: 200, width: 80, height: 28 },
+      },
+      {
+        matchIndex: 1,
+        text: 'AI Engineer',
+        confidence: 0.89,
+        bounds: { x: 220, y: 202, width: 220, height: 30 },
+      },
+    ]))
+    mocks.produceOcrRows.mockResolvedValue({
+      strategy: 'ocr-text',
+      imagePath: '/tmp/chrome.png',
+      imageWidth: 1000,
+      imageHeight: 800,
+      rawMatchCount: 2,
+      filteredMatchCount: 2,
+      rowCount: 1,
+      rows: [{
+        rowIndex: 0,
+        source: 'ocr_row',
+        bounds: { x: 100, y: 190, width: 360, height: 60 },
+        textFragments: [
+          { matchIndex: 0, text: 'Acme', confidence: 0.91, bounds: { x: 100, y: 200, width: 80, height: 28 } },
+          { matchIndex: 1, text: 'AI Engineer', confidence: 0.89, bounds: { x: 220, y: 202, width: 220, height: 30 } },
+        ],
+        knownLimits: ['row grouping is heuristic within current capture'],
+      }],
+      providerDetail: {
+        provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+        originalStrategy: 'ocr-text',
+      },
+      knownLimits: ['row grouping is heuristic within current capture'],
+    })
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'visible_text', text: /Acme AI Engineer/i })
+
+    assert.equal(result.found, true)
+    assert.equal(result.best?.kind, 'ocr_row')
+    assert.equal(result.best?.text, 'Acme AI Engineer')
+    assert.deepEqual(result.best?.detail.row_bounds, {
+      capture_pixel: { x: 100, y: 190, width: 360, height: 60 },
+      source_global_logical: { x: 100, y: 230, width: 360, height: 60 },
+    })
+    assert.equal(result.known_limits.some(limit => limit.includes('invalid bounds or projection detail')), false)
+  })
+
+  it('propagates raw OCR failure limits through observe even when row production returns empty rows', async () => {
+    mocks.recognizeTextInImage.mockRejectedValueOnce(new Error('vision provider unavailable'))
+    mocks.produceOcrRows.mockResolvedValueOnce({
+      strategy: 'ocr-text',
+      imagePath: screenshotPath,
+      imageWidth: 1000,
+      imageHeight: 800,
+      rawMatchCount: 0,
+      filteredMatchCount: 0,
+      rowCount: 0,
+      rows: [],
+      providerDetail: {
+        provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+        originalStrategy: 'ocr-text',
+      },
+      knownLimits: [],
+    })
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const snapshot = await driver.observe()
+
+    assert.ok(snapshot.known_limits.some(limit => limit.includes('raw OCR failed')))
+    assert.ok(snapshot.known_limits.some(limit => limit.includes('vision provider unavailable')))
+    assert.ok((snapshot.detail.ocr_known_limits as string[]).some(limit => limit.includes('raw OCR failed')))
+  })
+
+  it('propagates OCR and row-production failure limits through recognizeFromCapture', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.recognizeTextInImage.mockRejectedValueOnce(new Error('vision provider unavailable'))
+    mocks.produceOcrRows.mockRejectedValueOnce(new Error('row producer unavailable'))
+
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'visible_text', text: /missing/i })
+
+    assert.equal(result.found, false)
+    assert.ok(result.known_limits.some(limit => limit.includes('raw OCR failed')))
+    assert.ok(result.known_limits.some(limit => limit.includes('vision provider unavailable')))
+    assert.ok(result.known_limits.some(limit => limit.includes('ocr row production failed')))
+    assert.ok(result.known_limits.some(limit => limit.includes('row producer unavailable')))
+    assert.ok((result.detail.ocr_known_limits as string[]).some(limit => limit.includes('raw OCR failed')))
+    assert.ok((result.detail.ocr_row_known_limits as string[]).some(limit => limit.includes('ocr row production failed')))
   })
 
   it('recognizes a target from capture and promotes it into a click candidate', async () => {
@@ -572,6 +850,28 @@ function screenshot(): ScreenshotArtifact {
   }
 }
 
+function ocrSnapshot(matches: Array<{
+  matchIndex: number
+  text: string
+  confidence: number
+  bounds: { x: number, y: number, width: number, height: number }
+}>) {
+  return {
+    recognizedAt: '2026-06-14T00:00:00.000Z',
+    imagePath: '/tmp/chrome.png',
+    imageWidth: 1000,
+    imageHeight: 800,
+    query: '',
+    exact: false,
+    caseSensitive: false,
+    normalizedQuery: '',
+    ocrScaleFactor: 1,
+    matches,
+    rawMatchCount: matches.length,
+    filteredMatchCount: matches.length,
+  }
+}
+
 function readArtifactRecords(): Array<{
   artifact_id: string
   span_id: string
@@ -688,6 +988,22 @@ function axSnapshot(): AXSnapshot {
   }
 }
 
+function emptyAxSnapshot(): AXSnapshot {
+  return {
+    snapshotId: 'ax-empty',
+    pid: 123,
+    appName: 'Google Chrome',
+    capturedAt: '2026-06-14T00:00:00.000Z',
+    maxDepth: 15,
+    truncated: false,
+    root: {
+      uid: 'root',
+      role: 'AXApplication',
+      children: [],
+    },
+  }
+}
+
 function chromeDomObservation(): ChromeDomObservation {
   return {
     url: 'https://www.linkedin.com/feed/',
@@ -723,5 +1039,16 @@ function chromeDomObservation(): ChromeDomObservation {
         states: {},
       },
     ],
+  }
+}
+
+function emptyChromeDomObservation(): ChromeDomObservation {
+  return {
+    url: 'https://www.linkedin.com/feed/',
+    title: 'Feed | LinkedIn',
+    observedAt: '2026-06-14T00:00:00.000Z',
+    visibleText: '',
+    signals: [],
+    elements: [],
   }
 }

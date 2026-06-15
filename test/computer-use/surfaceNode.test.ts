@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
 import { normalizeToSurfaceNodes } from '../../src/computer-use/macos-chrome-driver/surface-node.js'
-import type { OcrTextMatch } from '../../src/computer-use/macos-chrome-driver/types.js'
+import type { ArtifactRef, OcrTextMatch } from '../../src/computer-use/macos-chrome-driver/types.js'
 import type { AXSnapshot, ChromeDomObservation } from '../../src/computer-use/types.js'
 
 const contract = {
@@ -16,6 +16,8 @@ const contract = {
 
 const runId = 'run_1'
 const spanId = 'span_1'
+const captureArtifact: ArtifactRef = { run_id: runId, artifact_id: 'screenshot_mco_1', span_id: spanId }
+const captureContractArtifact: ArtifactRef = { run_id: runId, artifact_id: 'capture_contract_mco_1', span_id: spanId }
 
 describe('normalizeToSurfaceNodes', () => {
   it('converts OCR matches to SurfaceNode with correct coordinate projection', () => {
@@ -37,6 +39,123 @@ describe('normalizeToSurfaceNodes', () => {
     assert.equal(node.node_ref.run_id, runId)
     assert.equal(node.node_ref.span_id, spanId)
     assert.equal(node.node_ref.node_id, 'ocr_0')
+  })
+
+  it('preserves OCR text evidence detail with capture-pixel and projected logical coordinates', () => {
+    const ocrMatches: OcrTextMatch[] = [
+      { matchIndex: 3, text: 'Apply now', confidence: 0.91, bounds: { x: 160, y: 120, width: 240, height: 48 } },
+    ]
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches,
+      contract,
+      runId,
+      spanId,
+      captureArtifact,
+      captureContractArtifact,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'ocr_text')
+    assert.equal(node.provider_score, 0.91)
+    assert.deepEqual(node.source_artifacts, ['screenshot_mco_1', 'capture_contract_mco_1'])
+    assert.deepEqual(node.box, { x: 80, y: 100, width: 120, height: 24 })
+    assert.equal(node.detail.match_index, 3)
+    assert.equal(node.detail.text, 'Apply now')
+    assert.equal(node.detail.confidence, 0.91)
+    assert.deepEqual(node.detail.raw_pixel_bounds, { x: 160, y: 120, width: 240, height: 48 })
+    assert.deepEqual(node.detail.coordinate_spaces, {
+      raw: 'capture_pixel',
+      projected: 'source_global_logical',
+    })
+    assert.deepEqual(node.detail.bounds, {
+      capture_pixel: { x: 160, y: 120, width: 240, height: 48 },
+      source_global_logical: { x: 80, y: 100, width: 120, height: 24 },
+    })
+    assert.deepEqual(node.detail.projection, {
+      contract_version: 1,
+      pixel_to_logical_scale: { x: 0.5, y: 0.5 },
+      source_global_logical_bounds: { x: 0, y: 40, width: 1000, height: 800 },
+    })
+    assert.deepEqual(node.detail.source_artifacts, {
+      capture_artifact: captureArtifact,
+      capture_contract_artifact: captureContractArtifact,
+    })
+    assert.deepEqual(node.detail.known_limits, [])
+  })
+
+  it('preserves current-capture row evidence without stable cross-scroll identity', () => {
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      ocrRows: [
+        {
+          rowIndex: 2,
+          source: 'ocr_row',
+          bounds: { x: 100, y: 200, width: 900, height: 80 },
+          textFragments: [
+            { matchIndex: 5, text: 'Company', confidence: 0.88, bounds: { x: 100, y: 200, width: 180, height: 32 } },
+            { matchIndex: 6, text: 'AI Engineer', confidence: 0.84, bounds: { x: 340, y: 204, width: 260, height: 34 } },
+          ],
+          knownLimits: ['row grouping is heuristic within current capture'],
+        },
+      ],
+      contract,
+      runId,
+      spanId,
+      captureArtifact,
+      captureContractArtifact,
+    })
+
+    assert.equal(nodes.length, 1)
+    const node = nodes[0]!
+    assert.equal(node.kind, 'ocr_row')
+    assert.equal(node.recognition_source, 'ocr_row')
+    assert.equal(node.provider_score, undefined)
+    assert.equal(node.node_ref.node_id, 'ocr_row_2')
+    assert.deepEqual(node.box, { x: 50, y: 140, width: 450, height: 40 })
+    assert.equal(node.detail.row_index, 2)
+    assert.equal(node.detail.source, 'ocr_row')
+    assert.deepEqual(node.detail.row_bounds, {
+      capture_pixel: { x: 100, y: 200, width: 900, height: 80 },
+      source_global_logical: { x: 50, y: 140, width: 450, height: 40 },
+    })
+    assert.deepEqual(node.detail.text_fragments, ['Company', 'AI Engineer'])
+    assert.deepEqual((node.detail.fragment_evidence as Array<Record<string, unknown>>).map(fragment => ({
+      match_index: fragment.match_index,
+      text: fragment.text,
+      confidence: fragment.confidence,
+      bounds: fragment.bounds,
+    })), [
+      {
+        match_index: 5,
+        text: 'Company',
+        confidence: 0.88,
+        bounds: {
+          capture_pixel: { x: 100, y: 200, width: 180, height: 32 },
+          source_global_logical: { x: 50, y: 140, width: 90, height: 16 },
+        },
+      },
+      {
+        match_index: 6,
+        text: 'AI Engineer',
+        confidence: 0.84,
+        bounds: {
+          capture_pixel: { x: 340, y: 204, width: 260, height: 34 },
+          source_global_logical: { x: 170, y: 142, width: 130, height: 17 },
+        },
+      },
+    ])
+    assert.deepEqual(node.detail.source_artifacts, {
+      capture_artifact: captureArtifact,
+      capture_contract_artifact: captureContractArtifact,
+    })
+    assert.ok((node.detail.known_limits as string[]).includes('row confidence unavailable from provider'))
+    assert.ok((node.detail.known_limits as string[]).includes('row grouping is heuristic within current capture'))
+    assert.equal('stable_id' in node.detail, false)
+    assert.equal('cross_scroll_id' in node.detail, false)
+    assert.equal('list_id' in node.detail, false)
+    assert.equal('scroll_identity' in node.detail, false)
   })
 
   it('converts AX nodes with bounds and text to SurfaceNode', () => {

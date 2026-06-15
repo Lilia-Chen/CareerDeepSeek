@@ -10,12 +10,15 @@ import type {
   ChromeWindowCapture,
   ChromeWindowRef,
   ObservationSnapshot,
+  OcrRowSnapshot,
+  OcrTextSnapshot,
   ProfileConfig,
   PromotedCandidate,
   RecognizedItem,
   RecognitionResult as NewRecognitionResult,
   SafetyCheckResult,
   SafetyFailure,
+  SurfaceNode,
 } from './types.js'
 
 import { resolveComputerUseConfig } from '../config.js'
@@ -32,7 +35,7 @@ import {
 import { observeWindows } from '../window-observation.js'
 import { buildPointerTrace } from '../pointer-trace.js'
 import { captureChromeWindow } from './capture.js'
-import { recognizeTextInImage } from './ocr.js'
+import { produceOcrRows, recognizeTextInImage } from './ocr.js'
 import { requireWindowNumber } from './types.js'
 
 // AUV-aligned observation / recognition imports
@@ -128,7 +131,9 @@ export class MacOSChromeDriver {
       attributes: { width: capture.screenshot.width, height: capture.screenshot.height },
     })
 
+    const captureArtifact: ArtifactRef = { run_id: this.#runId, artifact_id: screenshotArtifactId, span_id: spanId }
     const contractArtifactId = `capture_contract_${snapshotId}`
+    const captureContractArtifact: ArtifactRef = { run_id: this.#runId, artifact_id: contractArtifactId, span_id: spanId }
     this.#traceStore?.writeJsonArtifact({
       artifact_id: contractArtifactId,
       span_id: spanId,
@@ -156,13 +161,26 @@ export class MacOSChromeDriver {
       = domResult.status === 'fulfilled' && domResult.value ? domResult.value : undefined
     const ocr = ocrResult.status === 'fulfilled'
       ? ocrResult.value
-      : {
-          recognizedAt: new Date().toISOString(),
-          imagePath: capture.screenshot.path,
-          imageWidth: capture.screenshot.width ?? 0,
-          imageHeight: capture.screenshot.height ?? 0,
-          matches: [],
-        }
+      : emptyOcrTextSnapshot(capture, ocrResult.reason)
+    const ocrRows = await produceOcrRows({
+      textSnapshot: ocr,
+    })
+      .catch(error => emptyOcrRowSnapshot(ocr, error))
+    const ocrRowReportArtifact = this.#traceStore?.writeJsonArtifact({
+      artifact_id: `ocr_row_report_${snapshotId}`,
+      span_id: spanId,
+      role: 'ocr-row-report',
+      payload: ocrRows,
+      attributes: {
+        strategy: ocrRows.strategy,
+        row_count: ocrRows.rowCount,
+        raw_match_count: ocrRows.rawMatchCount,
+        filtered_match_count: ocrRows.filteredMatchCount,
+      },
+    })
+    const ocrRowReportRef = ocrRowReportArtifact
+      ? { run_id: this.#runId, artifact_id: ocrRowReportArtifact.artifact_id, span_id: ocrRowReportArtifact.span_id }
+      : undefined
 
     // Compute viewport bounds from AX tree (falls back to window bounds)
     const viewportBounds = findChromeViewportBounds(axSnapshot) ?? chromeContext.window.bounds
@@ -170,12 +188,15 @@ export class MacOSChromeDriver {
     // Normalize ALL sources → SurfaceNode[]
     const nodes = normalizeToSurfaceNodes({
       ocrMatches: ocr.matches,
+      ocrRows: ocrRows.rows,
       axSnapshot,
       domObservation: chromeDomObservation ?? undefined,
       contract: capture.contract,
       runId: this.#runId,
       spanId,
       viewportBounds,
+      captureArtifact,
+      captureContractArtifact,
     })
 
     const source = inferObservationSource(nodes)
@@ -194,10 +215,14 @@ export class MacOSChromeDriver {
         window_number: chromeContext.window.windowNumber,
         app_bundle_id: chromeContext.window.ownerBundleId,
         window_title: chromeContext.window.title ?? undefined,
-        capture_artifact: { run_id: this.#runId, artifact_id: screenshotArtifactId, span_id: spanId },
+        capture_artifact: captureArtifact,
       },
-      capture_contract_ref: { run_id: this.#runId, artifact_id: contractArtifactId, span_id: spanId },
-      evidence: [{ run_id: this.#runId, artifact_id: screenshotArtifactId, span_id: spanId }],
+      capture_contract_ref: captureContractArtifact,
+      evidence: [
+        captureArtifact,
+        captureContractArtifact,
+        ...(ocrRowReportRef ? [ocrRowReportRef] : []),
+      ],
       nodes,
       detail: {
         chrome_context: {
@@ -207,8 +232,14 @@ export class MacOSChromeDriver {
         },
         signals,
         ocr_match_count: ocr.matches.length,
+        ocr_known_limits: ocr.knownLimits ?? [],
+        ocr_rows: ocrRowSummary(ocrRows),
       },
-      known_limits: [this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked'],
+      known_limits: uniqueStrings([
+        this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked',
+        ...(ocr.knownLimits ?? []),
+        ...ocrRows.knownLimits,
+      ]),
     }
 
     this.#traceStore?.writeJsonArtifact({
@@ -235,28 +266,24 @@ export class MacOSChromeDriver {
     const ocr = await recognizeTextInImage(this.#config, {
       imagePath: capture.screenshot.path,
       maxObservations: 256,
-    }).catch(() => ({
-      recognizedAt: new Date().toISOString(),
-      imagePath: capture.screenshot.path,
-      imageWidth: capture.screenshot.width ?? 0,
-      imageHeight: capture.screenshot.height ?? 0,
-      matches: [],
-    }))
+    }).catch(error => emptyOcrTextSnapshot(capture, error))
+    const ocrRows = await produceOcrRows({
+      textSnapshot: ocr,
+    })
+      .catch(error => emptyOcrRowSnapshot(ocr, error))
+    const evidence = this.#captureEvidenceRefs(capture)
+    const captureArtifact = evidence.find(ref => ref.artifact_id.startsWith('screenshot'))
+    const captureContractArtifact = evidence.find(ref => ref.artifact_id.startsWith('capture_contract') || ref.artifact_id.startsWith('capture-contract'))
 
-    // OCR items
-    const ocrItems: RecognizedItem[] = ocr.matches.map((match, i) => ({
-      item_id: `ocr_${i}`,
-      kind: 'ocr_text',
-      text: match.text,
-      box: {
-        x: capture.contract.sourceGlobalLogicalBounds.x + match.bounds.x * capture.contract.pixelToLogicalScale.x,
-        y: capture.contract.sourceGlobalLogicalBounds.y + match.bounds.y * capture.contract.pixelToLogicalScale.y,
-        width: match.bounds.width * capture.contract.pixelToLogicalScale.x,
-        height: match.bounds.height * capture.contract.pixelToLogicalScale.y,
-      },
-      provider_score: match.confidence,
-      detail: { match_index: match.matchIndex, raw_pixel_bounds: match.bounds },
-    }))
+    const ocrItems: RecognizedItem[] = normalizeToSurfaceNodes({
+      ocrMatches: ocr.matches,
+      ocrRows: ocrRows.rows,
+      contract: capture.contract,
+      runId: this.#runId,
+      spanId,
+      captureArtifact,
+      captureContractArtifact,
+    }).map(surfaceNodeToRecognizedItem)
 
     // DOM/AX items from last observation (AUXILIARY for role verification)
     const domAxItems: RecognizedItem[] = (this.#lastObservation?.nodes ?? [])
@@ -281,7 +308,6 @@ export class MacOSChromeDriver {
       }
     }
 
-    const evidence = this.#captureEvidenceRefs(capture)
     const result = recognizeFromCapture(
       allItems,
       target,
@@ -291,6 +317,13 @@ export class MacOSChromeDriver {
       spanId,
       evidence,
     )
+    result.known_limits = uniqueStrings([
+      ...result.known_limits,
+      ...(ocr.knownLimits ?? []),
+      ...ocrRows.knownLimits,
+    ])
+    result.detail.ocr_known_limits = ocr.knownLimits ?? []
+    result.detail.ocr_row_known_limits = ocrRows.knownLimits
 
     const recognitionArtifactId = `recognition_${result.recognition_id}`
     this.#traceStore?.writeJsonArtifact({
@@ -818,6 +851,80 @@ function findChromeViewportBounds(axSnapshot?: AXSnapshot): Bounds | undefined {
   }
   walk(axSnapshot.root)
   return result
+}
+
+function emptyOcrTextSnapshot(capture: ChromeWindowCapture, error?: unknown): OcrTextSnapshot {
+  const knownLimits = error === undefined
+    ? []
+    : ['raw OCR failed', `raw OCR failed: ${errorMessage(error)}`]
+  return {
+    recognizedAt: new Date().toISOString(),
+    imagePath: capture.screenshot.path,
+    imageWidth: capture.screenshot.width ?? 0,
+    imageHeight: capture.screenshot.height ?? 0,
+    query: '',
+    exact: false,
+    caseSensitive: false,
+    normalizedQuery: '',
+    ocrScaleFactor: 1,
+    matches: [],
+    rawMatchCount: 0,
+    filteredMatchCount: 0,
+    knownLimits,
+  }
+}
+
+function emptyOcrRowSnapshot(
+  ocr: OcrTextSnapshot,
+  error: unknown,
+): OcrRowSnapshot {
+  return {
+    strategy: 'ocr-text',
+    imagePath: ocr.imagePath,
+    imageWidth: ocr.imageWidth,
+    imageHeight: ocr.imageHeight,
+    rawMatchCount: ocr.rawMatchCount,
+    filteredMatchCount: ocr.filteredMatchCount,
+    rowCount: 0,
+    rows: [],
+    providerDetail: {
+      provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+      error: error instanceof Error ? error.message : String(error),
+    },
+    knownLimits: uniqueStrings([
+      'ocr row production failed',
+      `ocr row production failed: ${errorMessage(error)}`,
+    ]),
+  }
+}
+
+function ocrRowSummary(ocrRows: OcrRowSnapshot): Record<string, unknown> {
+  return {
+    strategy: ocrRows.strategy,
+    row_count: ocrRows.rowCount,
+    raw_match_count: ocrRows.rawMatchCount,
+    filtered_match_count: ocrRows.filteredMatchCount,
+    known_limits: ocrRows.knownLimits,
+  }
+}
+
+function surfaceNodeToRecognizedItem(node: SurfaceNode): RecognizedItem {
+  return {
+    item_id: node.node_ref.node_id,
+    kind: node.kind,
+    text: node.label,
+    box: node.box,
+    provider_score: node.provider_score,
+    detail: node.detail,
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values))
 }
 
 function centerOf(bounds: Bounds): { x: number, y: number } {

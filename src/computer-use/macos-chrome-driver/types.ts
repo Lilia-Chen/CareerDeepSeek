@@ -86,12 +86,60 @@ export interface OcrTextMatch {
   bounds: Bounds
 }
 
+export type OcrRegionRatio = RatioRegion
+
+export type OcrCropRect = Bounds
+
+export interface OcrTextFragmentEvidence {
+  matchIndex?: number
+  text: string
+  confidence?: number
+  bounds?: Bounds
+  knownLimits?: string[]
+}
+
+export interface OcrRowEvidence {
+  rowIndex: number
+  source: 'ocr_row'
+  bounds: Bounds
+  textFragments: OcrTextFragmentEvidence[]
+  confidence?: number
+  knownLimits?: string[]
+  detail?: Record<string, unknown>
+}
+
+export type OcrRowProductionStrategy = 'ocr-text'
+
+export interface OcrRowSnapshot {
+  strategy: OcrRowProductionStrategy
+  imagePath: string
+  imageWidth: number
+  imageHeight: number
+  rawMatchCount: number
+  filteredMatchCount: number
+  rowCount: number
+  rows: OcrRowEvidence[]
+  providerDetail: Record<string, unknown>
+  knownLimits: string[]
+}
+
 export interface OcrTextSnapshot {
   recognizedAt: string
   imagePath: string
   imageWidth: number
   imageHeight: number
+  query: string
+  exact: boolean
+  caseSensitive: boolean
+  normalizedQuery: string
+  minConfidence?: number
+  region?: OcrRegionRatio
+  cropRect?: OcrCropRect
+  ocrScaleFactor: number
   matches: OcrTextMatch[]
+  rawMatchCount: number
+  filteredMatchCount: number
+  knownLimits?: string[]
 }
 
 export type ChromeRecognitionTarget
@@ -139,7 +187,6 @@ export interface RatioRegion {
 export type RecognitionSource
   = 'ocr_text'
     | 'ocr_row'
-    | 'visual_row'
     | 'segmented_region'
     | 'icon_match'
     | 'custom'
@@ -203,7 +250,7 @@ export interface SurfaceNode {
   center?: { x: number, y: number }
 }
 
-export type ObservationSource = 'ax' | 'ocr' | 'visual' | 'merged' | 'chrome_dom'
+export type ObservationSource = 'ax' | 'ocr' | 'merged' | 'chrome_dom'
 
 export interface ObservationSnapshot {
   api_version: 'careerdeepseek.observation_snapshot.v1alpha1'
