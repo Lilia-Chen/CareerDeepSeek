@@ -3,6 +3,9 @@ import type { ArtifactRef, ChromeCaptureContract, ChromeRecognitionTarget, Recog
 const BUTTON_KINDS = new Set(['dom_button', 'ax_button'])
 const TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'dom_combobox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
 const LINK_KINDS = new Set(['dom_link', 'ax_link'])
+const AUDIT_SOURCE_GROUPS = ['ocr_text', 'ocr_row', 'chrome_dom', 'ax', 'capture_visibility', 'custom'] as const
+type AuditStatus = 'agreement' | 'conflict' | 'unknown'
+type AuditSourceGroup = typeof AUDIT_SOURCE_GROUPS[number]
 
 export function recognizeFromCapture(
   items: RecognizedItem[],
@@ -48,6 +51,18 @@ export function recognizeFromCapture(
     }
   }
 
+  const crossSourceAudit = buildCrossSourceAudit({
+    all: items,
+    filtered,
+    captureArtifact,
+    captureContractArtifact,
+    recognitionKnownLimits: knownLimits,
+  })
+  for (const limit of crossSourceAudit.known_limits) {
+    if (!knownLimits.includes(limit))
+      knownLimits.push(limit)
+  }
+
   return {
     found: best !== null,
     recognition_id: `mcr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -67,10 +82,319 @@ export function recognizeFromCapture(
       filtered_count: filtered.length,
       capture_artifact: captureArtifact,
       capture_contract_artifact: captureContractArtifact,
+      cross_source_audit: crossSourceAudit,
     },
     evidence,
     known_limits: knownLimits,
   }
+}
+
+function buildCrossSourceAudit(input: {
+  all: RecognizedItem[]
+  filtered: RecognizedItem[]
+  captureArtifact?: ArtifactRef
+  captureContractArtifact?: ArtifactRef
+  recognitionKnownLimits: string[]
+}): Record<string, unknown> & { known_limits: string[] } {
+  const sourceGroups = auditSourceGroups(input.all, input.captureArtifact, input.captureContractArtifact)
+  const auditKnownLimits = auditRecognitionKnownLimits(input.recognitionKnownLimits)
+  const items = input.filtered.map(item => auditItem(item, input.all, input.captureArtifact, input.captureContractArtifact))
+  for (const item of items) {
+    for (const limit of item.known_limits) {
+      if (!auditKnownLimits.includes(limit))
+        auditKnownLimits.push(limit)
+    }
+  }
+
+  if (input.filtered.length === 0)
+    pushUnique(auditKnownLimits, 'recognition audit: no filtered candidate to compare')
+
+  const sources = sourceGroups.map(source => ({
+    source,
+    status: sourceStatus(source, items),
+    item_ids: source === 'capture_visibility'
+      ? []
+      : input.all.filter(item => auditSourceGroup(item) === source).map(item => item.item_id),
+    artifact_ids: source === 'capture_visibility'
+      ? [input.captureArtifact?.artifact_id, input.captureContractArtifact?.artifact_id].filter((id): id is string => typeof id === 'string')
+      : sourceArtifactIdsForGroup(input.all, source),
+    known_limits: sourceKnownLimits(source, input.all, auditKnownLimits, items),
+  }))
+  const status = rollupStatus([
+    ...items.map(item => item.status),
+    ...sources.map(source => source.status),
+  ], auditKnownLimits)
+
+  return {
+    status,
+    source_groups: sourceGroups,
+    sources,
+    artifact_refs: {
+      capture_artifact: input.captureArtifact,
+      capture_contract_artifact: input.captureContractArtifact,
+    },
+    items,
+    known_limits: auditKnownLimits,
+  }
+}
+
+function auditItem(
+  item: RecognizedItem,
+  all: RecognizedItem[],
+  captureArtifact: ArtifactRef | undefined,
+  captureContractArtifact: ArtifactRef | undefined,
+) {
+  const sourceGroup = auditSourceGroup(item)
+  const knownLimits = itemKnownLimits(item)
+  const reasons: string[] = []
+  const comparedItems = all
+    .filter(other => other.item_id !== item.item_id)
+    .filter(other => auditSourceGroup(other) !== sourceGroup)
+    .map(other => compareAuditItems(item, other))
+    .filter((comparison): comparison is NonNullable<typeof comparison> => comparison !== null)
+
+  if (!captureArtifact) {
+    reasons.push('missing capture artifact ref')
+    pushUnique(knownLimits, 'recognition audit: missing capture artifact ref')
+  }
+  if (!captureContractArtifact) {
+    reasons.push('missing capture contract artifact ref')
+    pushUnique(knownLimits, 'recognition audit: missing capture contract artifact ref')
+  }
+  if (comparedItems.length === 0) {
+    reasons.push('no comparable evidence from another source')
+    pushUnique(knownLimits, `recognition audit: item ${item.item_id} has no comparable cross-source evidence`)
+  }
+
+  for (const comparison of comparedItems) {
+    for (const limit of comparison.known_limits)
+      pushUnique(knownLimits, limit)
+  }
+
+  const status: AuditStatus = comparedItems.some(comparison => comparison.status === 'conflict')
+    ? 'conflict'
+    : knownLimits.length > 0 || comparedItems.length === 0 || !captureArtifact || !captureContractArtifact
+      ? 'unknown'
+      : comparedItems.some(comparison => comparison.status === 'agreement')
+        ? 'agreement'
+        : 'unknown'
+
+  if (status === 'conflict')
+    pushUnique(knownLimits, `recognition audit: item ${item.item_id} has conflicting cross-source evidence`)
+
+  return {
+    item_id: item.item_id,
+    kind: item.kind,
+    source_group: sourceGroup,
+    status,
+    compared_item_ids: comparedItems.map(comparison => comparison.item_id),
+    compared_items: comparedItems,
+    reasons,
+    artifact_refs: itemArtifactRefs(item, captureArtifact, captureContractArtifact),
+    known_limits: knownLimits,
+  }
+}
+
+function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem) {
+  if (!boundsOverlap(candidate.box, other.box))
+    return null
+
+  const knownLimits = itemKnownLimits(other)
+  const candidateText = normalizedText(candidate.text)
+  const otherText = normalizedText(other.text)
+  if (!candidateText || !otherText) {
+    pushUnique(knownLimits, `recognition audit: item ${other.item_id} has missing comparable text`)
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'unknown' as AuditStatus,
+      reasons: ['missing comparable text'],
+      known_limits: knownLimits,
+    }
+  }
+
+  if (textsAgree(candidateText, otherText) && knownLimits.length === 0) {
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'agreement' as AuditStatus,
+      reasons: ['text and bounds agree in current capture'],
+      known_limits: knownLimits,
+    }
+  }
+
+  if (textsAgree(candidateText, otherText)) {
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'unknown' as AuditStatus,
+      reasons: ['matching evidence has known limits'],
+      known_limits: knownLimits,
+    }
+  }
+
+  pushUnique(knownLimits, `recognition audit: item ${candidate.item_id} text conflicts with ${other.item_id}`)
+  return {
+    item_id: other.item_id,
+    kind: other.kind,
+    source_group: auditSourceGroup(other),
+    status: 'conflict' as AuditStatus,
+    reasons: ['overlapping bounds but text differs'],
+    known_limits: knownLimits,
+  }
+}
+
+function auditSourceGroups(
+  items: RecognizedItem[],
+  captureArtifact: ArtifactRef | undefined,
+  captureContractArtifact: ArtifactRef | undefined,
+): AuditSourceGroup[] {
+  const present = new Set<AuditSourceGroup>()
+  for (const item of items)
+    present.add(auditSourceGroup(item))
+  if (items.length > 0 || captureArtifact || captureContractArtifact)
+    present.add('capture_visibility')
+  return AUDIT_SOURCE_GROUPS.filter(source => present.has(source))
+}
+
+function auditSourceGroup(item: RecognizedItem): AuditSourceGroup {
+  if (item.kind === 'ocr_text')
+    return 'ocr_text'
+  if (item.kind === 'ocr_row')
+    return 'ocr_row'
+  if (item.kind.startsWith('dom_'))
+    return 'chrome_dom'
+  if (item.kind.startsWith('ax_'))
+    return 'ax'
+  return 'custom'
+}
+
+function sourceStatus(
+  source: AuditSourceGroup,
+  auditedItems: ReturnType<typeof auditItem>[],
+): AuditStatus {
+  if (source === 'capture_visibility')
+    return 'unknown'
+
+  const statuses = sourceComparisonStatuses(source, auditedItems)
+  if (statuses.length === 0)
+    return 'unknown'
+  return rollupStatus(statuses, [])
+}
+
+function sourceKnownLimits(
+  source: AuditSourceGroup,
+  all: RecognizedItem[],
+  auditKnownLimits: string[],
+  auditedItems: ReturnType<typeof auditItem>[],
+): string[] {
+  if (source === 'capture_visibility') {
+    return [
+      ...auditKnownLimits.filter(limit => limit.includes('capture') || limit.includes('bounds') || limit.includes('visibility')),
+      'recognition audit: capture visibility is reference evidence only; independent visibility verification unavailable',
+    ]
+  }
+
+  const limits: string[] = []
+  for (const item of all.filter(item => auditSourceGroup(item) === source)) {
+    for (const limit of itemKnownLimits(item))
+      pushUnique(limits, limit)
+  }
+  if (all.some(item => auditSourceGroup(item) === source) && sourceComparisonStatuses(source, auditedItems).length === 0)
+    pushUnique(limits, `recognition audit: source ${source} present but not comparable to filtered candidates`)
+  return limits
+}
+
+function sourceComparisonStatuses(source: AuditSourceGroup, auditedItems: ReturnType<typeof auditItem>[]): AuditStatus[] {
+  return auditedItems.flatMap((item) => {
+    const sourceStatuses: AuditStatus[] = []
+    if (item.source_group === source)
+      sourceStatuses.push(item.status)
+    for (const comparison of item.compared_items) {
+      if (comparison.source_group === source)
+        sourceStatuses.push(comparison.status)
+    }
+    return sourceStatuses
+  })
+}
+
+function sourceArtifactIdsForGroup(items: RecognizedItem[], source: AuditSourceGroup): string[] {
+  const artifactIds: string[] = []
+  for (const item of items.filter(item => auditSourceGroup(item) === source)) {
+    const refs = itemArtifactRefs(item)
+    for (const ref of Object.values(refs)) {
+      if (ref && !artifactIds.includes(ref.artifact_id))
+        artifactIds.push(ref.artifact_id)
+    }
+  }
+  return artifactIds
+}
+
+function itemArtifactRefs(
+  item: RecognizedItem,
+  captureArtifact?: ArtifactRef,
+  captureContractArtifact?: ArtifactRef,
+): Record<string, ArtifactRef | undefined> {
+  const refs = isRecord(item.detail?.source_artifacts) ? item.detail.source_artifacts : {}
+  const itemCaptureArtifact = isArtifactRef(refs.capture_artifact) ? refs.capture_artifact : captureArtifact
+  const itemCaptureContractArtifact = isArtifactRef(refs.capture_contract_artifact) ? refs.capture_contract_artifact : captureContractArtifact
+  return {
+    capture_artifact: itemCaptureArtifact,
+    capture_contract_artifact: itemCaptureContractArtifact,
+  }
+}
+
+function auditRecognitionKnownLimits(knownLimits: string[]): string[] {
+  return knownLimits
+    .filter(limit => limit.includes('missing capture')
+      || limit.includes('invalid bounds')
+      || limit.includes('projection')
+      || limit.includes('visibility')
+      || limit.includes('uncertain')
+      || limit.includes('conflict')
+      || limit.includes('multiple filtered candidates')
+      || limit.includes('ambiguous'))
+    .map(limit => limit.startsWith('recognition audit:') ? limit : `recognition audit: ${limit}`)
+}
+
+function rollupStatus(statuses: AuditStatus[], knownLimits: string[]): AuditStatus {
+  if (statuses.includes('conflict'))
+    return 'conflict'
+  if (statuses.length === 0 || statuses.includes('unknown') || knownLimits.length > 0)
+    return 'unknown'
+  return 'agreement'
+}
+
+function boundsOverlap(a: RecognizedItem['box'], b: RecognizedItem['box']): boolean {
+  return validBox(a)
+    && validBox(b)
+    && a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y
+}
+
+function normalizedText(value: string | undefined): string {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function textsAgree(a: string, b: string): boolean {
+  return a === b
+}
+
+function pushUnique(values: string[], value: string): void {
+  if (!values.includes(value))
+    values.push(value)
+}
+
+function isArtifactRef(value: unknown): value is ArtifactRef {
+  return isRecord(value)
+    && typeof value.run_id === 'string'
+    && typeof value.artifact_id === 'string'
+    && typeof value.span_id === 'string'
 }
 
 function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): boolean {

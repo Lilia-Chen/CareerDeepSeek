@@ -324,6 +324,20 @@ export class MacOSChromeDriver {
     ])
     result.detail.ocr_known_limits = ocr.knownLimits ?? []
     result.detail.ocr_row_known_limits = ocrRows.knownLimits
+    const crossSourceAudit = result.detail.cross_source_audit
+    const driverRecognitionKnownLimits = uniqueStrings([
+      ...(ocr.knownLimits ?? []),
+      ...ocrRows.knownLimits,
+    ])
+    if (driverRecognitionKnownLimits.length > 0 && typeof crossSourceAudit === 'object' && crossSourceAudit !== null) {
+      const audit = crossSourceAudit as { status?: unknown, known_limits?: unknown }
+      audit.known_limits = uniqueStrings([
+        ...(Array.isArray(audit.known_limits) ? audit.known_limits.filter((limit): limit is string => typeof limit === 'string') : []),
+        ...driverRecognitionKnownLimits,
+      ])
+      if (audit.status !== 'conflict')
+        audit.status = 'unknown'
+    }
 
     const recognitionArtifactId = `recognition_${result.recognition_id}`
     this.#traceStore?.writeJsonArtifact({

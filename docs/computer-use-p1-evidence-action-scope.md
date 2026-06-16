@@ -233,36 +233,55 @@ Explicit forbidden items:
 
 Goal:
 
-- Compare OCR text/row/block evidence, screenshot/capture visibility, DOM evidence, and AX evidence before promotion.
-- Output agreement, conflict, or unknown rather than forcing a fused truth.
-- Refine candidate eligibility only when the current evidence supports it.
+- Add a recognition-level cross-source audit over OCR text, OCR row/block, screenshot/capture visibility, DOM evidence, and AX evidence.
+- End this slice at `RecognitionResult`. P1-3 may refine recognition `best`/`filtered` ordering or eligibility only through explicit audit evidence; it must not promote a candidate or make liveness decisions.
+- Output structured agreement, conflict, or unknown states rather than forcing a fused truth.
+- Preserve every audited source, source artifact reference, capture/capture-contract reference, projection detail, and `known_limits` needed to replay why recognition was or was not trusted.
 
 Allowed files:
 
-- `src/computer-use/macos-chrome-driver/candidate-audit.ts`, only if the slice first adds focused tests proving a dedicated audit module is needed.
 - `src/computer-use/macos-chrome-driver/recognition.ts`
-- `src/computer-use/macos-chrome-driver/types.ts`
-- Focused tests under `test/computer-use/**`.
+- `src/computer-use/macos-chrome-driver/recognition-audit.ts`, only if the slice first adds focused tests proving a dedicated recognition audit module is needed.
+- `src/computer-use/macos-chrome-driver/driver.ts`, only for the narrow runtime integration point inside `MacOSChromeDriver.recognizeFromCapture()` where driver-level OCR/text-row producer `known_limits` are appended before writing the `recognition-result` artifact. The only authorized driver change is to pass, rebuild, or supplement recognition audit detail so `RecognitionResult.detail.cross_source_audit` reflects the final top-level `known_limits` written to the artifact.
+- `src/computer-use/macos-chrome-driver/types.ts`, only if a named audit type is necessary. Prefer a parseable `RecognitionResult.detail.cross_source_audit` payload over public API expansion.
 - `test/computer-use/recognition.test.ts`
+- `test/computer-use/macosChromeDriver.test.ts`, only for parseable runtime `recognition-result` artifact payload/ref assertions, including the final driver-level `known_limits` synchronization into audit detail, that cannot be tested through `recognition.test.ts`.
 - Documentation updates to this file only when a scope gap is identified before implementation.
 
 AUV reference points:
 
+- AUV `src/contract.rs` separates `RecognitionResult` from `Candidate`, `CandidateEvidence`, and `CandidateLiveness`; P1-3 follows that boundary.
+- AUV recognition payloads preserve `source`, `scope`, `best`, `filtered`, `all`, `detail`, `evidence`, and `known_limits`; P1-3 audit must live inside that recognition evidence boundary.
+- AUV artifact refs are replay links, not logs. Referenced screenshot/capture/capture-contract/report payloads must remain traceable from the `recognition-result` artifact.
 - Cross-source audit should produce `agreement`, `conflict`, or `unknown`.
 - Audit evidence remains evidence; it does not create an independent action path.
-- `known_limits` must propagate when sources disagree or cannot be compared.
+- `known_limits` must propagate when sources disagree, are missing, are not comparable, or have uncertainty from P1-1/P1-2 evidence.
 
 Acceptance criteria:
 
-- `RecognitionResult.detail` or audit detail can explain which sources agreed, conflicted, or were unknown.
-- Conflicts do not silently disappear during promotion.
-- Unknown audit state prevents overconfident action claims and carries `known_limits`.
-- The implementation does not collapse multi-source evidence into unauditable fused truth.
+- `RecognitionResult.detail.cross_source_audit` is a structured, parseable payload, not free-form logging.
+- The audit records, at minimum, the audited item ids/kinds, participating source groups (`ocr_text`, `ocr_row`, `chrome_dom`, `ax`, and capture visibility when applicable), source artifact refs or artifact ids, and per-source status.
+- Each audited match or candidate item has an audit status of `agreement`, `conflict`, or `unknown`, plus reasons and propagated `known_limits`.
+- OCR text/row/block evidence, DOM evidence, and AX evidence are compared by current-capture text/name/role/bounds/projection evidence where available. Missing or non-comparable evidence must become `unknown`, not a forced match.
+- Conflicting evidence remains visible in `RecognitionResult.detail.cross_source_audit` and `RecognitionResult.known_limits`; it must not be silently dropped from `filtered` or hidden by `best`.
+- Unknown audit state prevents overconfident recognition detail. Later P1-4 promotion may consume this uncertainty, but P1-3 does not make promotion or liveness decisions.
+- Refinement is limited to recognition ordering/eligibility and must be explainable in the audit payload. `all` must preserve the input evidence items needed for replay.
+- Runtime `MacOSChromeDriver.recognizeFromCapture()` must ensure any OCR provider or OCR row producer `known_limits` appended after `recognizeFromCapture(...)` returns are also reflected in `RecognitionResult.detail.cross_source_audit` before the `recognition-result` artifact is written.
+- The existing `recognition-result` artifact remains parseable and replay-auditable. P1-3 should not add a new artifact role unless this document is updated first.
+- Tests cover agreement, conflict, unknown, missing artifact refs, missing capture-contract refs, DOM/AX uncertainty propagated from P1-2, and preservation of conflicting evidence.
+- Tests prove P1-3 does not add candidate promotion, liveness, action, click, scroll, DOM/AX action, public catalog, or legacy paths.
 
 Explicit forbidden items:
 
 - Claiming a fused source of truth when sources conflict.
 - Letting DOM/AX override visible OCR/screenshot evidence into an action target.
+- Creating `PromotedCandidate`, `CandidateEvidence`, `CandidateLiveness`, TTL hints, anchor recheck, or action preconditions in P1-3.
+- Editing `driver.ts` outside the single `MacOSChromeDriver.recognizeFromCapture()` audit/known_limits synchronization described in Allowed files.
+- Changing driver capture, OCR execution, OCR row production, observation, promotion, liveness, action, trace-store behavior, or public behavior while making the authorized driver audit sync.
+- Editing `candidate-promotion.ts`, `agent-harness.ts`, `safety-gate.ts`, action executors, `chrome-dom.ts`, `ax-tree.ts`, `ocr.ts`, capture, or trace-store code in this slice unless this document is updated before implementation.
+- Adding `candidate-audit.ts` in P1-3. Candidate audit/promotion belongs to P1-4; P1-3 audit is recognition evidence audit.
+- Treating audit output as permission to click.
+- Emitting a new artifact role for audit without explicit scope update.
 - Adding generic list semantics or section semantics.
 - Adding new public command catalog entries.
 
@@ -273,14 +292,17 @@ Goal:
 - Make promotion a refusal-capable decision gate, not a formatter.
 - Require candidate evidence, current window preconditions, anchor recheck where available, TTL hint, and propagated `known_limits`.
 - Keep Candidate short-lived and action-scoped.
+- End this slice at `CandidatePromotion` / `PromotedCandidate` and the existing `promoted-candidate` artifact. P1-4 must not enter click, re-observe, re-match, action liveness recheck, or action execution.
+- Consume P1-3 `RecognitionResult.detail.cross_source_audit` as required evidence for promotion. Promotion must never silently ignore missing, malformed, conflicting, or unmatched audit evidence.
 
 Allowed files:
 
 - `src/computer-use/macos-chrome-driver/candidate-promotion.ts`
-- `src/computer-use/macos-chrome-driver/driver.ts`
+- `src/computer-use/macos-chrome-driver/driver.ts`, only for `MacOSChromeDriver.promoteCandidate()` runtime integration and the existing `promoted-candidate` artifact payload.
 - `src/computer-use/macos-chrome-driver/types.ts`
 - `test/computer-use/candidatePromotion.test.ts`
 - `test/computer-use/macosChromeDriver.test.ts`
+- `test/computer-use/macosChromeAgentHarness.test.ts`, only for type-only harness fixture updates caused by the required refused `CandidatePromotion.residual_known_limits` contract. Harness behavior changes remain out of scope.
 - Documentation updates to this file only when a scope gap is identified before implementation.
 
 AUV reference points:
@@ -295,7 +317,15 @@ Acceptance criteria:
 - Promotion refuses ambiguous, stale, offscreen, ungrounded, unobservable, or unsafe candidates.
 - Promoted candidate evidence references the capture and recognition artifacts and preserves relevant observation detail.
 - Candidate liveness records window preconditions, anchor recheck when available, and TTL hint.
-- `known_limits` from recognition and audit propagate into the candidate or refusal.
+- `known_limits` from recognition and audit propagate into the promoted candidate or the refused `CandidatePromotion.residual_known_limits`.
+- The promoted candidate observation blob preserves the relevant recognition scope, selected best item, filtered item ids, audit rollup, selected audit item, evidence refs, and residual `known_limits`.
+- Promotion must defensively parse `recognition.detail.cross_source_audit`, find the audit item for `recognition.best.item_id`, and refuse when the audit is missing, malformed, rollup-conflicted, selected-item-conflicted, or missing the selected best item.
+- Promotion must refuse when `recognition.filtered.length !== 1`.
+- Promotion must refuse when capture or recognition artifact refs are missing.
+- Promotion must refuse when capture-contract/projection evidence needed to trust coordinates is missing, or when the selected box is invalid, non-finite, non-positive, or outside the current leased Chrome window.
+- Promotion must refuse non-actionable kinds. `visual_row` is not an actionable promotion kind.
+- Promotion must refuse stale capture, profile mismatch, Chrome not foreground, and hard-stop signals.
+- Promotion must not refuse solely because audit is `unknown` from no comparable source evidence, capture visibility is reference-only, OCR row grouping is heuristic/capture-local, or provider degradation `known_limits` exist without a conflict/refusal condition.
 
 Explicit forbidden items:
 
@@ -304,6 +334,10 @@ Explicit forbidden items:
 - Formatting a recognition result into a candidate without refusal logic.
 - Bypassing the Chrome lease/profile/foreground/hard-stop gate.
 - New action gate behavior not authorized by this document.
+- New artifact roles for refusal or audit.
+- New public command catalog entries.
+- P1-5 click/re-observe/re-match/action execution behavior.
+- Changes to OCR, DOM, AX, capture, recognition audit generation, or capture-contract generation.
 
 ### 6. P1-5 Text/OCR Row-Block Click via Promoted Candidate
 

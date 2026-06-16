@@ -47,7 +47,7 @@ describe('macOS Chrome agent harness', () => {
         node('button-1', 'dom_button', 'Danger', box(10, 10, 60, 30)),
       ]),
     ])
-    driver.nextPromotion = { status: 'refused', reasons: ['hard_stop_signal'] }
+    driver.nextPromotion = { status: 'refused', reasons: ['hard_stop_signal'], residual_known_limits: [] }
     const harness = new MacOSChromeAgentHarness(driver)
 
     await assert.rejects(

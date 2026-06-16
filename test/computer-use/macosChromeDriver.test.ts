@@ -426,6 +426,38 @@ describe('macOS Chrome driver', () => {
     assert.equal(result.known_limits.some(limit => limit.includes('invalid bounds or projection detail')), false)
   })
 
+  it('writes recognition-result artifact with parseable cross-source audit and no audit role', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'visible_text', text: /search/i })
+    const payload = readLastJsonArtifactByRole('recognition-result')
+    const audit = payload.detail.cross_source_audit as Record<string, unknown>
+    const records = readArtifactRecords()
+
+    assert.equal(payload.recognition_id, result.recognition_id)
+    assert.equal(typeof audit, 'object')
+    assert.notEqual(audit, null)
+    assert.deepEqual((audit.artifact_refs as Record<string, unknown>).capture_artifact, {
+      run_id: result.scope.capture_artifact?.run_id,
+      artifact_id: 'screenshot_mco_1',
+      span_id: 'observe_mco_1',
+    })
+    assert.deepEqual((audit.artifact_refs as Record<string, unknown>).capture_contract_artifact, {
+      run_id: result.scope.capture_contract_artifact?.run_id,
+      artifact_id: 'capture_contract_mco_1',
+      span_id: 'observe_mco_1',
+    })
+    assert.ok(Array.isArray(audit.sources))
+    assert.ok(Array.isArray(audit.items))
+    assert.equal(records.some(record => record.role === 'recognition-audit'), false)
+    assert.equal(records.some(record => record.role === 'audit'), false)
+  })
+
   it('recognizes visible text from OCR row evidence emitted by the runtime producer', async () => {
     mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
     mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
@@ -538,6 +570,63 @@ describe('macOS Chrome driver', () => {
     assert.ok(result.known_limits.some(limit => limit.includes('row producer unavailable')))
     assert.ok((result.detail.ocr_known_limits as string[]).some(limit => limit.includes('raw OCR failed')))
     assert.ok((result.detail.ocr_row_known_limits as string[]).some(limit => limit.includes('ocr row production failed')))
+
+    const payload = readLastJsonArtifactByRole('recognition-result')
+    const audit = payload.detail.cross_source_audit as Record<string, unknown>
+    const auditKnownLimits = audit.known_limits as string[]
+    assert.equal(audit.status, 'unknown')
+    assert.ok(payload.known_limits.some((limit: string) => limit.includes('raw OCR failed')))
+    assert.ok(payload.known_limits.some((limit: string) => limit.includes('ocr row production failed')))
+    assert.ok(auditKnownLimits.some(limit => limit.includes('raw OCR failed')))
+    assert.ok(auditKnownLimits.some(limit => limit.includes('vision provider unavailable')))
+    assert.ok(auditKnownLimits.some(limit => limit.includes('ocr row production failed')))
+    assert.ok(auditKnownLimits.some(limit => limit.includes('row producer unavailable')))
+  })
+
+  it('preserves conflict audit status when driver-level OCR and row limits are appended', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    mocks.recognizeTextInImage.mockResolvedValueOnce({
+      ...ocrSnapshot([
+        {
+          matchIndex: 0,
+          text: 'Reject all cookies',
+          confidence: 0.93,
+          bounds: { x: 520, y: 280, width: 280, height: 44 },
+        },
+      ]),
+      knownLimits: ['raw OCR provider degraded'],
+    })
+    mocks.produceOcrRows.mockResolvedValueOnce({
+      strategy: 'ocr-text',
+      imagePath: screenshotPath,
+      imageWidth: 1000,
+      imageHeight: 800,
+      rawMatchCount: 1,
+      filteredMatchCount: 1,
+      rowCount: 0,
+      rows: [],
+      providerDetail: {
+        provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+        originalStrategy: 'ocr-text',
+      },
+      knownLimits: ['row producer degraded'],
+    })
+
+    await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'button', text: /accept all cookies/i })
+
+    const payload = readLastJsonArtifactByRole('recognition-result')
+    const audit = payload.detail.cross_source_audit as Record<string, unknown>
+    const auditKnownLimits = audit.known_limits as string[]
+
+    assert.equal(audit.status, 'conflict')
+    assert.ok(auditKnownLimits.some(limit => limit.includes('raw OCR provider degraded')))
+    assert.ok(auditKnownLimits.some(limit => limit.includes('row producer degraded')))
   })
 
   it('recognizes a target from capture and promotes it into a click candidate', async () => {
@@ -573,6 +662,54 @@ describe('macOS Chrome driver', () => {
     const records = readArtifactRecords()
     assert.ok(records.some(record => record.role === 'recognition-result'))
     assert.ok(records.some(record => record.role === 'promoted-candidate'))
+  })
+
+  it('writes promoted-candidate only when promotion succeeds', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocrSnapshot([
+      {
+        matchIndex: 0,
+        text: 'Reject all cookies',
+        confidence: 0.94,
+        bounds: { x: 520, y: 280, width: 280, height: 44 },
+      },
+    ]))
+    mocks.produceOcrRows.mockResolvedValueOnce({
+      strategy: 'ocr-text',
+      imagePath: screenshotPath,
+      imageWidth: 1000,
+      imageHeight: 800,
+      rawMatchCount: 1,
+      filteredMatchCount: 1,
+      rowCount: 0,
+      rows: [],
+      providerDetail: {
+        provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
+        originalStrategy: 'ocr-text',
+      },
+      knownLimits: [],
+    })
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, {
+      kind: 'button',
+      text: /accept all cookies/i,
+    })
+    const audit = result.detail.cross_source_audit as { status?: string }
+    const recognitionPayload = readLastJsonArtifactByRole('recognition-result')
+
+    assert.equal(audit.status, 'conflict')
+    assert.equal((recognitionPayload.detail.cross_source_audit as { status?: string }).status, 'conflict')
+
+    const promotion = await driver.promoteCandidate(result, driver.lastCapture!)
+
+    assert.equal(promotion.status, 'refused')
+    const records = readArtifactRecords()
+    assert.equal(records.some(record => record.role === 'promoted-candidate'), false)
   })
 
   it('clicks a promoted candidate after rechecking Chrome foreground', async () => {

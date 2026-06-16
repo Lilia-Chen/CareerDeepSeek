@@ -269,7 +269,7 @@ export interface ObservationSnapshot {
 
 export type CandidatePromotion
   = | { status: 'promoted', candidate: PromotedCandidate, residual_known_limits: string[] }
-    | { status: 'refused', reasons: PromotionRefusal[] }
+    | { status: 'refused', reasons: PromotionRefusal[], residual_known_limits: string[] }
 
 export type PromotionRefusal
   = | 'empty_recognition'
@@ -283,6 +283,9 @@ export type PromotionRefusal
     | 'chrome_not_foreground'
     | 'hard_stop_signal'
     | 'projection_unavailable'
+    | 'audit_unavailable'
+    | 'cross_source_conflict'
+    | 'ambiguous_recognition'
 
 export interface PromotedCandidate {
   candidate_local_id: string
