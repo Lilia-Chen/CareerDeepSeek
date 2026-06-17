@@ -433,6 +433,9 @@ Acceptance criteria:
 - `changed` means only that the current visible surface changed between the before and after evidence.
 - `no_visible_change` means only that current evidence did not observe visible change.
 - `unknown` is used when evidence is insufficient, failed, unstable, or not comparable.
+- If `driver.scroll()` succeeds but the immediate after-observation fails, the harness may return a scroll result without comparable `after` evidence, must set `scroll_effect: unknown`, and must preserve a bounded failure reason such as `scroll_effect_reason: after_observe_failed` or a sanitized `after_observe_error`.
+- If `driver.scroll()` fails or refuses, the harness must propagate the failure rather than convert it to `unknown`.
+- Visible-surface fingerprint comparison must be stable against provider node ordering; reordering the same comparable visible nodes must not be reported as `changed`.
 - Scroll action still uses the foreground visible Chrome window and must not accept an external `screenPoint`.
 
 Explicit forbidden items:

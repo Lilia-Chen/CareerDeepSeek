@@ -85,6 +85,121 @@ describe('macOS Chrome agent harness', () => {
     })
   })
 
+  it('records changed scroll effect when the immediately observed visible surface changes', async () => {
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', [
+        node('result-1', 'dom_link', 'First visible result', box(40, 180, 400, 40)),
+      ]),
+      observation('after-scroll', [
+        node('result-2', 'dom_link', 'Second visible result', box(40, 180, 400, 40)),
+      ]),
+    ])
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    const result = await harness.scrollDown({ amount: 500, reason: 'Inspect more visible results.' })
+
+    assert.equal(result.action, 'scroll')
+    assert.equal(result.scroll_effect, 'changed')
+    assert.equal(result.before.snapshot_id, 'before-scroll')
+    assert.ok(result.after)
+    assert.equal(result.after.snapshot_id, 'after-scroll')
+  })
+
+  it('records no_visible_change scroll effect without claiming a page boundary', async () => {
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', [
+        node('result-1', 'dom_link', 'Same visible result', box(40, 180, 400, 40)),
+      ]),
+      observation('after-scroll', [
+        node('result-1', 'dom_link', 'Same visible result', box(40, 180, 400, 40)),
+      ]),
+    ])
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    const result = await harness.scrollDown({ amount: 500, reason: 'Try one scroll step.' })
+
+    assert.equal(result.scroll_effect, 'no_visible_change')
+    assert.equal('reached_bottom' in result, false)
+    assert.equal('reached_top' in result, false)
+    assert.equal('scroll_scan' in result, false)
+  })
+
+  it('records no_visible_change when comparable visible nodes are reordered by providers', async () => {
+    const first = node('result-1', 'dom_link', 'First visible result', box(40, 180, 400, 40))
+    const second = node('result-2', 'dom_link', 'Second visible result', box(40, 240, 400, 40))
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', [first, second]),
+      observation('after-scroll', [second, first]),
+    ])
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    const result = await harness.scrollDown({ amount: 500, reason: 'Try one scroll step.' })
+
+    assert.equal(result.scroll_effect, 'no_visible_change')
+  })
+
+  it('records unknown scroll effect when before and after evidence is insufficient to compare', async () => {
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', []),
+      observation('after-scroll', []),
+    ])
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    const result = await harness.scrollDown({ amount: 500, reason: 'Try one scroll step.' })
+
+    assert.equal(result.scroll_effect, 'unknown')
+  })
+
+  it('records unknown scroll effect when after-observation fails after scroll succeeds', async () => {
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', [
+        node('result-1', 'dom_link', 'First visible result', box(40, 180, 400, 40)),
+      ]),
+    ])
+    driver.observeErrorsByCall.set(2, new Error('after observation unavailable'))
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    const result = await harness.scrollDown({ amount: 500, reason: 'Try one scroll step.' })
+
+    assert.equal(result.action, 'scroll')
+    assert.equal(result.after, null)
+    assert.equal(result.scroll_effect, 'unknown')
+    assert.equal(result.scroll_effect_reason, 'after_observe_failed')
+    assert.match(result.after_observe_error ?? '', /after observation unavailable/)
+    assert.equal(driver.calls.filter(call => call.name === 'scroll').length, 1)
+  })
+
+  it('propagates scroll action failure instead of converting it to unknown effect', async () => {
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', [
+        node('result-1', 'dom_link', 'First visible result', box(40, 180, 400, 40)),
+      ]),
+    ])
+    driver.scrollError = new Error('scroll refused')
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    await assert.rejects(
+      () => harness.scrollDown({ amount: 500, reason: 'Try one scroll step.' }),
+      /scroll refused/,
+    )
+  })
+
+  it('does not infer changed scroll effect from hidden or uncertain evidence', async () => {
+    const driver = new FakeHarnessDriver([
+      observation('before-scroll', [
+        uncertainNode('hidden-before', 'dom_evidence', 'Hidden first result', box(40, 180, 400, 40)),
+      ]),
+      observation('after-scroll', [
+        uncertainNode('hidden-after', 'dom_evidence', 'Hidden second result', box(40, 180, 400, 40)),
+      ]),
+    ])
+    const harness = new MacOSChromeAgentHarness(driver)
+
+    const result = await harness.scrollDown({ amount: 500, reason: 'Try one scroll step.' })
+
+    assert.equal(result.scroll_effect, 'unknown')
+  })
+
   it('dismisses a cookie overlay through the observed agreement button', async () => {
     const driver = new FakeHarnessDriver([
       observation('overlay', [
@@ -130,7 +245,9 @@ describe('macOS Chrome agent harness', () => {
 
 class FakeHarnessDriver {
   readonly calls: Array<Record<string, unknown>> = []
+  readonly observeErrorsByCall = new Map<number, Error>()
   nextPromotion?: CandidatePromotion
+  scrollError?: Error
   lastCapture?: ChromeWindowCapture
 
   readonly #observations: ObservationSnapshot[]
@@ -140,7 +257,11 @@ class FakeHarnessDriver {
   }
 
   async observe(): Promise<ObservationSnapshot> {
+    const observeCallNumber = this.calls.filter(call => call.name === 'observe').length + 1
     this.calls.push({ name: 'observe' })
+    const error = this.observeErrorsByCall.get(observeCallNumber)
+    if (error)
+      throw error
     const next = this.#observations.shift()
     if (!next)
       throw new Error('No fake observation available.')
@@ -203,6 +324,8 @@ class FakeHarnessDriver {
         windowLocalPoint: options.windowLocalPoint,
       },
     })
+    if (this.scrollError)
+      throw this.scrollError
   }
 }
 
@@ -247,6 +370,15 @@ function node(id: string, kind: string, label: string, nodeBox: ReturnType<typeo
     center: {
       x: nodeBox.x + nodeBox.width / 2,
       y: nodeBox.y + nodeBox.height / 2,
+    },
+  }
+}
+
+function uncertainNode(id: string, kind: string, label: string, nodeBox: ReturnType<typeof box>): SurfaceNode {
+  return {
+    ...node(id, kind, label, nodeBox),
+    detail: {
+      known_limits: ['DOM provider state indicates hidden evidence'],
     },
   }
 }

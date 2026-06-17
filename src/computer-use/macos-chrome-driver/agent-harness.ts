@@ -51,12 +51,26 @@ export interface AgentPageObservation {
   visualState: VisualState
 }
 
-export interface AgentActionResult {
-  action: 'click' | 'type' | 'press' | 'scroll'
+type ScrollEffect = 'changed' | 'no_visible_change' | 'unknown'
+
+interface AgentNonScrollActionResult {
+  action: 'click' | 'type' | 'press'
   reason: string
   before: ObservationSnapshot
   after: ObservationSnapshot
 }
+
+interface AgentScrollActionResult {
+  action: 'scroll'
+  reason: string
+  before: ObservationSnapshot
+  after: ObservationSnapshot | null
+  scroll_effect: ScrollEffect
+  scroll_effect_reason?: 'after_observe_failed'
+  after_observe_error?: string
+}
+
+export type AgentActionResult = AgentNonScrollActionResult | AgentScrollActionResult
 
 export type OverlayDismissResult
   = | {
@@ -156,11 +170,11 @@ export class MacOSChromeAgentHarness {
     }
   }
 
-  async scrollDown(options: AgentHarnessScrollOptions): Promise<AgentActionResult> {
+  async scrollDown(options: AgentHarnessScrollOptions): Promise<Extract<AgentActionResult, { action: 'scroll' }>> {
     return this.#scrollSemantic('down', options)
   }
 
-  async scrollUp(options: AgentHarnessScrollOptions): Promise<AgentActionResult> {
+  async scrollUp(options: AgentHarnessScrollOptions): Promise<Extract<AgentActionResult, { action: 'scroll' }>> {
     return this.#scrollSemantic('up', options)
   }
 
@@ -250,7 +264,7 @@ export class MacOSChromeAgentHarness {
   async #scrollSemantic(
     direction: 'down' | 'up',
     options: AgentHarnessScrollOptions,
-  ): Promise<AgentActionResult> {
+  ): Promise<Extract<AgentActionResult, { action: 'scroll' }>> {
     const before = await this.observePage()
     const amount = Math.abs(options.amount ?? DEFAULT_SCROLL_AMOUNT)
     const deltaY = direction === 'down' ? -amount : amount
@@ -259,15 +273,114 @@ export class MacOSChromeAgentHarness {
       settleMs: options.settleMs,
       windowLocalPoint: options.windowLocalPoint,
     })
-    const after = await this.observePage()
+    let after: AgentPageObservation
+    try {
+      after = await this.observePage()
+    }
+    catch (error) {
+      return {
+        action: 'scroll',
+        reason: options.reason,
+        before: before.snapshot,
+        after: null,
+        scroll_effect: 'unknown',
+        scroll_effect_reason: 'after_observe_failed',
+        after_observe_error: sanitizeErrorMessage(error),
+      }
+    }
 
     return {
       action: 'scroll',
       reason: options.reason,
       before: before.snapshot,
       after: after.snapshot,
+      scroll_effect: inferScrollEffect(before, after),
     }
   }
+}
+
+function inferScrollEffect(
+  before: AgentPageObservation,
+  after: AgentPageObservation,
+): ScrollEffect {
+  if (!sameComparableWindow(before.snapshot, after.snapshot))
+    return 'unknown'
+
+  const beforeFingerprint = visibleSurfaceFingerprint(before.snapshot)
+  const afterFingerprint = visibleSurfaceFingerprint(after.snapshot)
+  if (!beforeFingerprint || !afterFingerprint)
+    return 'unknown'
+
+  return beforeFingerprint === afterFingerprint ? 'no_visible_change' : 'changed'
+}
+
+function sameComparableWindow(before: ObservationSnapshot, after: ObservationSnapshot): boolean {
+  return before.scope.surface === 'window'
+    && after.scope.surface === 'window'
+    && typeof before.scope.window_number === 'number'
+    && before.scope.window_number === after.scope.window_number
+    && before.scope.app_bundle_id === after.scope.app_bundle_id
+}
+
+function visibleSurfaceFingerprint(snapshot: ObservationSnapshot): string | null {
+  const items = snapshot.nodes
+    .map(visibleNodeFingerprint)
+    .filter((item): item is string => item !== null)
+    .sort()
+
+  if (items.length === 0)
+    return null
+
+  return items.join('\n')
+}
+
+function visibleNodeFingerprint(node: SurfaceNode): string | null {
+  if (node.kind === 'dom_evidence' || node.kind === 'ax_evidence')
+    return null
+  if (hasUncertainVisibility(node))
+    return null
+
+  const label = node.label?.replace(/\s+/g, ' ').trim()
+  if (!label)
+    return null
+  if (node.box.width <= 0 || node.box.height <= 0)
+    return null
+
+  return [
+    node.kind,
+    label,
+    Math.round(node.box.x),
+    Math.round(node.box.y),
+    Math.round(node.box.width),
+    Math.round(node.box.height),
+  ].join('|')
+}
+
+function hasUncertainVisibility(node: SurfaceNode): boolean {
+  const knownLimits = node.detail.known_limits
+  if (!Array.isArray(knownLimits))
+    return false
+
+  return knownLimits.some((limit) => {
+    if (typeof limit !== 'string')
+      return false
+    const normalized = limit.toLowerCase()
+    return normalized.includes('hidden')
+      || normalized.includes('offscreen')
+      || normalized.includes('covered')
+      || normalized.includes('visibility')
+      || normalized.includes('outside viewport')
+      || normalized.includes('does not intersect')
+      || normalized.includes('actionability unavailable')
+      || normalized.includes('actionability is not clean')
+      || normalized.includes('enabled unavailable')
+  })
+}
+
+function sanitizeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const sanitized = message.replace(/\s+/g, ' ').trim()
+  return sanitized.length > 0 ? sanitized.slice(0, 200) : 'unknown error'
 }
 
 function toVisualState(
