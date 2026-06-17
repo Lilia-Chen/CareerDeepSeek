@@ -57,6 +57,18 @@ export interface MacOSChromeScrollOptions {
 }
 
 type ActionType = 'click' | 'typeText' | 'pressKey' | 'scroll'
+type ActionExecutorResult = void | { livenessRecheck?: Record<string, unknown> }
+
+interface StoredPromotedCandidate {
+  ref: ArtifactRef
+  candidate: PromotedCandidate
+}
+
+interface CandidateLivenessCheck {
+  item: RecognizedItem
+  context: ChromeContextSnapshot
+  detail: Record<string, unknown>
+}
 
 const NORMAL_CHROME_MIN_WIDTH = 480
 const NORMAL_CHROME_MIN_HEIGHT = 300
@@ -79,7 +91,7 @@ export class MacOSChromeDriver {
   #lastCapture?: ChromeWindowCapture
   #lastObservation?: ObservationSnapshot
   #recognitionArtifacts = new Map<string, ArtifactRef>()
-  #promotedCandidateArtifacts = new Map<string, ArtifactRef>()
+  #promotedCandidateArtifacts = new Map<string, StoredPromotedCandidate>()
 
   constructor(options: MacOSChromeDriverOptions) {
     if (!options.sessionId?.trim()) {
@@ -295,7 +307,9 @@ export class MacOSChromeDriver {
         text: n.label ?? undefined,
         box: n.box,
         provider_score: n.provider_score ?? 0.5,
-        detail: n.detail,
+        detail: n.kind.startsWith('dom_') && n.kind !== 'dom_evidence'
+          ? detailWithCurrentCaptureProjection(n.detail, n.box, capture.contract)
+          : n.detail,
       }))
 
     // Merge: OCR items + DOM/AX items, deduplicate by item_id
@@ -382,21 +396,25 @@ export class MacOSChromeDriver {
       recognition_artifact: this.#recognitionArtifacts.get(recognition.recognition_id),
     })
     if (promotion.status === 'promoted') {
+      const candidateSnapshot = immutableJsonSnapshot(promotion.candidate)
       const promotedArtifact = this.#traceStore?.writeJsonArtifact({
         artifact_id: `promoted_${sanitizeArtifactId(recognition.recognition_id)}`,
         span_id: this.#spanId,
         role: 'promoted-candidate',
-        payload: promotion.candidate,
+        payload: candidateSnapshot,
         attributes: {
           recognition_id: recognition.recognition_id,
-          candidate_local_id: promotion.candidate.candidate_local_id,
+          candidate_local_id: candidateSnapshot.candidate_local_id,
         },
       })
       if (promotedArtifact) {
-        this.#promotedCandidateArtifacts.set(promotion.candidate.candidate_local_id, {
-          run_id: this.#runId,
-          artifact_id: promotedArtifact.artifact_id,
-          span_id: promotedArtifact.span_id,
+        this.#promotedCandidateArtifacts.set(candidateSnapshot.candidate_local_id, {
+          ref: {
+            run_id: this.#runId,
+            artifact_id: promotedArtifact.artifact_id,
+            span_id: promotedArtifact.span_id,
+          },
+          candidate: candidateSnapshot,
         })
       }
     }
@@ -404,17 +422,21 @@ export class MacOSChromeDriver {
   }
 
   async click(candidate: PromotedCandidate): Promise<void> {
-    const candidateArtifactRef = this.#promotedCandidateArtifacts.get(candidate.candidate_local_id) ?? null
+    const storedCandidate = this.#promotedCandidateArtifacts.get(candidate.candidate_local_id) ?? null
+    const candidateArtifactRef = storedCandidate?.ref ?? null
+    const callerPreconditionFailure = promotedCandidatePreconditionFailure(candidate, storedCandidate)
     await this.#executeAction('click', candidateArtifactRef, async (context) => {
-      const winNumber = candidate.liveness.preconditions.window_ref.window_number
+      const candidateFromArtifact = storedCandidate!.candidate
+      const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
       if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
         throw new Error('Refusing click: Chrome window changed after candidate promotion.')
       }
 
-      const box = candidate.target_spec.box
+      const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
+      const box = liveness.item.box
       const center = centerOf(box)
 
-      if (!pointInsideBounds(center, context.window.bounds)) {
+      if (!pointInsideBounds(center, liveness.context.window.bounds)) {
         throw new Error('Refusing click: candidate point is outside the active Chrome window.')
       }
 
@@ -423,20 +445,19 @@ export class MacOSChromeDriver {
         to: center,
         bounds: this.#config.allowedBounds,
       })
-      await executeMoveAndClick(this.#config, {
-        pointerTrace,
-        button: 0,
-        clickCount: 1,
-      })
-      this.#lastCursorPosition = center
-    }, candidateArtifactRef
-      ? undefined
-      : {
-          code: 'missing_promoted_candidate_artifact',
-          detail: 'Click candidate was not promoted by this driver session.',
-          observed: candidate.candidate_local_id,
-          expected: 'promoted-candidate artifact written by driver.promoteCandidate()',
+      try {
+        await executeMoveAndClick(this.#config, {
+          pointerTrace,
+          button: 0,
+          clickCount: 1,
         })
+      }
+      catch (err) {
+        throw new ActionExecutionError((err as Error).message, liveness.detail)
+      }
+      this.#lastCursorPosition = center
+      return { livenessRecheck: liveness.detail }
+    }, callerPreconditionFailure)
   }
 
   async typeText(text: string): Promise<void> {
@@ -488,7 +509,7 @@ export class MacOSChromeDriver {
   async #executeAction(
     actionType: ActionType,
     candidateRef: ArtifactRef | null,
-    executor: (context: ChromeContextSnapshot) => Promise<void>,
+    executor: (context: ChromeContextSnapshot) => Promise<ActionExecutorResult>,
     callerPreconditionFailure?: SafetyFailure,
   ): Promise<void> {
     const actionId = `action_${this.#nextActionId++}`
@@ -518,7 +539,7 @@ export class MacOSChromeDriver {
     }
 
     try {
-      await executor(context)
+      const actionDetail = await executor(context)
       this.#recordActionExecution({
         actionId,
         actionType,
@@ -529,10 +550,28 @@ export class MacOSChromeDriver {
         refused: false,
         refusalReasons: [],
         knownLimits: [],
+        livenessRecheck: actionDetail?.livenessRecheck,
       })
       this.#traceStore?.endSpan(spanId, 'ok')
     }
     catch (err) {
+      if (err instanceof ActionRefusalError) {
+        const failureResult = appendSafetyFailure(preconditionResult, err.failure)
+        this.#recordActionExecution({
+          actionId,
+          actionType,
+          spanId,
+          candidateRef,
+          preconditionResult: failureResult,
+          executed: false,
+          refused: true,
+          refusalReasons: [err.code],
+          knownLimits: err.knownLimits,
+          livenessRecheck: err.livenessRecheck,
+        })
+        this.#traceStore?.endSpan(spanId, 'error', err.message)
+        throw err
+      }
       const failureResult = appendSafetyFailure(preconditionResult, {
         code: 'action_execution_error',
         detail: (err as Error).message,
@@ -548,6 +587,7 @@ export class MacOSChromeDriver {
         refused: true,
         refusalReasons: ['action_execution_error'],
         knownLimits: ['action failed after passing precondition gate'],
+        livenessRecheck: err instanceof ActionExecutionError ? err.livenessRecheck : undefined,
       })
       this.#traceStore?.endSpan(spanId, 'error', (err as Error).message)
       throw err
@@ -628,6 +668,7 @@ export class MacOSChromeDriver {
     refused: boolean
     refusalReasons: string[]
     knownLimits: string[]
+    livenessRecheck?: Record<string, unknown>
   }): void {
     this.#traceStore?.writeJsonArtifact({
       artifact_id: `action_execution_${input.actionId}`,
@@ -643,6 +684,7 @@ export class MacOSChromeDriver {
         executed: input.executed,
         refused: input.refused,
         refusal_reasons: input.refusalReasons,
+        liveness_recheck: input.livenessRecheck,
         timestamp_millis: Date.now(),
         known_limits: input.knownLimits,
       },
@@ -652,6 +694,285 @@ export class MacOSChromeDriver {
         refused: input.refused,
       },
     })
+  }
+
+  async #recheckCandidateLiveness(
+    candidate: PromotedCandidate,
+    candidateRef: ArtifactRef,
+  ): Promise<CandidateLivenessCheck> {
+    const target = recognitionTargetForCandidate(candidate)
+    let freshObservation: ObservationSnapshot
+    try {
+      freshObservation = await this.observe()
+    }
+    catch (err) {
+      const code = freshObserveFailureCode(err)
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation: null,
+        freshRecognition: null,
+        freshRecognitionRef: undefined,
+        status: 'refused',
+        refusalReason: code,
+        knownLimits: [`fresh observe failed: ${errorMessage(err)}`],
+      })
+      throw new ActionRefusalError({
+        code,
+        message: `Refusing click: ${code} during candidate liveness recheck.`,
+        detail,
+        knownLimits: ['action refused before macOS event delivery', `fresh observe failed: ${errorMessage(err)}`],
+      })
+    }
+    const freshCapture = this.#lastCapture
+    if (!freshCapture) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition: null,
+        freshRecognitionRef: undefined,
+        status: 'refused',
+        refusalReason: 'fresh_capture_missing',
+        knownLimits: ['liveness recheck could not capture current Chrome window'],
+      })
+      throw new ActionRefusalError({
+        code: 'fresh_capture_missing',
+        message: 'Refusing click: fresh_capture_missing during candidate liveness recheck.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', 'liveness recheck could not capture current Chrome window'],
+      })
+    }
+
+    if (!target) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition: null,
+        freshRecognitionRef: undefined,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_unavailable',
+        knownLimits: ['candidate has no anchor text for liveness recheck'],
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_unavailable',
+        message: 'Refusing click: anchor_recheck_unavailable for promoted candidate.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', 'candidate has no anchor text for liveness recheck'],
+      })
+    }
+
+    const freshRecognition = await this.recognizeFromCapture(freshCapture, target)
+    const freshRecognitionRef = this.#recognitionArtifacts.get(freshRecognition.recognition_id)
+    const knownLimits = uniqueStrings([
+      ...freshObservation.known_limits,
+      ...freshRecognition.known_limits,
+    ])
+
+    if (freshRecognition.filtered.length > 1) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_ambiguous',
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_ambiguous',
+        message: 'Refusing click: anchor_recheck_ambiguous in current Chrome observation.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    if (!freshRecognition.best) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_missing',
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_missing',
+        message: 'Refusing click: anchor_recheck_missing in current Chrome observation.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    const selected = freshRecognition.best
+    if (!isFreshSourceCompatible(candidate, selected)) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_incompatible_source',
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_incompatible_source',
+        message: 'Refusing click: anchor_recheck_incompatible_source in current Chrome observation.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    if (!hasTrustworthyCurrentProjection(selected)) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_projection_unavailable',
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_projection_unavailable',
+        message: 'Refusing click: anchor_recheck_projection_unavailable in current Chrome observation.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    const expectedConfidence = candidate.liveness.preconditions.anchor_recheck?.expected_min_confidence
+    if (expectedConfidence !== undefined && (!Number.isFinite(selected.provider_score) || selected.provider_score! < expectedConfidence)) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_low_confidence',
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_low_confidence',
+        message: 'Refusing click: anchor_recheck_low_confidence in current Chrome observation.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    const originalCenter = centerOf(candidate.target_spec.box)
+    const freshCenter = centerOf(selected.box)
+    const pixelDistance = distanceBetween(originalCenter, freshCenter)
+    const maxPixelDistance = candidate.liveness.preconditions.anchor_recheck?.max_pixel_distance
+    if (maxPixelDistance !== undefined && pixelDistance > maxPixelDistance) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_moved',
+        pixelDistance,
+        maxPixelDistance,
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_moved',
+        message: 'Refusing click: anchor_recheck_moved beyond max_pixel_distance.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    const freshPrecondition = await this.#checkActionPreconditions()
+    if (!freshPrecondition.context || !freshPrecondition.result.passed) {
+      const reason = freshPrecondition.result.failures[0]?.code ?? 'fresh_safety_gate_failed'
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'refused',
+        refusalReason: reason,
+        pixelDistance,
+        maxPixelDistance,
+        freshSafetyResult: freshPrecondition.result,
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: reason,
+        message: `Refusing click: ${reason} after fresh Chrome observation.`,
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    if (!pointInsideBounds(freshCenter, freshPrecondition.context.window.bounds)) {
+      const detail = livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'refused',
+        refusalReason: 'anchor_recheck_outside_window',
+        pixelDistance,
+        maxPixelDistance,
+        freshSafetyResult: freshPrecondition.result,
+        knownLimits,
+      })
+      throw new ActionRefusalError({
+        code: 'anchor_recheck_outside_window',
+        message: 'Refusing click: anchor_recheck_outside_window in current Chrome observation.',
+        detail,
+        knownLimits: ['action refused before macOS event delivery', ...knownLimits],
+      })
+    }
+
+    return {
+      item: selected,
+      context: freshPrecondition.context,
+      detail: livenessDetail({
+        candidate,
+        candidateRef,
+        target,
+        freshObservation,
+        freshRecognition,
+        freshRecognitionRef,
+        selected,
+        status: 'passed',
+        pixelDistance,
+        maxPixelDistance,
+        freshSafetyResult: freshPrecondition.result,
+        knownLimits,
+      }),
+    }
   }
 
   #captureEvidenceRefs(capture: ChromeWindowCapture): ArtifactRef[] {
@@ -796,6 +1117,261 @@ export class MacOSChromeDriver {
       window,
       lease,
     }
+  }
+}
+
+const CLICK_BUTTON_KINDS = new Set(['dom_button', 'ax_button'])
+const CLICK_LINK_KINDS = new Set(['dom_link', 'ax_link'])
+const CLICK_TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'dom_combobox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
+
+class ActionRefusalError extends Error {
+  readonly code: string
+  readonly failure: SafetyFailure
+  readonly knownLimits: string[]
+  readonly livenessRecheck?: Record<string, unknown>
+
+  constructor(input: {
+    code: string
+    message: string
+    detail: Record<string, unknown>
+    knownLimits: string[]
+  }) {
+    super(input.message)
+    this.name = 'ActionRefusalError'
+    this.code = input.code
+    this.knownLimits = input.knownLimits
+    this.livenessRecheck = input.detail
+    this.failure = {
+      code: input.code,
+      detail: input.message,
+      observed: input.detail,
+      expected: 'fresh promoted-candidate liveness check before macOS event delivery',
+    }
+  }
+}
+
+class ActionExecutionError extends Error {
+  readonly livenessRecheck: Record<string, unknown>
+
+  constructor(message: string, livenessRecheck: Record<string, unknown>) {
+    super(message)
+    this.name = 'ActionExecutionError'
+    this.livenessRecheck = livenessRecheck
+  }
+}
+
+function promotedCandidatePreconditionFailure(
+  candidate: PromotedCandidate,
+  stored: StoredPromotedCandidate | null,
+): SafetyFailure | undefined {
+  if (!stored) {
+    return {
+      code: 'missing_promoted_candidate_artifact',
+      detail: 'Click candidate was not promoted by this driver session.',
+      observed: candidate.candidate_local_id,
+      expected: 'promoted-candidate artifact written by driver.promoteCandidate()',
+    }
+  }
+  if (!sameJson(candidate, stored.candidate)) {
+    return {
+      code: 'promoted_candidate_artifact_mismatch',
+      detail: 'Click candidate does not match the promoted-candidate artifact written by this driver session.',
+      observed: {
+        candidate_local_id: candidate.candidate_local_id,
+        source_operation_id: candidate.source_operation_id,
+      },
+      expected: {
+        candidate_local_id: stored.candidate.candidate_local_id,
+        source_operation_id: stored.candidate.source_operation_id,
+      },
+    }
+  }
+  return undefined
+}
+
+function recognitionTargetForCandidate(candidate: PromotedCandidate): ChromeRecognitionTarget | null {
+  const anchorText = candidate.liveness.preconditions.anchor_recheck?.text
+    ?? candidate.target_spec.anchor_text
+    ?? candidate.label
+  if (!anchorText?.trim())
+    return null
+
+  const text = exactTextPattern(anchorText)
+  if (candidate.kind === 'ocr_row')
+    return { kind: 'ocr_row', text }
+  if (CLICK_BUTTON_KINDS.has(candidate.kind))
+    return { kind: 'button', text }
+  if (CLICK_LINK_KINDS.has(candidate.kind))
+    return { kind: 'link', text }
+  if (CLICK_TEXT_INPUT_KINDS.has(candidate.kind))
+    return { kind: 'text_input', name: text }
+  return { kind: 'visible_text', text }
+}
+
+function isFreshSourceCompatible(candidate: PromotedCandidate, selected: RecognizedItem): boolean {
+  if (candidate.kind === 'dom_evidence' || candidate.kind === 'visual_row')
+    return false
+  if (selected.kind === 'dom_evidence' || selected.kind === 'visual_row')
+    return false
+  if (candidate.kind === 'ocr_text')
+    return selected.kind === 'ocr_text'
+  if (candidate.kind === 'ocr_row')
+    return selected.kind === 'ocr_row'
+  return true
+}
+
+function livenessDetail(input: {
+  candidate: PromotedCandidate
+  candidateRef: ArtifactRef
+  target: ChromeRecognitionTarget | null
+  freshObservation: ObservationSnapshot | null
+  freshRecognition: NewRecognitionResult | null
+  freshRecognitionRef?: ArtifactRef
+  selected?: RecognizedItem | null
+  status: 'passed' | 'refused'
+  refusalReason?: string
+  pixelDistance?: number
+  maxPixelDistance?: number
+  freshSafetyResult?: SafetyCheckResult
+  knownLimits: string[]
+}): Record<string, unknown> {
+  return {
+    status: input.status,
+    refusal_reason: input.refusalReason,
+    original_candidate_ref: input.candidateRef,
+    original_candidate: {
+      candidate_local_id: input.candidate.candidate_local_id,
+      kind: input.candidate.kind,
+      label: input.candidate.label,
+      source_operation_id: input.candidate.source_operation_id,
+      source_artifact_id: input.candidate.source_artifact_id,
+    },
+    original_box: input.candidate.target_spec.box,
+    anchor_recheck: input.candidate.liveness.preconditions.anchor_recheck,
+    fresh_target: serializeRecognitionTarget(input.target),
+    fresh_observation_ref: input.freshObservation
+      ? {
+          run_id: input.freshObservation.run_id,
+          span_id: input.freshObservation.span_id,
+          artifact_id: `observation_${input.freshObservation.snapshot_id}`,
+        }
+      : null,
+    fresh_capture_ref: input.freshObservation?.scope.capture_artifact ?? null,
+    fresh_recognition_ref: input.freshRecognitionRef,
+    fresh_recognition_id: input.freshRecognition?.recognition_id,
+    fresh_filtered_count: input.freshRecognition?.filtered.length,
+    fresh_all_count: input.freshRecognition?.all.length,
+    fresh_selected_item: input.selected ? selectedItemDetail(input.selected) : null,
+    fresh_box: input.selected?.box ?? null,
+    fresh_safety_result: input.freshSafetyResult,
+    pixel_distance: input.pixelDistance,
+    max_pixel_distance: input.maxPixelDistance,
+    known_limits: input.knownLimits,
+  }
+}
+
+function selectedItemDetail(item: RecognizedItem): Record<string, unknown> {
+  return {
+    item_id: item.item_id,
+    kind: item.kind,
+    text: item.text,
+    box: item.box,
+    provider_score: item.provider_score,
+    detail: item.detail,
+  }
+}
+
+function serializeRecognitionTarget(target: ChromeRecognitionTarget | null): Record<string, unknown> | null {
+  if (!target)
+    return null
+  if (target.kind === 'text_input') {
+    return {
+      kind: target.kind,
+      name: serializeTextMatcher(target.name),
+    }
+  }
+  return {
+    kind: target.kind,
+    text: serializeTextMatcher(target.text),
+  }
+}
+
+function serializeTextMatcher(value: string | RegExp): Record<string, unknown> {
+  if (value instanceof RegExp) {
+    return {
+      kind: 'regexp',
+      source: value.source,
+      flags: value.flags,
+    }
+  }
+  return {
+    kind: 'text',
+    value,
+  }
+}
+
+function hasTrustworthyCurrentProjection(item: RecognizedItem): boolean {
+  if (!validRecognitionBox(item.box))
+    return false
+  return hasCaptureProjectedBounds(item.detail.bounds, item.box)
+    || hasCaptureProjectedBounds(item.detail.row_bounds, item.box)
+}
+
+function detailWithCurrentCaptureProjection(
+  detail: Record<string, unknown>,
+  box: RecognizedItem['box'],
+  contract: ChromeWindowCapture['contract'],
+): Record<string, unknown> {
+  const bounds = isRecord(detail.bounds) ? detail.bounds : undefined
+  if (!bounds || isRecord(bounds.capture_pixel) || !validRecognitionBox(bounds.source_global_logical))
+    return detail
+  return {
+    ...detail,
+    bounds: {
+      ...bounds,
+      capture_pixel: projectLogicalToPixel(box, contract),
+    },
+  }
+}
+
+function hasCaptureProjectedBounds(value: unknown, expectedBox: RecognizedItem['box']): boolean {
+  return isRecord(value)
+    && validRecognitionBox(value.capture_pixel)
+    && validRecognitionBox(value.source_global_logical)
+    && boxesMatch(value.source_global_logical, expectedBox)
+}
+
+function validRecognitionBox(value: unknown): value is RecognizedItem['box'] {
+  return isRecord(value)
+    && typeof value.x === 'number'
+    && typeof value.y === 'number'
+    && typeof value.width === 'number'
+    && typeof value.height === 'number'
+    && Number.isFinite(value.x)
+    && Number.isFinite(value.y)
+    && Number.isFinite(value.width)
+    && Number.isFinite(value.height)
+    && value.width > 0
+    && value.height > 0
+}
+
+function boxesMatch(a: RecognizedItem['box'], b: RecognizedItem['box']): boolean {
+  const tolerance = 0.5
+  return Math.abs(a.x - b.x) <= tolerance
+    && Math.abs(a.y - b.y) <= tolerance
+    && Math.abs(a.width - b.width) <= tolerance
+    && Math.abs(a.height - b.height) <= tolerance
+}
+
+function projectLogicalToPixel(
+  logicalBounds: RecognizedItem['box'],
+  contract: ChromeWindowCapture['contract'],
+): RecognizedItem['box'] {
+  return {
+    x: (logicalBounds.x - contract.sourceGlobalLogicalBounds.x) * contract.logicalToPixelScale.x,
+    y: (logicalBounds.y - contract.sourceGlobalLogicalBounds.y) * contract.logicalToPixelScale.y,
+    width: logicalBounds.width * contract.logicalToPixelScale.x,
+    height: logicalBounds.height * contract.logicalToPixelScale.y,
   }
 }
 
@@ -946,6 +1522,50 @@ function centerOf(bounds: Bounds): { x: number, y: number } {
     x: bounds.x + bounds.width / 2,
     y: bounds.y + bounds.height / 2,
   }
+}
+
+function distanceBetween(a: { x: number, y: number }, b: { x: number, y: number }): number {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+function exactTextPattern(text: string): RegExp {
+  return new RegExp(`^${escapeRegExp(text)}$`, 'i')
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function freshObserveFailureCode(error: unknown): 'fresh_window_mismatch' | 'fresh_observe_failed' {
+  const message = errorMessage(error).toLowerCase()
+  if (message.includes('lease is no longer valid')
+    || message.includes('window changed')
+    || message.includes('leased chrome window')
+    || message.includes('chrome context lease is no longer valid')) {
+    return 'fresh_window_mismatch'
+  }
+  return 'fresh_observe_failed'
+}
+
+function immutableJsonSnapshot<T>(value: T): T {
+  return deepFreeze(JSON.parse(JSON.stringify(value)) as T)
+}
+
+function deepFreeze<T>(value: T): T {
+  if (!isRecord(value) && !Array.isArray(value))
+    return value
+  Object.freeze(value)
+  for (const child of Object.values(value))
+    deepFreeze(child)
+  return value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function resolveScrollAnchor(

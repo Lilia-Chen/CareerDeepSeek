@@ -344,9 +344,16 @@ Explicit forbidden items:
 Goal:
 
 - Support visible text or OCR-derived capture-local row/block click only through a promoted, live candidate.
-- Re-observe and re-match before action.
-- Use current capture projection and evidence, then execute only if the window precondition and candidate liveness pass.
+- `MacOSChromeDriver.click()` is the mandatory re-observe, re-match, and liveness boundary before any macOS click dispatch. The harness may expose semantic helpers, but it must not become the only safety/liveness boundary.
+- Re-observe the current Chrome window, re-match the promoted candidate against current capture evidence, and use current capture projection before action.
+- The final click point must come from the fresh current-capture match, not from a stale promoted-candidate box or raw coordinate.
+- Target API boundary:
+  - `visible_text` targets match visible OCR/text evidence by text.
+  - `ocr_row` targets match OCR-derived capture-local row/block evidence by text/fragments.
+  - `ocr_row` is an internal driver/harness target shape for P1 click semantics. It is not a public command catalog expansion.
+- `action-execution` remains the existing artifact role for the click result. P1-5 may extend its JSON payload with liveness recheck details, fresh match refs, refusal reasons, and known limits, but must not add a new artifact role.
 - In this slice, "row" means OCR-derived capture-local row/block evidence only. It does not mean `visual_row`, DOM list row, generic list item, section row, or retained row index.
+- `row_index` is valid only within the current visible capture/observation. It must never be used as a stable identity across re-observation, scroll, or later actions.
 
 Allowed files:
 
@@ -358,28 +365,41 @@ Allowed files:
 - `test/computer-use/macosChromeAgentHarness.test.ts`
 - `test/computer-use/macosChromeDriver.test.ts`
 - `test/computer-use/candidatePromotion.test.ts`
+- `test/computer-use/recognition.test.ts`, only for P1-5 target matcher contract tests proving `{ kind: 'ocr_row' }` matches OCR-derived row/block evidence and excludes `visual_row`, DOM/AX rows, and raw OCR text.
 - Documentation updates to this file only when a scope gap is identified before implementation.
 
 AUV reference points:
 
-- Text/OCR-row-block click should re-observe, re-match, check window precondition, project from current capture, and carry evidence.
+- Text/OCR-row-block click should re-observe, re-match, check window precondition, project from current capture, and carry evidence before dispatch.
 - `PromotedCandidate` remains the click action target.
+- Candidate liveness must be rechecked against the current capture evidence before the executor is called.
 - `row_index` is valid only inside the current capture/visible observation.
+- Action evidence stays separate from recognition and candidate evidence; liveness recheck detail belongs in the existing `action-execution` payload.
 
 Acceptance criteria:
 
-- Text/OCR-row-block click action does not consume stale recognition without re-observation/re-match.
+- `driver.click()` refuses to dispatch unless it can load a traced `PromotedCandidate` artifact produced by the current driver session.
+- `driver.click()` performs re-observation and re-match before any executor call for visible text and OCR row/block clicks.
+- The click point is derived from the current matched `visible_text` or `ocr_row` evidence box and current capture projection, not from stale coordinates.
+- `visible_text` and `ocr_row` target handling are explicit and tested separately.
 - Click consumes a `PromotedCandidate` artifact produced by the driver session.
 - `row_index` is never treated as stable identity across scroll or later observations.
 - Row/block click candidates must come from OCR-derived capture-local row/block evidence, not `visual_row`, DOM list rows, generic list semantics, or retained UI node identity.
+- Refusal paths are tested for at least forged/missing candidate artifact, missing current match, ambiguous current match, window mismatch, projection failure, and stale candidate distance beyond the configured liveness threshold.
+- `action-execution` payload records the original candidate ref, fresh observation/recognition evidence refs when available, matched item identity/kind/box, liveness recheck status, refusal reason when refused, and known limits.
+- P1-5 does not introduce any new artifact role.
 - Action evidence remains separate from recognition and candidate evidence.
 
 Explicit forbidden items:
 
 - Raw coordinate click.
 - Bare `{ x, y }` action target.
+- Letting `agent-harness.ts` be the only re-observe/re-match/liveness boundary.
+- Dispatching from stale promoted-candidate coordinates without a fresh current-capture match.
 - OCR-to-AX click.
 - DOM/CDP/Playwright/page-executed click.
+- New public command catalog entries.
+- New artifact roles for liveness recheck, click audit, or click refusal.
 - Treating DOM list rows, generic list rows, `visual_row`, or retained row index as P1-5 row click targets.
 - Clicking a row by retained `row_index` after scroll.
 - Background dispatch.

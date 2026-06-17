@@ -159,6 +159,10 @@ export type ChromeRecognitionTarget
     kind: 'visible_text'
     text: string | RegExp
   }
+  | {
+    kind: 'ocr_row'
+    text: string | RegExp
+  }
 
 export function requireWindowNumber(window: WindowDescriptor): number {
   const windowNumber = window.windowNumber

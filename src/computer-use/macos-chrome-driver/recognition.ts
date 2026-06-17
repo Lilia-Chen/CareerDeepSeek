@@ -409,6 +409,7 @@ function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): b
     case 'button': return BUTTON_KINDS.has(item.kind) && textMatches(target.text)
     case 'link': return LINK_KINDS.has(item.kind) && textMatches(target.text)
     case 'visible_text': return textMatches(target.text)
+    case 'ocr_row': return item.kind === 'ocr_row' && textMatches(target.text)
   }
 }
 

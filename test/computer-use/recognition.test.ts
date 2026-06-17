@@ -176,6 +176,24 @@ describe('recognizeFromCapture', () => {
     assert.equal(result.filtered[0]!.item_id, '0')
   })
 
+  it('filters OCR row targets to current ocr_row evidence only', () => {
+    const items = [
+      makeItem({ item_id: 'ocr-row', text: 'Acme AI Engineer', kind: 'ocr_row' }),
+      makeItem({ item_id: 'visual-row', text: 'Acme AI Engineer', kind: 'visual_row' }),
+      makeItem({ item_id: 'dom-row', text: 'Acme AI Engineer', kind: 'dom_button' }),
+      makeItem({ item_id: 'ax-row', text: 'Acme AI Engineer', kind: 'ax_button' }),
+      makeItem({ item_id: 'ocr-text', text: 'Acme AI Engineer', kind: 'ocr_text' }),
+    ]
+    const target: ChromeRecognitionTarget = { kind: 'ocr_row', text: /acme ai engineer/i }
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath)
+
+    assert.equal(result.found, true)
+    assert.deepEqual(result.filtered.map(item => item.item_id), ['ocr-row'])
+    assert.equal(result.best?.kind, 'ocr_row')
+    assert.equal(result.source, 'ocr_row')
+  })
+
   it('sorts filtered: actionable first, then provider_score descending', () => {
     const items = [
       makeItem({ item_id: 'low', text: 'Search', provider_score: 0.5, detail: { actionable: false } }),
