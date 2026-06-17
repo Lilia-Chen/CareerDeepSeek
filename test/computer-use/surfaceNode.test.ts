@@ -216,6 +216,50 @@ describe('normalizeToSurfaceNodes', () => {
     assert.equal(node.node_ref.node_id, 'ax_btn-1')
   })
 
+  it('does not emit AXWindow containers as page surface nodes', () => {
+    const axSnapshot: AXSnapshot = {
+      snapshotId: 'ax-window-container',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-14T00:00:00.000Z',
+      maxDepth: 5,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXApplication',
+        children: [{
+          uid: 'window-1',
+          role: 'AXWindow',
+          title: 'LinkedIn - Google Chrome - CareerDeepSeek',
+          enabled: true,
+          bounds: { x: 0, y: 40, width: 1000, height: 800 },
+          children: [{
+            uid: 'btn-1',
+            role: 'AXButton',
+            title: 'Accept',
+            enabled: true,
+            bounds: { x: 520, y: 280, width: 280, height: 44 },
+            children: [],
+          }],
+        }],
+      },
+    }
+
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: [],
+      axSnapshot,
+      contract,
+      runId,
+      spanId,
+    })
+
+    assert.equal(nodes.length, 1)
+    assert.equal(nodes[0]!.kind, 'ax_button')
+    assert.equal(nodes[0]!.label, 'Accept')
+    assert.equal(nodes.some(node => node.recognized_item_kind === 'AXWindow'), false)
+    assert.equal(nodes.some(node => node.label === 'LinkedIn - Google Chrome - CareerDeepSeek'), false)
+  })
+
   it('preserves AX read-only evidence detail with source-global logical bounds and capture refs', () => {
     const axSnapshot: AXSnapshot = {
       snapshotId: 'ax-1',

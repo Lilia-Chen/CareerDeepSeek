@@ -94,6 +94,9 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   if (input.axSnapshot) {
     const axSnapshot = input.axSnapshot
     walkAxTree(axSnapshot.root, (axNode) => {
+      if (axNode.role === 'AXWindow')
+        return
+
       const text = axNode.title || axNode.description || axNode.value || ''
       if (text.trim()) {
         if (!validBounds(axNode.bounds))

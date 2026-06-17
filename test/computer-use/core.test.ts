@@ -270,8 +270,28 @@ describe('chrome DOM observer script', () => {
     )
     assert.match(
       source,
-      /return await captureChromeDirectTab\(config\)/,
+      /return await captureChromeDirectTab\(config, targetWindow\)/,
       'captureChromeDom should return direct tab URL/title instead of null when primary observation fails',
+    )
+  })
+
+  it('does not silently observe Chrome windows[0] when a target window hint is supplied', async () => {
+    const source = await readFile(new URL('../../src/computer-use/chrome-dom.ts', import.meta.url), 'utf8')
+
+    assert.match(
+      source,
+      /selectChromeWindow/,
+      'Chrome DOM observer should select the target Chrome window before reading its active tab',
+    )
+    assert.match(
+      source,
+      /target_window_not_found/,
+      'Chrome DOM observer should fail closed when a requested target window cannot be matched',
+    )
+    assert.doesNotMatch(
+      source,
+      /var tab = windows\[0\]\.activeTab\(\);/,
+      'Chrome DOM observer must not blindly read windows[0] when the driver has a leased window',
     )
   })
 })
@@ -470,7 +490,6 @@ describe('computer-use action API boundary', () => {
   it('does not expose open_url as a computer-use action', async () => {
     const sources = await Promise.all([
       readFile(new URL('../../src/types.ts', import.meta.url), 'utf8'),
-      readFile(new URL('../../src/automation/actionSpace.ts', import.meta.url), 'utf8'),
       readFile(new URL('../../src/computer-use/macos-chrome-driver/driver.ts', import.meta.url), 'utf8'),
       readFile(new URL('../../src/computer-use/index.ts', import.meta.url), 'utf8'),
     ])

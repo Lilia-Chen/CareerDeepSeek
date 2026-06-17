@@ -62,7 +62,8 @@ describe('linkedin search workflow controller', () => {
     assert.equal(decision.kind, 'action')
     assert.equal(decision.action.type, 'click')
     assert.equal(decision.action.elementId, 'linkedin-search')
-    assert.equal(decision.action.point.x, 198)
+    assert.equal(decision.action.target.text, 'Search')
+    assert.equal('point' in decision.action, false)
   })
 
   it('does not perform page actions when adapter observation reports Chrome is not frontmost', () => {

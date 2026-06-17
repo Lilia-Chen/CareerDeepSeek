@@ -34,6 +34,8 @@ export interface ChromeContextLease {
   profileMode: 'managed'
   profileDir: string
   profilePath: string
+  profileName?: string
+  profileUserName?: string
   ownerPid: number
   windowNumber: number
   ownerBundleId?: string
@@ -53,6 +55,8 @@ export interface ChromeContextSnapshot {
     status: 'verified' | 'mismatch' | 'unverified'
     reason: string
     profile_path?: string
+    profile_name?: string
+    profile_user_name?: string
   }
   window: ChromeWindowRef
   lease?: ChromeContextLease
@@ -157,6 +161,10 @@ export type ChromeRecognitionTarget
   }
   | {
     kind: 'visible_text'
+    text: string | RegExp
+  }
+  | {
+    kind: 'ocr_text'
     text: string | RegExp
   }
   | {

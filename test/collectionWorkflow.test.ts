@@ -4,7 +4,6 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { validateCollectionSession } from '../src/collection/sessionPolicy.js'
-import { assertBrowserActionAllowed } from '../src/collection/toolContract.js'
 import { normalizePageObservation } from '../src/collection/pageObservation.js'
 import { classifyCandidate } from '../src/collection/classifyCandidate.js'
 import { buildReviewItem } from '../src/collection/buildReviewItem.js'
@@ -139,16 +138,23 @@ it('validates bounded visible-browser collection sessions', () => {
   )
 })
 
-it('rejects forbidden browser actions before workflow execution', () => {
-  assert.equal(assertBrowserActionAllowed({ type: 'search', query: 'agent infrastructure hiring UK' }).type, 'search')
-  assert.equal(
-    assertBrowserActionAllowed({ type: 'click_visible_link', url: 'https://synthetic-agent-lab.example' }).type,
-    'click_visible_link',
+it('rejects high-risk collection session boundaries before workflow execution', () => {
+  assert.throws(
+    () =>
+      validateCollectionSession({
+        ...syntheticSession,
+        sourceScope: ['hidden_api_call'],
+      }),
+    /Unsupported source class: hidden_api_call/,
   )
-
-  assert.throws(() => assertBrowserActionAllowed({ type: 'raw_http_fetch' }), /forbidden browser action/)
-  assert.throws(() => assertBrowserActionAllowed({ type: 'solve_captcha' }), /forbidden browser action/)
-  assert.throws(() => assertBrowserActionAllowed({ type: 'send_message' }), /forbidden browser action/)
+  assert.throws(
+    () =>
+      validateCollectionSession({
+        ...syntheticSession,
+        stopConditions: ['auto_apply'],
+      }),
+    /Unsupported stop condition: auto_apply/,
+  )
 })
 
 it('classifies visible page observations and builds scored target review items', async () => {

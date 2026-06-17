@@ -10,6 +10,7 @@ import type {
 } from './types.js'
 
 import { detectBlockingStopSignal, planOverlayDismissal } from '../overlay-resolver.js'
+import { cloneObservationWithScrollEffectBoundary } from './scroll-boundary.js'
 
 export interface MacOSChromeAgentDriver {
   readonly lastCapture?: ChromeWindowCapture
@@ -124,14 +125,14 @@ export class MacOSChromeAgentHarness {
     text: string | RegExp,
     options: AgentHarnessActionOptions,
   ): Promise<AgentActionResult> {
-    return this.#clickObservedTarget({ kind: 'button', text }, options)
+    return this.#clickObservedTarget({ kind: 'ocr_text', text }, options)
   }
 
   async clickObservedLink(
     text: string | RegExp,
     options: AgentHarnessActionOptions,
   ): Promise<AgentActionResult> {
-    return this.#clickObservedTarget({ kind: 'link', text }, options)
+    return this.#clickObservedTarget({ kind: 'ocr_text', text }, options)
   }
 
   async typeIntoObservedInput(
@@ -142,7 +143,7 @@ export class MacOSChromeAgentHarness {
     const before = await this.observePage()
     const candidate = await this.#promoteOrThrow(
       before,
-      { kind: 'text_input', name },
+      { kind: 'ocr_text', text: name },
     )
 
     await this.#driver.click(candidate)
@@ -212,9 +213,7 @@ export class MacOSChromeAgentHarness {
       }
     }
 
-    const target: ChromeRecognitionTarget = /link/i.test(decision.action.target.role)
-      ? { kind: 'link', text: exactTextPattern(text) }
-      : { kind: 'button', text: exactTextPattern(text) }
+    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: exactTextPattern(text) }
     const candidate = await this.#promoteOrThrow(before, target)
 
     await this.#driver.click(candidate)
@@ -230,7 +229,7 @@ export class MacOSChromeAgentHarness {
   }
 
   async #clickObservedTarget(
-    target: Extract<ChromeRecognitionTarget, { kind: 'button' | 'link' }>,
+    target: Extract<ChromeRecognitionTarget, { kind: 'ocr_text' | 'ocr_row' }>,
     options: AgentHarnessActionOptions,
   ): Promise<AgentActionResult> {
     const before = await this.observePage()
@@ -289,12 +288,21 @@ export class MacOSChromeAgentHarness {
       }
     }
 
+    const scrollEffect = inferScrollEffect(before, after)
+    const afterSnapshot = cloneObservationWithScrollEffectBoundary({
+      snapshot: after.snapshot,
+      direction,
+      effect: scrollEffect,
+      reason: options.reason,
+      generatedAtMillis: Date.now(),
+    })
+
     return {
       action: 'scroll',
       reason: options.reason,
       before: before.snapshot,
-      after: after.snapshot,
-      scroll_effect: inferScrollEffect(before, after),
+      after: afterSnapshot,
+      scroll_effect: scrollEffect,
     }
   }
 }
@@ -335,7 +343,7 @@ function visibleSurfaceFingerprint(snapshot: ObservationSnapshot): string | null
 }
 
 function visibleNodeFingerprint(node: SurfaceNode): string | null {
-  if (node.kind === 'dom_evidence' || node.kind === 'ax_evidence')
+  if (node.kind !== 'ocr_text' && node.kind !== 'ocr_row')
     return null
   if (hasUncertainVisibility(node))
     return null

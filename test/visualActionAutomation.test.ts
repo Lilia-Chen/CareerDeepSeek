@@ -1,24 +1,9 @@
 import { it } from 'vitest'
 import assert from 'node:assert/strict'
-import { validateCollectionSession } from '../src/collection/sessionPolicy.js'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { normalizePageObservation } from '../src/collection/pageObservation.js'
 import { normalizeVisualState } from '../src/automation/visualState.js'
-import { createClickAction, createTypeAction } from '../src/automation/actionSpace.js'
-import { assertAutomationActionAllowed, stopReasonForVisualState } from '../src/automation/actionPolicy.js'
-import { verifyActionProgress } from '../src/automation/progressVerifier.js'
-import { MockComputerUseAdapter } from '../src/automation/mockComputerUseAdapter.js'
-import { runVisualActionSession } from '../src/automation/sessionRunner.js'
 import { visualStateToPageObservation } from '../src/automation/visualObservation.js'
-
-const session = validateCollectionSession({
-  id: 'visual-agent-discovery',
-  goal: 'Find AI agent infrastructure companies with hiring signals.',
-  sourceScope: ['search_engine', 'company_site', 'public_careers'],
-  pageBudget: {
-    maxPages: 3,
-  },
-  stopConditions: ['login_required', 'captcha', 'rate_limited', 'budget_exceeded'],
-})
 
 const searchState = {
   sessionId: 'visual-agent-discovery',
@@ -93,6 +78,69 @@ const companyState = {
   },
 }
 
+it('keeps retired P1 visual automation and public catalog paths out of runtime source', async () => {
+  const retiredFiles = [
+    'src/automation/actionSpace.ts',
+    'src/automation/actionPolicy.ts',
+    'src/automation/sessionRunner.ts',
+    'src/automation/mockComputerUseAdapter.ts',
+    'src/automation/progressVerifier.ts',
+    'src/llm/visualActionPlanner.ts',
+    'src/collection/toolContract.ts',
+  ]
+
+  const existingRetiredFiles = await Promise.all(retiredFiles.map(async (file) => {
+    try {
+      await stat(new URL(`../${file}`, import.meta.url))
+      return file
+    }
+    catch {
+      return null
+    }
+  }))
+
+  assert.deepEqual(existingRetiredFiles.filter(Boolean), [])
+
+  const sourceFiles = await sourceFilePaths(new URL('../src/', import.meta.url))
+  const sources = await Promise.all(
+    sourceFiles.map(async file => ({
+      file,
+      source: await readFile(new URL(`../${file}`, import.meta.url), 'utf8'),
+    })),
+  )
+
+  const forbiddenChecks: Array<[string, (source: string) => boolean]> = [
+    ['ComputerUseAdapter.act', source => source.includes('interface ComputerUseAdapter') && /\bact\s*:/.test(source)],
+    ['runVisualActionSession', source => /\brunVisualActionSession\b/.test(source)],
+    ['VISUAL_ACTION_TYPES', source => /\bVISUAL_ACTION_TYPES\b/.test(source)],
+    ['allowedActionTypes', source => /\ballowedActionTypes\b/.test(source)],
+    ['ALLOWED_BROWSER_ACTIONS', source => /\bALLOWED_BROWSER_ACTIONS\b/.test(source)],
+    ['createClickAction with point', source => source.includes('function createClickAction') && /\bpoint\s*:/.test(source)],
+    ['VisualAction click point', source => source.includes('type VisualAction') && source.includes('type: \'click\'') && /\bpoint\s*:/.test(source)],
+  ]
+
+  const hits = sources.flatMap(({ file, source }) =>
+    forbiddenChecks
+      .filter(([, check]) => check(source))
+      .map(([name]) => `${file}: ${name}`),
+  )
+
+  assert.deepEqual(hits, [])
+})
+
+async function sourceFilePaths(directory: URL): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const files = await Promise.all(entries.map(async (entry) => {
+    const url = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory)
+    if (entry.isDirectory())
+      return sourceFilePaths(url)
+    if (entry.isFile() && entry.name.endsWith('.ts'))
+      return [`src/${url.pathname.slice(new URL('../src/', import.meta.url).pathname.length)}`]
+    return []
+  }))
+  return files.flat()
+}
+
 it('normalizes visual state with screenshot and coordinate-grounded elements', () => {
   const state = normalizeVisualState(searchState)
 
@@ -108,100 +156,6 @@ it('normalizes visual state with screenshot and coordinate-grounded elements', (
       }),
     /screenshot/,
   )
-})
-
-it('allows visual click and type actions but blocks high-risk intents', () => {
-  const state = normalizeVisualState({
-    ...companyState,
-    elements: [
-      ...companyState.elements,
-      {
-        id: 'apply-button',
-        role: 'button',
-        text: 'Apply now',
-        intent: 'auto_apply',
-        box: {
-          x: 1000,
-          y: 720,
-          width: 120,
-          height: 44,
-        },
-      },
-    ],
-  })
-
-  const safeClick = createClickAction({ elementId: 'engineering-role', state })
-  const safeType = createTypeAction({ text: 'agent infrastructure hiring' })
-
-  assert.equal(assertAutomationActionAllowed(safeClick, state).type, 'click')
-  assert.equal(assertAutomationActionAllowed(safeType, state).type, 'type')
-  assert.throws(
-    () => assertAutomationActionAllowed(createClickAction({ elementId: 'apply-button', state }), state),
-    /forbidden element intent/,
-  )
-})
-
-it('rejects open_url inside the automatic visual action loop', () => {
-  const state = normalizeVisualState(searchState)
-
-  assert.throws(
-    () => assertAutomationActionAllowed({ type: 'open_url', url: 'https://example.com' }, state),
-    /unsupported automation action: open_url/,
-  )
-})
-
-it('verifies visual action progress after navigation', () => {
-  const before = normalizeVisualState(searchState)
-  const after = normalizeVisualState(companyState)
-  const action = createClickAction({ elementId: 'result-synthetic-agent-lab', state: before })
-  const progress = verifyActionProgress({ before, action, after })
-
-  assert.equal(progress.changed, true)
-  assert.equal(progress.reason, 'url_changed')
-})
-
-it('runs observe-action-observe visual session loop with mock computer-use adapter', async () => {
-  const adapter = new MockComputerUseAdapter([searchState, companyState])
-
-  const result = await runVisualActionSession({
-    session,
-    adapter,
-    planner: ({ state }) => {
-      if (state.url.includes('search.example')) {
-        return createClickAction({ elementId: 'result-synthetic-agent-lab', state })
-      }
-      return { type: 'stop', reason: 'target_page_reached' }
-    },
-  })
-
-  assert.equal(result.status, 'stopped')
-  assert.equal(result.stopReason, 'target_page_reached')
-  assert.equal(result.actions.length, 1)
-  assert.equal(result.actions[0].type, 'click')
-  assert.deepEqual(result.actions[0].point, { x: 370, y: 238 })
-  assert.equal(result.observations.length, 2)
-  assert.equal(result.observations[1].url, 'https://synthetic-agent-lab.example/careers')
-  assert.equal(result.history[0].progress.changed, true)
-})
-
-it('stops before acting when visual state exposes a stop condition', async () => {
-  const adapter = new MockComputerUseAdapter([
-    {
-      ...searchState,
-      signals: ['captcha'],
-    },
-  ])
-
-  const result = await runVisualActionSession({
-    session,
-    adapter,
-    planner: ({ state }) => createClickAction({ elementId: 'result-synthetic-agent-lab', state }),
-  })
-
-  assert.equal(stopReasonForVisualState(result.observations[0], session), 'captcha')
-  assert.equal(result.status, 'stopped')
-  assert.equal(result.stopReason, 'captcha')
-  assert.equal(result.actions.length, 0)
 })
 
 it('converts a visual state into a collection page observation without raw visible text', () => {

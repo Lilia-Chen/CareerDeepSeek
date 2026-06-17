@@ -1,11 +1,6 @@
 import { it } from 'vitest'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { validateCollectionSession } from '../src/collection/sessionPolicy.js'
-import { MockComputerUseAdapter } from '../src/automation/mockComputerUseAdapter.js'
-import { planVisualAction } from '../src/llm/visualActionPlanner.js'
 import { extractPageObservation } from '../src/llm/evidenceExtractor.js'
 import { runDiscoveryWorkflow } from '../src/workflows/runDiscoveryWorkflow.js'
 import type { JsonRecord, ModelAdapter } from '../src/types.js'
@@ -77,23 +72,6 @@ function createMockModel(): MockModel {
     calls: [],
     async generateJson(request: JsonRecord) {
       this.calls.push(request)
-
-      if (request.task === 'plan_visual_action') {
-        const state = request.state as { url: string }
-        if (state.url.includes('search.example')) {
-          return {
-            type: 'click',
-            elementId: 'result-synthetic-runtime-lab',
-            reason: 'Open the visible company careers result.',
-            expectedChange: 'Navigate to the company careers page.',
-          }
-        }
-
-        return {
-          type: 'stop',
-          reason: 'candidate_page_ready',
-        }
-      }
 
       if (request.task === 'extract_page_observation') {
         return {
@@ -189,25 +167,6 @@ function createMockModel(): MockModel {
   }
 }
 
-it('lLM visual planner returns coordinate-grounded actions through the action space', async () => {
-  const model = createMockModel()
-
-  const action = await planVisualAction({
-    model,
-    session,
-    state: searchState,
-    history: [],
-  })
-
-  assert.equal(action.type, 'click')
-  assert.equal(action.elementId, 'result-synthetic-runtime-lab')
-  assert.deepEqual(action.point, { x: 410, y: 270 })
-  const firstCall = model.calls[0]
-  assert.ok(firstCall)
-  assert.equal(firstCall.task, 'plan_visual_action')
-  assert.equal((firstCall.state as { visibleTextIncluded: boolean }).visibleTextIncluded, true)
-})
-
 it('lLM evidence extractor returns page observations without raw visible text', async () => {
   const model = createMockModel()
 
@@ -226,27 +185,15 @@ it('lLM evidence extractor returns page observations without raw visible text', 
   assert.equal(JSON.stringify(observation).includes(targetState.visibleText), false)
 })
 
-it('runs an end-to-end LLM discovery workflow and writes a private review queue item', async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), 'careerdeepseek-data-'))
-  const adapter = new MockComputerUseAdapter([searchState, targetState])
+it('fails fast when the retired discovery workflow is invoked', async () => {
+  const adapter = {
+    observe: () => searchState,
+  }
   const model = createMockModel()
 
-  const result = await runDiscoveryWorkflow({
+  await assert.rejects(() => runDiscoveryWorkflow({
     session,
     adapter,
     model,
-    dataDir,
-  })
-
-  assert.equal(result.sessionResult.status, 'stopped')
-  assert.equal(result.sessionResult.stopReason, 'candidate_page_ready')
-  assert.equal(result.reviewItems.length, 1)
-  assert.equal(result.reviewItems[0].candidateId, 'synthetic-runtime-lab')
-  assert.equal(result.reviewItems[0].decision, 'priority_target')
-  assert.equal(result.outputPaths.length, 1)
-  assert.equal(result.outputPaths[0], join(dataDir, 'review-queue', 'llm-discovery-session-synthetic-runtime-lab.json'))
-
-  const written = JSON.parse(await readFile(result.outputPaths[0], 'utf8'))
-  assert.equal(written.recordType, 'review_queue_item')
-  assert.equal(written.privateRecordType, 'target_company')
+  }), /legacy visual action execution has been disabled/)
 })

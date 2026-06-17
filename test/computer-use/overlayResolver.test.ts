@@ -50,8 +50,7 @@ describe('planOverlayDismissal', () => {
     assert.equal(decision.kind, 'cookie_consent')
     assert.equal(decision.action.elementId, 'accept')
     assert.equal(decision.action.target.text, 'Yes, I agree')
-    assert.equal(decision.action.point.x, 790)
-    assert.equal(decision.action.point.y, 785)
+    assert.equal('point' in decision.action, false)
   })
 
   it('dismisses marketing modals through the observed close control instead of the CTA', () => {

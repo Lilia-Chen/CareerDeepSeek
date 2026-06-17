@@ -1,7 +1,8 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
 import { promoteCandidate } from '../../src/computer-use/macos-chrome-driver/candidate-promotion.js'
-import type { ArtifactRef, CandidatePromotion, ChromeCaptureContract, ChromeWindowRef, RecognitionResult, RecognizedItem } from '../../src/computer-use/macos-chrome-driver/types.js'
+import { recognizeFromCapture } from '../../src/computer-use/macos-chrome-driver/recognition.js'
+import type { ArtifactRef, CandidatePromotion, ChromeCaptureContract, ChromeRecognitionTarget, ChromeWindowRef, RecognitionResult, RecognizedItem } from '../../src/computer-use/macos-chrome-driver/types.js'
 
 const captureArtifact: ArtifactRef = { run_id: 'r1', artifact_id: 'screenshot_mco_1', span_id: 'observe_mco_1' }
 const captureContractArtifact: ArtifactRef = { run_id: 'r1', artifact_id: 'capture_contract_mco_1', span_id: 'observe_mco_1' }
@@ -71,6 +72,48 @@ function makeItem(overrides: Partial<RecognizedItem> & { item_id: string }): Rec
     provider_score: overrides.provider_score ?? 0.9,
     detail,
   }
+}
+
+function makeOcrItem(overrides: Partial<RecognizedItem> & { item_id: string }): RecognizedItem {
+  const box = overrides.box ?? { x: 100, y: 200, width: 120, height: 40 }
+  return makeItem({
+    kind: 'ocr_text',
+    ...overrides,
+    detail: {
+      actionable: true,
+      bounds: {
+        capture_pixel: { x: box.x, y: box.y - 40, width: box.width, height: box.height },
+        source_global_logical: box,
+      },
+      source_artifacts: {
+        capture_artifact: captureArtifact,
+        capture_contract_artifact: captureContractArtifact,
+      },
+      known_limits: [],
+      ...overrides.detail,
+    },
+  })
+}
+
+function makeOcrRowItem(overrides: Partial<RecognizedItem> & { item_id: string }): RecognizedItem {
+  const box = overrides.box ?? { x: 100, y: 200, width: 120, height: 40 }
+  return makeItem({
+    kind: 'ocr_row',
+    ...overrides,
+    detail: {
+      actionable: true,
+      row_bounds: {
+        capture_pixel: { x: box.x, y: box.y - 40, width: box.width, height: box.height },
+        source_global_logical: box,
+      },
+      source_artifacts: {
+        capture_artifact: captureArtifact,
+        capture_contract_artifact: captureContractArtifact,
+      },
+      known_limits: [],
+      ...overrides.detail,
+    },
+  })
 }
 
 function auditFor(
@@ -169,7 +212,7 @@ const window: ChromeWindowRef = {
 
 describe('promoteCandidate', () => {
   it('promotes when all conditions met', () => {
-    const best = makeItem({ item_id: '0' })
+    const best = makeOcrItem({ item_id: '0' })
     const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
     const result = promoteCandidate(recognition, capture, window, {
       profile_verified: true,
@@ -183,13 +226,74 @@ describe('promoteCandidate', () => {
     })
     assert.equal(result.status, 'promoted')
     if (result.status === 'promoted') {
-      assert.equal(result.candidate.kind, 'dom_button')
+      assert.equal(result.candidate.kind, 'ocr_text')
       assert.ok(result.candidate.candidate_local_id.includes('mcr_1'))
       assert.equal(result.candidate.source_run_id, 'r1')
       assert.deepEqual(result.candidate.evidence.capture_artifact, captureArtifact)
       assert.deepEqual(result.candidate.evidence.recognition_artifact, recognitionArtifact)
       assert.equal(result.candidate.source_artifact_id, recognitionArtifact.artifact_id)
       assert.equal(result.candidate.evidence.capture_artifact.artifact_id.startsWith('capture_'), false)
+    }
+  })
+
+  it('refuses DOM and AX actionable evidence as promoted click candidates', () => {
+    const unsupportedKinds = [
+      'dom_button',
+      'dom_link',
+      'dom_textbox',
+      'dom_searchbox',
+      'dom_combobox',
+      'ax_button',
+      'ax_link',
+      'ax_textfield',
+      'ax_textarea',
+      'ax_combobox',
+      'ax_menu_item',
+      'ax_tab',
+    ]
+
+    for (const kind of unsupportedKinds) {
+      const best = makeItem({ item_id: kind, kind })
+      const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+      const result = promoteCandidate(recognition, capture, window, {
+        profile_verified: true,
+        chrome_foreground: true,
+        hard_stop_signals: [],
+        ttl_ms: 5000,
+        run_id: 'r1',
+        span_id: 's1',
+        capture_artifact: captureArtifact,
+        recognition_artifact: recognitionArtifact,
+      })
+
+      assert.equal(result.status, 'refused', `${kind} must remain read-only evidence`)
+      if (result.status === 'refused')
+        assert.ok(result.reasons.includes('item_not_actionable'), `${kind} should report item_not_actionable`)
+    }
+  })
+
+  it('promotes OCR text and OCR row click candidates when all conditions pass', () => {
+    const cases = [
+      makeOcrItem({ item_id: 'ocr-text' }),
+      makeOcrRowItem({ item_id: 'ocr-row' }),
+    ]
+
+    for (const best of cases) {
+      const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+      const result = promoteCandidate(recognition, capture, window, {
+        profile_verified: true,
+        chrome_foreground: true,
+        hard_stop_signals: [],
+        ttl_ms: 5000,
+        run_id: 'r1',
+        span_id: 's1',
+        capture_artifact: captureArtifact,
+        recognition_artifact: recognitionArtifact,
+      })
+
+      assert.equal(result.status, 'promoted')
+      if (result.status === 'promoted')
+        assert.equal(result.candidate.kind, best.kind)
     }
   })
 
@@ -311,6 +415,169 @@ describe('promoteCandidate', () => {
     if (result.status === 'promoted') {
       assert.ok(result.residual_known_limits.includes(limit))
       assert.ok(result.candidate.known_limits.includes(limit))
+    }
+  })
+
+  it('promotes OCR candidate when AX semantic evidence only differs by OCR confusable text', () => {
+    const box = { x: 100, y: 200, width: 240, height: 40 }
+    const best = makeOcrItem({
+      item_id: 'ocr_typo',
+      text: 'Al agent infrastructure',
+      box,
+    })
+    const axEvidence = makeItem({
+      item_id: 'ax_semantic',
+      kind: 'ax_evidence',
+      text: 'AI agent infrastructure',
+      box,
+      detail: {
+        bounds: {
+          source_global_logical: box,
+        },
+        source_artifacts: {
+          capture_artifact: captureArtifact,
+          capture_contract_artifact: captureContractArtifact,
+        },
+        known_limits: [],
+      },
+    })
+    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: /AI agent infrastructure/i }
+    const recognition = recognizeFromCapture(
+      [best, axEvidence],
+      target,
+      capture,
+      '/tmp/test-chrome.png',
+      'r1',
+      's1',
+      [captureArtifact, captureContractArtifact],
+    )
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.label, 'AI agent infrastructure')
+      assert.equal(result.candidate.target_spec.anchor_text, 'AI agent infrastructure')
+      assert.equal(result.candidate.liveness.preconditions.anchor_recheck?.text, 'Al agent infrastructure')
+      assert.deepEqual(result.candidate.evidence.observation_blob.text_resolution, {
+        canonical_text: 'AI agent infrastructure',
+        canonical_source: 'ax',
+        ocr_raw_text: 'Al agent infrastructure',
+        correction_reason: 'OCR confusable text corrected from semantic source ax',
+      })
+      assert.ok(result.residual_known_limits.some(limit => limit.includes('OCR raw text differs from semantic source ax')))
+    }
+  })
+
+  it('refuses OCR candidate when cross-source evidence names a different target', () => {
+    const box = { x: 100, y: 200, width: 120, height: 40 }
+    const best = makeOcrItem({
+      item_id: 'ocr_cancel',
+      text: 'Cancel',
+      box,
+    })
+    const domEvidence = makeItem({
+      item_id: 'dom_submit',
+      kind: 'dom_evidence',
+      text: 'Submit',
+      box,
+      detail: {
+        bounds: {
+          source_global_logical: box,
+        },
+        source_artifacts: {
+          capture_artifact: captureArtifact,
+          capture_contract_artifact: captureContractArtifact,
+        },
+        known_limits: [],
+      },
+    })
+    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: /cancel/i }
+    const recognition = recognizeFromCapture(
+      [best, domEvidence],
+      target,
+      capture,
+      '/tmp/test-chrome.png',
+      'r1',
+      's1',
+      [captureArtifact, captureContractArtifact],
+    )
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'refused')
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('cross_source_conflict'))
+  })
+
+  it('promotes OCR candidate when semantic evidence is a coarser nested button label', () => {
+    const ocrBox = { x: 292.5, y: 379.5, width: 170, height: 16 }
+    const best = makeOcrItem({
+      item_id: 'ocr_hide_sponsored',
+      text: 'Hide sponsored result ^',
+      box: ocrBox,
+    })
+    const domButton = makeItem({
+      item_id: 'dom_hide_sponsored',
+      kind: 'dom_button',
+      text: 'Hide sponsored result',
+      box: { x: 53, y: 366, width: 652, height: 56 },
+      detail: {
+        bounds: {
+          source_global_logical: { x: 53, y: 366, width: 652, height: 56 },
+        },
+        source_artifacts: {
+          capture_artifact: captureArtifact,
+          capture_contract_artifact: captureContractArtifact,
+        },
+        known_limits: [],
+      },
+    })
+    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: /Hide sponsored result/i }
+    const recognition = recognizeFromCapture(
+      [best, domButton],
+      target,
+      capture,
+      '/tmp/test-chrome.png',
+      'r1',
+      's1',
+      [captureArtifact, captureContractArtifact],
+    )
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.label, 'Hide sponsored result ^')
+      assert.equal(result.candidate.liveness.preconditions.anchor_recheck?.text, 'Hide sponsored result ^')
+      assert.ok(result.residual_known_limits.some(limit => limit.includes('text is nested')))
     }
   })
 
@@ -570,7 +837,7 @@ describe('promoteCandidate', () => {
   })
 
   it('promotes valid summary audit without compared item payloads', () => {
-    const best = makeItem({ item_id: '0' })
+    const best = makeOcrItem({ item_id: '0' })
     const audit = auditFor(best, { comparedItemIds: ['ocr_0'] })
     delete (audit.items as Array<Record<string, unknown>>)[0]!.compared_items
     const recognition = makeRecognition({
@@ -763,7 +1030,7 @@ describe('promoteCandidate', () => {
   })
 
   it('stores selected item, audit detail, refs, and known limits in observation blob', () => {
-    const best = makeItem({ item_id: '0' })
+    const best = makeOcrItem({ item_id: '0' })
     const limit = 'recognition audit: capture visibility is reference evidence only'
     const audit = auditFor(best, { status: 'unknown', itemStatus: 'agreement', knownLimits: [limit] })
     const recognition = makeRecognition({

@@ -21,6 +21,10 @@ import type {
   SurfaceNode,
 } from './types.js'
 
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import process from 'node:process'
 import { resolveComputerUseConfig } from '../config.js'
 import { captureAXTree } from '../ax-tree.js'
 import { captureChromeDom } from '../chrome-dom.js'
@@ -37,6 +41,7 @@ import { buildPointerTrace } from '../pointer-trace.js'
 import { captureChromeWindow } from './capture.js'
 import { produceOcrRows, recognizeTextInImage } from './ocr.js'
 import { requireWindowNumber } from './types.js'
+import { buildScrollBoundaryObservation } from './scroll-boundary.js'
 
 // AUV-aligned observation / recognition imports
 import { inferObservationSource, normalizeToSurfaceNodes } from './surface-node.js'
@@ -70,8 +75,17 @@ interface CandidateLivenessCheck {
   detail: Record<string, unknown>
 }
 
+interface ManagedChromeProfileIdentity {
+  profileDir: string
+  profilePath: string
+  profileName: string
+  profileUserName?: string
+  localStatePath: string
+}
+
 const NORMAL_CHROME_MIN_WIDTH = 480
 const NORMAL_CHROME_MIN_HEIGHT = 300
+const WINDOW_MATCH_TOLERANCE = 8
 
 export class MacOSChromeDriver {
   readonly #sessionId: string
@@ -161,7 +175,7 @@ export class MacOSChromeDriver {
         maxDepth: 15,
         maxNodes: 3000,
       }),
-      captureChromeDom(this.#config),
+      captureChromeDom(this.#config, chromeDomTargetFromWindow(chromeContext.window)),
       recognizeTextInImage(this.#config, {
         imagePath: capture.screenshot.path,
         maxObservations: 256,
@@ -214,13 +228,19 @@ export class MacOSChromeDriver {
     const source = inferObservationSource(nodes)
     const visibleText = nodes.map(n => n.label ?? '').join('\n')
     const signals = detectHardStopSignals(visibleText)
+    const capturedAtMillis = Date.now()
+    const scrollBoundary = buildScrollBoundaryObservation({
+      generatedAtMillis: capturedAtMillis,
+      captureContractRef: captureContractArtifact,
+      sourceArtifacts: [captureArtifact, captureContractArtifact],
+    })
 
     const result: ObservationSnapshot = {
       api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
       snapshot_id: snapshotId,
       run_id: this.#runId,
       span_id: spanId,
-      captured_at_millis: Date.now(),
+      captured_at_millis: capturedAtMillis,
       source,
       scope: {
         surface: 'window',
@@ -246,6 +266,7 @@ export class MacOSChromeDriver {
         ocr_match_count: ocr.matches.length,
         ocr_known_limits: ocr.knownLimits ?? [],
         ocr_rows: ocrRowSummary(ocrRows),
+        scroll_boundary: scrollBoundary,
       },
       known_limits: uniqueStrings([
         this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked',
@@ -772,8 +793,10 @@ export class MacOSChromeDriver {
       ...freshObservation.known_limits,
       ...freshRecognition.known_limits,
     ])
+    const sourceCompatibleItems = freshRecognition.filtered
+      .filter(item => isFreshSourceCompatible(candidate, item))
 
-    if (freshRecognition.filtered.length > 1) {
+    if (sourceCompatibleItems.length > 1) {
       const detail = livenessDetail({
         candidate,
         candidateRef,
@@ -813,8 +836,8 @@ export class MacOSChromeDriver {
       })
     }
 
-    const selected = freshRecognition.best
-    if (!isFreshSourceCompatible(candidate, selected)) {
+    const selected = sourceCompatibleItems[0]
+    if (!selected) {
       const detail = livenessDetail({
         candidate,
         candidateRef,
@@ -822,7 +845,7 @@ export class MacOSChromeDriver {
         freshObservation,
         freshRecognition,
         freshRecognitionRef,
-        selected,
+        selected: freshRecognition.best,
         status: 'refused',
         refusalReason: 'anchor_recheck_incompatible_source',
         knownLimits,
@@ -1002,21 +1025,26 @@ export class MacOSChromeDriver {
     }
 
     this.#profileConfig = await loadProfileConfig(this.#config.sessionRoot)
-    const profileDir = profileDirFromPath(this.#profileConfig.profile_path)
+    const profileIdentity = resolveManagedChromeProfileIdentity(this.#profileConfig)
     await executeOpenApp(this.#config, 'Google Chrome', {
-      args: [`--profile-directory=${profileDir}`],
+      args: [`--profile-directory=${profileIdentity.profileDir}`],
     })
     await sleep(500)
 
-    const chromeContext = await this.#resolveChromeContext({ activateIfNeeded: true })
+    const chromeContext = await this.#resolveChromeContext({
+      activateIfNeeded: true,
+      profileIdentity,
+    })
     const now = new Date().toISOString()
     this.#chromeContextLease = {
       leaseId: `lease_${this.#runId}_${chromeContext.window.windowNumber}`,
       sessionId: this.#sessionId,
       runId: this.#runId,
       profileMode: 'managed',
-      profileDir,
-      profilePath: this.#profileConfig.profile_path,
+      profileDir: profileIdentity.profileDir,
+      profilePath: profileIdentity.profilePath,
+      profileName: profileIdentity.profileName,
+      profileUserName: profileIdentity.profileUserName,
       ownerPid: chromeContext.window.ownerPid,
       windowNumber: chromeContext.window.windowNumber,
       ownerBundleId: chromeContext.window.ownerBundleId,
@@ -1033,6 +1061,8 @@ export class MacOSChromeDriver {
       attributes: {
         lease_id: this.#chromeContextLease.leaseId,
         profile_path: this.#chromeContextLease.profilePath,
+        profile_name: this.#chromeContextLease.profileName,
+        profile_user_name: this.#chromeContextLease.profileUserName,
         window_number: this.#chromeContextLease.windowNumber,
         owner_pid: this.#chromeContextLease.ownerPid,
         owner_bundle_id: this.#chromeContextLease.ownerBundleId,
@@ -1069,15 +1099,18 @@ export class MacOSChromeDriver {
     return this.#chromeContextFromWindowObservation(observation, chromeWindow, lease)
   }
 
-  async #resolveChromeContext(options: { activateIfNeeded?: boolean } = {}): Promise<ChromeContextSnapshot> {
+  async #resolveChromeContext(options: {
+    activateIfNeeded?: boolean
+    profileIdentity?: ManagedChromeProfileIdentity
+  } = {}): Promise<ChromeContextSnapshot> {
     let observation = await observeWindows(this.#config, { limit: 120 })
-    let chromeWindow = findChromeWindow(observation)
+    let chromeWindow = await this.#findChromeWindow(observation, options.profileIdentity)
     if (!isChromeApp(observation.frontmostAppName) || !chromeWindow) {
       if (options.activateIfNeeded || this.#foregroundPolicy === 'auto_focus_chrome') {
         await executeOpenApp(this.#config, 'Google Chrome')
         await sleep(500)
         observation = await observeWindows(this.#config, { limit: 120 })
-        chromeWindow = findChromeWindow(observation)
+        chromeWindow = await this.#findChromeWindow(observation, options.profileIdentity)
       }
     }
 
@@ -1093,13 +1126,40 @@ export class MacOSChromeDriver {
     return this.#chromeContextFromWindowObservation(observation, chromeWindow)
   }
 
+  async #findChromeWindow(
+    observation: WindowObservation,
+    profileIdentity?: ManagedChromeProfileIdentity,
+  ): Promise<WindowDescriptor | undefined> {
+    if (!profileIdentity)
+      return findChromeWindow(observation)
+
+    const chromePid = findChromePid(observation)
+    if (chromePid === undefined)
+      return undefined
+
+    const axSnapshot = await captureAXTree(this.#config, {
+      pid: chromePid,
+      maxDepth: 8,
+      maxNodes: 1200,
+    }).catch(() => undefined)
+    const profileWindow = axSnapshot
+      ? findChromeWindowByProfileAX(observation, axSnapshot, profileIdentity.profileName)
+      : undefined
+    if (profileWindow)
+      return profileWindow
+
+    throw new Error(
+      `Could not verify a visible Google Chrome window for managed profile "${profileIdentity.profileName}" (${profileIdentity.profilePath}).`,
+    )
+  }
+
   async #chromeContextFromWindowObservation(
     observation: WindowObservation,
     chromeWindow: WindowDescriptor,
     lease?: ChromeContextLease,
   ): Promise<ChromeContextSnapshot> {
     const window = chromeWindowRef(chromeWindow)
-    const tab = await captureChromeDom(this.#config).catch(() => null)
+    const tab = await captureChromeDom(this.#config, chromeDomTargetFromWindow(window)).catch(() => null)
     return {
       running: true,
       isFrontmost: true,
@@ -1110,9 +1170,11 @@ export class MacOSChromeDriver {
       profile: {
         status: lease ? 'verified' : 'unverified',
         reason: lease
-          ? 'Managed Chrome context lease is valid for the observed OS window; profile identity was fixed during bootstrap config load.'
+          ? 'Managed Chrome context lease is valid for the observed OS window; profile identity was verified against Chrome Local State and AXWindow title evidence during bootstrap.'
           : 'Chrome profile identity is not verified by tab inspection.',
         profile_path: lease?.profilePath,
+        profile_name: lease?.profileName,
+        profile_user_name: lease?.profileUserName,
       },
       window,
       lease,
@@ -1120,9 +1182,7 @@ export class MacOSChromeDriver {
   }
 }
 
-const CLICK_BUTTON_KINDS = new Set(['dom_button', 'ax_button'])
-const CLICK_LINK_KINDS = new Set(['dom_link', 'ax_link'])
-const CLICK_TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'dom_combobox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
+const SUPPORTED_CLICK_CANDIDATE_KINDS = new Set(['ocr_text', 'ocr_row'])
 
 class ActionRefusalError extends Error {
   readonly code: string
@@ -1186,10 +1246,21 @@ function promotedCandidatePreconditionFailure(
       },
     }
   }
+  if (!isSupportedClickCandidateKind(candidate.kind)) {
+    return {
+      code: 'unsupported_click_candidate_kind',
+      detail: 'Click candidates must be backed by OCR evidence.',
+      observed: candidate.kind,
+      expected: [...SUPPORTED_CLICK_CANDIDATE_KINDS],
+    }
+  }
   return undefined
 }
 
 function recognitionTargetForCandidate(candidate: PromotedCandidate): ChromeRecognitionTarget | null {
+  if (!isSupportedClickCandidateKind(candidate.kind))
+    return null
+
   const anchorText = candidate.liveness.preconditions.anchor_recheck?.text
     ?? candidate.target_spec.anchor_text
     ?? candidate.label
@@ -1197,27 +1268,27 @@ function recognitionTargetForCandidate(candidate: PromotedCandidate): ChromeReco
     return null
 
   const text = exactTextPattern(anchorText)
+  if (candidate.kind === 'ocr_text')
+    return { kind: 'ocr_text', text }
   if (candidate.kind === 'ocr_row')
     return { kind: 'ocr_row', text }
-  if (CLICK_BUTTON_KINDS.has(candidate.kind))
-    return { kind: 'button', text }
-  if (CLICK_LINK_KINDS.has(candidate.kind))
-    return { kind: 'link', text }
-  if (CLICK_TEXT_INPUT_KINDS.has(candidate.kind))
-    return { kind: 'text_input', name: text }
-  return { kind: 'visible_text', text }
+  return null
 }
 
 function isFreshSourceCompatible(candidate: PromotedCandidate, selected: RecognizedItem): boolean {
-  if (candidate.kind === 'dom_evidence' || candidate.kind === 'visual_row')
+  if (!isSupportedClickCandidateKind(candidate.kind))
     return false
-  if (selected.kind === 'dom_evidence' || selected.kind === 'visual_row')
+  if (!isSupportedClickCandidateKind(selected.kind))
     return false
   if (candidate.kind === 'ocr_text')
     return selected.kind === 'ocr_text'
   if (candidate.kind === 'ocr_row')
     return selected.kind === 'ocr_row'
   return true
+}
+
+function isSupportedClickCandidateKind(kind: string): boolean {
+  return SUPPORTED_CLICK_CANDIDATE_KINDS.has(kind)
 }
 
 function livenessDetail(input: {
@@ -1390,6 +1461,77 @@ function findChromeWindow(observation: WindowObservation): WindowDescriptor | un
   )
 }
 
+function findChromePid(observation: WindowObservation): number | undefined {
+  return chromeWindowCandidates(observation)[0]?.ownerPid
+}
+
+function chromeWindowCandidates(observation: WindowObservation): WindowDescriptor[] {
+  const normal = observation.windows.filter(window =>
+    isChromeApp(window.appName)
+    && window.isOnScreen
+    && window.bounds.width >= NORMAL_CHROME_MIN_WIDTH
+    && window.bounds.height >= NORMAL_CHROME_MIN_HEIGHT
+    && window.layer === 0,
+  )
+  if (normal.length > 0)
+    return normal
+
+  return observation.windows.filter(window =>
+    isChromeApp(window.appName)
+    && window.isOnScreen
+    && window.bounds.width >= NORMAL_CHROME_MIN_WIDTH
+    && window.bounds.height >= NORMAL_CHROME_MIN_HEIGHT,
+  )
+}
+
+function findChromeWindowByProfileAX(
+  observation: WindowObservation,
+  axSnapshot: AXSnapshot,
+  profileName: string,
+): WindowDescriptor | undefined {
+  const suffix = ` - Google Chrome - ${profileName}`
+  const axWindows = collectAXWindows(axSnapshot)
+    .filter(node => node.title?.endsWith(suffix))
+  const candidates = chromeWindowCandidates(observation)
+
+  for (const axWindow of axWindows) {
+    const axTitle = axWindow.title ?? ''
+    const windowTitle = axTitle.slice(0, axTitle.length - suffix.length)
+    const matching = candidates
+      .filter(window => window.title === windowTitle)
+      .filter(window => !axWindow.bounds || boundsNear(window.bounds, axWindow.bounds))
+    if (matching.length === 1)
+      return matching[0]
+
+    const boundsOnly = candidates.filter(window =>
+      axWindow.bounds !== undefined && boundsNear(window.bounds, axWindow.bounds),
+    )
+    if (boundsOnly.length === 1)
+      return boundsOnly[0]
+  }
+
+  return undefined
+}
+
+function collectAXWindows(snapshot: AXSnapshot): AXNode[] {
+  const windows: AXNode[] = []
+  function walk(node: AXNode): void {
+    if (node.role === 'AXWindow')
+      windows.push(node)
+    for (const child of node.children)
+      walk(child)
+  }
+  walk(snapshot.root)
+  return windows
+}
+
+function boundsNear(a: Bounds, b: Bounds): boolean {
+  return Math.abs(a.x - b.x) <= WINDOW_MATCH_TOLERANCE
+    && Math.abs(a.y - b.y) <= WINDOW_MATCH_TOLERANCE
+    && Math.abs(a.width - b.width) <= WINDOW_MATCH_TOLERANCE
+    && Math.abs(a.height - b.height) <= WINDOW_MATCH_TOLERANCE
+}
+
 function findLeasedChromeWindow(observation: WindowObservation, lease: ChromeContextLease): WindowDescriptor | undefined {
   return observation.windows.find(window =>
     window.isOnScreen
@@ -1415,8 +1557,63 @@ function chromeWindowRef(window: WindowDescriptor): ChromeWindowRef {
   }
 }
 
+function chromeDomTargetFromWindow(window: ChromeWindowRef) {
+  return {
+    windowNumber: window.windowNumber,
+    ownerPid: window.ownerPid,
+    ownerBundleId: window.ownerBundleId,
+    title: window.title,
+    bounds: window.bounds,
+  }
+}
+
 function profileDirFromPath(profilePath: string): string {
   return profilePath.split('/').filter(Boolean).at(-1) ?? profilePath
+}
+
+function resolveManagedChromeProfileIdentity(profileConfig: ProfileConfig): ManagedChromeProfileIdentity {
+  const profileDir = profileDirFromPath(profileConfig.profile_path)
+  const localStatePath = chromeLocalStatePath()
+  const info = readChromeLocalStateProfileInfo(localStatePath, profileDir)
+  if (!info?.name?.trim()) {
+    throw new Error(
+      `Chrome profile "${profileConfig.profile_path}" was not found in Chrome Local State at ${localStatePath}.`,
+    )
+  }
+
+  const configuredName = profileConfig.profile_name?.trim()
+  const actualName = info.name.trim()
+  if (configuredName && configuredName !== actualName) {
+    throw new Error(
+      `Chrome profile config mismatch: "${profileConfig.profile_path}" is "${actualName}" in Chrome Local State, not "${configuredName}".`,
+    )
+  }
+
+  return {
+    profileDir,
+    profilePath: profileConfig.profile_path,
+    profileName: actualName,
+    profileUserName: info.user_name,
+    localStatePath,
+  }
+}
+
+function chromeLocalStatePath(): string {
+  return process.env.COMPUTER_USE_CHROME_LOCAL_STATE_PATH?.trim()
+    || join(homedir(), 'Library/Application Support/Google/Chrome/Local State')
+}
+
+function readChromeLocalStateProfileInfo(
+  localStatePath: string,
+  profileDir: string,
+): { name?: string, user_name?: string } | undefined {
+  const raw = readFileSync(localStatePath, 'utf-8')
+  const parsed = JSON.parse(raw) as {
+    profile?: {
+      info_cache?: Record<string, { name?: string, user_name?: string }>
+    }
+  }
+  return parsed.profile?.info_cache?.[profileDir]
 }
 
 /**

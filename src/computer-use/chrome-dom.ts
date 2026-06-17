@@ -18,6 +18,19 @@ import type { ChromeDomObservation } from './types.js'
 
 import { runProcess } from './process.js'
 
+export interface ChromeDomTargetWindow {
+  windowNumber?: number
+  ownerPid?: number
+  ownerBundleId?: string
+  title?: string | null
+  bounds?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DOM observer JS executed inside Chrome's active tab.
 // Must be compact and use only ES5-compatible patterns that JXA's
@@ -149,23 +162,29 @@ function domObserverJs(): string {
 // JXA orchestration script — tries tab.execute(), falls back to url+title
 // ---------------------------------------------------------------------------
 
-function jxaCaptureScript(observerJs: string): string {
+function jxaCaptureScript(observerJs: string, targetWindow?: ChromeDomTargetWindow): string {
   return `
-var chrome = Application('Google Chrome');
-if (!chrome.running()) { JSON.stringify({ ok: false, reason: 'chrome_not_running' }); }
-var windows = chrome.windows();
-if (!windows || windows.length === 0) { JSON.stringify({ ok: false, reason: 'no_windows' }); }
+(function(){
+${jxaWindowSelectorScript()}
 
-var tab = windows[0].activeTab();
+var chrome = Application('Google Chrome');
+if (!chrome.running()) { return JSON.stringify({ ok: false, reason: 'chrome_not_running' }); }
+var windows = chrome.windows();
+if (!windows || windows.length === 0) { return JSON.stringify({ ok: false, reason: 'no_windows' }); }
+
+var targetWindow = ${JSON.stringify(targetWindow ?? null)};
+var selectedWindow = selectChromeWindow(windows, targetWindow);
+if (!selectedWindow) { return JSON.stringify({ ok: false, reason: 'target_window_not_found' }); }
+var tab = selectedWindow.activeTab();
 
 try {
   var raw = tab.execute({ javascript: ${JSON.stringify(observerJs)} });
   if (raw === null || raw === undefined) throw new Error('execute returned null');
   var data = JSON.parse(raw);
-  JSON.stringify({ ok: true, method: 'execute', data: data });
+  return JSON.stringify({ ok: true, method: 'execute', data: data });
 } catch(e) {
   try {
-    JSON.stringify({
+    return JSON.stringify({
       ok: true, method: 'direct',
       data: {
         url: tab.url() || 'about:blank',
@@ -175,15 +194,18 @@ try {
       }
     });
   } catch(e2) {
-    JSON.stringify({ ok: false, reason: 'tab_failed', error: e2.message });
+    return JSON.stringify({ ok: false, reason: 'tab_failed', error: e2.message });
   }
 }
+})()
 `
 }
 
-function directTabCaptureScript(): string {
+function directTabCaptureScript(targetWindow?: ChromeDomTargetWindow): string {
   return `
 (function(){
+${jxaWindowSelectorScript()}
+
   var chrome = Application('Google Chrome');
   if (!chrome.running()) {
     return JSON.stringify({ ok: false, reason: 'chrome_not_running' });
@@ -192,7 +214,12 @@ function directTabCaptureScript(): string {
   if (!windows || windows.length === 0) {
     return JSON.stringify({ ok: false, reason: 'no_windows' });
   }
-  var tab = windows[0].activeTab();
+  var targetWindow = ${JSON.stringify(targetWindow ?? null)};
+  var selectedWindow = selectChromeWindow(windows, targetWindow);
+  if (!selectedWindow) {
+    return JSON.stringify({ ok: false, reason: 'target_window_not_found' });
+  }
+  var tab = selectedWindow.activeTab();
   var url = tab.url() || 'about:blank';
   return JSON.stringify({
     ok: true,
@@ -210,6 +237,87 @@ function directTabCaptureScript(): string {
     }
   });
 })()
+`
+}
+
+function jxaWindowSelectorScript(): string {
+  return `
+function selectChromeWindow(windows, targetWindow) {
+  if (!targetWindow) return windows[0];
+
+  for (var i = 0; i < windows.length; i++) {
+    if (windowBoundsMatch(windows[i], targetWindow.bounds)) return windows[i];
+  }
+
+  if (targetWindow.title) {
+    for (var j = 0; j < windows.length; j++) {
+      if (windowTitleMatch(windows[j], targetWindow.title)) return windows[j];
+    }
+  }
+
+  return null;
+}
+
+function windowBoundsMatch(win, targetBounds) {
+  if (!targetBounds) return false;
+  var actualBounds = readChromeWindowBounds(win);
+  if (!actualBounds) return false;
+  var tolerance = 16;
+  return Math.abs(actualBounds.x - targetBounds.x) <= tolerance
+    && Math.abs(actualBounds.y - targetBounds.y) <= tolerance
+    && Math.abs(actualBounds.width - targetBounds.width) <= tolerance
+    && Math.abs(actualBounds.height - targetBounds.height) <= tolerance;
+}
+
+function windowTitleMatch(win, targetTitle) {
+  try {
+    var tabTitle = String(win.activeTab().name() || '');
+    var title = String(targetTitle || '');
+    if (!tabTitle || !title) return false;
+    return tabTitle === title || tabTitle.indexOf(title) !== -1 || title.indexOf(tabTitle) !== -1;
+  } catch(e) {
+    return false;
+  }
+}
+
+function readChromeWindowBounds(win) {
+  try {
+    var raw = win.bounds();
+    if (!raw) return null;
+    if (typeof raw.length === 'number' && raw.length >= 4) {
+      var left = Number(raw[0]);
+      var top = Number(raw[1]);
+      var right = Number(raw[2]);
+      var bottom = Number(raw[3]);
+      if (isFinite(left) && isFinite(top) && isFinite(right) && isFinite(bottom)) {
+        return { x: left, y: top, width: right - left, height: bottom - top };
+      }
+    }
+
+    var x = numberFromRecord(raw, ['x', 'left']);
+    var y = numberFromRecord(raw, ['y', 'top']);
+    var width = numberFromRecord(raw, ['width']);
+    var height = numberFromRecord(raw, ['height']);
+    var rightValue = numberFromRecord(raw, ['right']);
+    var bottomValue = numberFromRecord(raw, ['bottom']);
+    if (isFinite(x) && isFinite(y)) {
+      if (isFinite(width) && isFinite(height)) return { x: x, y: y, width: width, height: height };
+      if (isFinite(rightValue) && isFinite(bottomValue)) return { x: x, y: y, width: rightValue - x, height: bottomValue - y };
+    }
+  } catch(e) {}
+  return null;
+}
+
+function numberFromRecord(record, keys) {
+  for (var i = 0; i < keys.length; i++) {
+    var value = record[keys[i]];
+    if (typeof value !== 'undefined') {
+      var numberValue = Number(value);
+      if (isFinite(numberValue)) return numberValue;
+    }
+  }
+  return NaN;
+}
 `
 }
 
@@ -256,11 +364,12 @@ interface JxaResult {
 
 export async function captureChromeDom(
   config: ComputerUseConfig,
+  targetWindow?: ChromeDomTargetWindow,
 ): Promise<ChromeDomObservation | null> {
   if (process.platform !== 'darwin')
     return null
 
-  const jxaScript = jxaCaptureScript(domObserverJs())
+  const jxaScript = jxaCaptureScript(domObserverJs(), targetWindow)
 
   const tempDir = await mkdtemp(join(tmpdir(), 'careerdeepseek-chrome-dom-'))
   const scriptPath = join(tempDir, 'capture.js')
@@ -275,26 +384,29 @@ export async function captureChromeDom(
     )
 
     if (!result.stdout || result.exitCode !== 0)
-      return await captureChromeDirectTab(config)
+      return await captureChromeDirectTab(config, targetWindow)
 
     const jxaResult = JSON.parse(result.stdout.trim()) as JxaResult
     if (!jxaResult.ok || !jxaResult.data)
-      return await captureChromeDirectTab(config)
+      return await captureChromeDirectTab(config, targetWindow)
 
     return rawDomToObservation(jxaResult.data)
   }
   catch {
-    return await captureChromeDirectTab(config)
+    return await captureChromeDirectTab(config, targetWindow)
   }
   finally {
     await rm(tempDir, { recursive: true, force: true })
   }
 }
 
-async function captureChromeDirectTab(config: ComputerUseConfig): Promise<ChromeDomObservation | null> {
+async function captureChromeDirectTab(
+  config: ComputerUseConfig,
+  targetWindow?: ChromeDomTargetWindow,
+): Promise<ChromeDomObservation | null> {
   const result = await runProcess(
     config.binaries.osascript,
-    ['-l', 'JavaScript', '-e', directTabCaptureScript()],
+    ['-l', 'JavaScript', '-e', directTabCaptureScript(targetWindow)],
     { timeoutMs: config.timeoutMs },
   )
 

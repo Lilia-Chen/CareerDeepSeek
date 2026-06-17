@@ -181,7 +181,6 @@ function clickAction(element: VisualElement, reason: string): Extract<VisualActi
   return {
     type: 'click',
     elementId: element.id,
-    point: element.center,
     target: {
       role: element.role,
       text: element.text,

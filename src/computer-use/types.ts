@@ -67,7 +67,20 @@ export interface AXNode {
   enabled?: boolean
   focused?: boolean
   bounds?: Bounds
+  scroll?: AXScrollEvidence
   children: AXNode[]
+}
+
+export type AXScrollOrientation = 'vertical' | 'horizontal' | 'unknown'
+
+export interface AXScrollEvidence {
+  role: string
+  orientation?: AXScrollOrientation
+  value?: number
+  min_value?: number
+  max_value?: number
+  bounds?: Bounds
+  known_limits: string[]
 }
 
 export interface AXSnapshot {

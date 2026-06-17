@@ -348,7 +348,8 @@ Goal:
 - Re-observe the current Chrome window, re-match the promoted candidate against current capture evidence, and use current capture projection before action.
 - The final click point must come from the fresh current-capture match, not from a stale promoted-candidate box or raw coordinate.
 - Target API boundary:
-  - `visible_text` targets match visible OCR/text evidence by text.
+  - `visible_text` targets remain broad recognition/audit targets for visible text evidence. They may include read-only DOM/AX evidence and are not the P1 click target path.
+  - `ocr_text` targets match only OCR text evidence by text for P1 driver/harness click promotion and liveness. `ocr_text` is an internal driver/harness target shape and is not a public command catalog expansion.
   - `ocr_row` targets match OCR-derived capture-local row/block evidence by text/fragments.
   - `ocr_row` is an internal driver/harness target shape for P1 click semantics. It is not a public command catalog expansion.
 - `action-execution` remains the existing artifact role for the click result. P1-5 may extend its JSON payload with liveness recheck details, fresh match refs, refusal reasons, and known limits, but must not add a new artifact role.
@@ -365,7 +366,7 @@ Allowed files:
 - `test/computer-use/macosChromeAgentHarness.test.ts`
 - `test/computer-use/macosChromeDriver.test.ts`
 - `test/computer-use/candidatePromotion.test.ts`
-- `test/computer-use/recognition.test.ts`, only for P1-5 target matcher contract tests proving `{ kind: 'ocr_row' }` matches OCR-derived row/block evidence and excludes `visual_row`, DOM/AX rows, and raw OCR text.
+- `test/computer-use/recognition.test.ts`, only for P1-5 target matcher contract tests proving `{ kind: 'ocr_text' }` matches OCR text evidence while preserving DOM/AX as audit-only evidence, and `{ kind: 'ocr_row' }` matches OCR-derived row/block evidence and excludes `visual_row`, DOM/AX rows, and raw OCR text.
 - Documentation updates to this file only when a scope gap is identified before implementation.
 
 AUV reference points:
@@ -380,8 +381,8 @@ Acceptance criteria:
 
 - `driver.click()` refuses to dispatch unless it can load a traced `PromotedCandidate` artifact produced by the current driver session.
 - `driver.click()` performs re-observation and re-match before any executor call for visible text and OCR row/block clicks.
-- The click point is derived from the current matched `visible_text` or `ocr_row` evidence box and current capture projection, not from stale coordinates.
-- `visible_text` and `ocr_row` target handling are explicit and tested separately.
+- The click point is derived from the current matched `ocr_text` or `ocr_row` evidence box and current capture projection, not from stale coordinates.
+- `visible_text`, `ocr_text`, and `ocr_row` target handling are explicit and tested separately. P1 click promotion/liveness uses `ocr_text` or `ocr_row`; `visible_text` remains available for broad recognition/audit only.
 - Click consumes a `PromotedCandidate` artifact produced by the driver session.
 - `row_index` is never treated as stable identity across scroll or later observations.
 - Row/block click candidates must come from OCR-derived capture-local row/block evidence, not `visual_row`, DOM list rows, generic list semantics, or retained UI node identity.

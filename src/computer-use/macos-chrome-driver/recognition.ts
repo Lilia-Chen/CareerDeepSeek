@@ -6,6 +6,29 @@ const LINK_KINDS = new Set(['dom_link', 'ax_link'])
 const AUDIT_SOURCE_GROUPS = ['ocr_text', 'ocr_row', 'chrome_dom', 'ax', 'capture_visibility', 'custom'] as const
 type AuditStatus = 'agreement' | 'conflict' | 'unknown'
 type AuditSourceGroup = typeof AUDIT_SOURCE_GROUPS[number]
+type OcrConfusableAlignment = 'ocr_confusable_text'
+type GeometryRelation = 'same_object' | 'candidate_inside_other' | 'other_inside_candidate' | 'partial_overlap'
+
+interface TextCorrection {
+  canonicalSource: AuditSourceGroup
+  canonicalText: string
+  ocrRawText: string
+  correctionReason: string
+}
+
+interface AuditComparison {
+  item_id: string
+  kind: string
+  source_group: AuditSourceGroup
+  status: AuditStatus
+  reasons: string[]
+  known_limits: string[]
+  semantic_source?: AuditSourceGroup
+  semantic_text?: string
+  ocr_raw_text?: string
+  alignment?: OcrConfusableAlignment
+  geometry_relation?: GeometryRelation
+}
 
 export function recognizeFromCapture(
   items: RecognizedItem[],
@@ -16,7 +39,8 @@ export function recognizeFromCapture(
   spanId = 'standalone',
   evidence: ArtifactRef[] = [],
 ): RecognitionResult {
-  const filtered = items
+  const recognizedItems = canonicalizeRecognitionItems(items)
+  const filtered = recognizedItems
     .filter(item => matchesTarget(item, target))
     .sort(compareForBest)
 
@@ -34,7 +58,7 @@ export function recognizeFromCapture(
   }
 
   const knownLimits: string[] = []
-  if (items.length === 0) {
+  if (recognizedItems.length === 0) {
     knownLimits.push('recognition: empty input — no items provided')
   }
   if (!captureArtifact)
@@ -44,7 +68,7 @@ export function recognizeFromCapture(
   if (filtered.length > 1)
     knownLimits.push(`recognition: multiple filtered candidates (${filtered.length}) remain ambiguous`)
 
-  for (const item of items) {
+  for (const item of recognizedItems) {
     for (const limit of itemKnownLimits(item)) {
       if (!knownLimits.includes(limit))
         knownLimits.push(limit)
@@ -52,7 +76,7 @@ export function recognizeFromCapture(
   }
 
   const crossSourceAudit = buildCrossSourceAudit({
-    all: items,
+    all: recognizedItems,
     filtered,
     captureArtifact,
     captureContractArtifact,
@@ -70,7 +94,7 @@ export function recognizeFromCapture(
     scope,
     best,
     filtered,
-    all: items,
+    all: recognizedItems,
     detail: {
       provider: 'careerdeepseek.macos_chrome_driver',
       run_id: runId,
@@ -78,7 +102,7 @@ export function recognizeFromCapture(
       screenshot_path: screenshotPath,
       screenshot_pixel_size: contract.screenshotPixelSize,
       source,
-      total_input_items: items.length,
+      total_input_items: recognizedItems.length,
       filtered_count: filtered.length,
       capture_artifact: captureArtifact,
       capture_contract_artifact: captureContractArtifact,
@@ -87,6 +111,50 @@ export function recognizeFromCapture(
     evidence,
     known_limits: knownLimits,
   }
+}
+
+function canonicalizeRecognitionItems(items: RecognizedItem[]): RecognizedItem[] {
+  return items.map((item) => {
+    if (!isOcrAuditSource(auditSourceGroup(item)))
+      return item
+
+    const correction = correctionForOcrItem(item, items)
+    if (!correction)
+      return item
+
+    return {
+      ...item,
+      text: correction.canonicalText,
+      detail: {
+        ...item.detail,
+        ocr_raw_text: correction.ocrRawText,
+        canonical_source: correction.canonicalSource,
+        canonical_text: correction.canonicalText,
+        correction_reason: correction.correctionReason,
+      },
+    }
+  })
+}
+
+function correctionForOcrItem(item: RecognizedItem, all: RecognizedItem[]): TextCorrection | null {
+  for (const source of ['ax', 'chrome_dom'] as const) {
+    for (const other of all) {
+      if (other.item_id === item.item_id || auditSourceGroup(other) !== source || !boundsOverlap(item.box, other.box))
+        continue
+
+      const alignment = ocrConfusableAlignment(item, other)
+      if (alignment) {
+        return {
+          canonicalSource: alignment.semanticSource,
+          canonicalText: alignment.semanticText,
+          ocrRawText: alignment.ocrRawText,
+          correctionReason: `OCR confusable text corrected from semantic source ${alignment.semanticSource}`,
+        }
+      }
+    }
+  }
+
+  return null
 }
 
 function buildCrossSourceAudit(input: {
@@ -152,6 +220,8 @@ function auditItem(
     .filter(other => auditSourceGroup(other) !== sourceGroup)
     .map(other => compareAuditItems(item, other))
     .filter((comparison): comparison is NonNullable<typeof comparison> => comparison !== null)
+  const canonicalText = canonicalAuditText(item, sourceGroup, comparedItems)
+  const textCorrection = textCorrectionFromItem(item)
 
   if (!captureArtifact) {
     reasons.push('missing capture artifact ref')
@@ -192,16 +262,31 @@ function auditItem(
     reasons,
     artifact_refs: itemArtifactRefs(item, captureArtifact, captureContractArtifact),
     known_limits: knownLimits,
+    ...(canonicalText
+      ? {
+          canonical_source: canonicalText.source,
+          canonical_text: canonicalText.text,
+          raw_text: textCorrection?.ocrRawText ?? item.text,
+        }
+      : {}),
+    ...(textCorrection
+      ? {
+          ocr_raw_text: textCorrection.ocrRawText,
+          correction_reason: textCorrection.correctionReason,
+        }
+      : {}),
   }
 }
 
-function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem) {
-  if (!boundsOverlap(candidate.box, other.box))
+function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem): AuditComparison | null {
+  const geometryRelation = geometryRelationFor(candidate.box, other.box)
+  if (!geometryRelation)
     return null
 
   const knownLimits = itemKnownLimits(other)
   const candidateText = normalizedText(candidate.text)
   const otherText = normalizedText(other.text)
+  const semanticMetadata = semanticComparisonMetadata(candidate, other)
   if (!candidateText || !otherText) {
     pushUnique(knownLimits, `recognition audit: item ${other.item_id} has missing comparable text`)
     return {
@@ -211,6 +296,26 @@ function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem) {
       status: 'unknown' as AuditStatus,
       reasons: ['missing comparable text'],
       known_limits: knownLimits,
+      geometry_relation: geometryRelation,
+      ...semanticMetadata,
+    }
+  }
+
+  const confusableAlignment = ocrConfusableAlignment(candidate, other)
+  if (confusableAlignment) {
+    pushUnique(knownLimits, confusableAlignment.knownLimit)
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'unknown' as AuditStatus,
+      reasons: ['semantic text aligns despite OCR confusable characters'],
+      known_limits: knownLimits,
+      semantic_source: confusableAlignment.semanticSource,
+      semantic_text: confusableAlignment.semanticText,
+      ocr_raw_text: confusableAlignment.ocrRawText,
+      alignment: 'ocr_confusable_text',
+      geometry_relation: geometryRelation,
     }
   }
 
@@ -222,6 +327,8 @@ function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem) {
       status: 'agreement' as AuditStatus,
       reasons: ['text and bounds agree in current capture'],
       known_limits: knownLimits,
+      geometry_relation: geometryRelation,
+      ...semanticMetadata,
     }
   }
 
@@ -233,6 +340,37 @@ function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem) {
       status: 'unknown' as AuditStatus,
       reasons: ['matching evidence has known limits'],
       known_limits: knownLimits,
+      geometry_relation: geometryRelation,
+      ...semanticMetadata,
+    }
+  }
+
+  const nestedAlignment = nestedTextAlignment(candidate, other, candidateText, otherText, geometryRelation)
+  if (nestedAlignment) {
+    pushUnique(knownLimits, nestedAlignment.knownLimit)
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'unknown' as AuditStatus,
+      reasons: [nestedAlignment.reason],
+      known_limits: knownLimits,
+      geometry_relation: geometryRelation,
+      ...semanticMetadata,
+    }
+  }
+
+  if (isCoarseContainerRelation(candidate, other, geometryRelation)) {
+    pushUnique(knownLimits, `recognition audit: item ${candidate.item_id} overlaps coarse ${other.item_id}; text comparison is not decisive`)
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'unknown' as AuditStatus,
+      reasons: ['overlapping coarse evidence is not a same-target text conflict'],
+      known_limits: knownLimits,
+      geometry_relation: geometryRelation,
+      ...semanticMetadata,
     }
   }
 
@@ -244,7 +382,142 @@ function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem) {
     status: 'conflict' as AuditStatus,
     reasons: ['overlapping bounds but text differs'],
     known_limits: knownLimits,
+    geometry_relation: geometryRelation,
   }
+}
+
+function canonicalAuditText(
+  item: RecognizedItem,
+  sourceGroup: AuditSourceGroup,
+  comparedItems: AuditComparison[],
+): { source: AuditSourceGroup, text: string } | null {
+  if (sourceGroup === 'ax' && normalizedText(item.text))
+    return { source: 'ax', text: item.text! }
+
+  const axText = semanticTextFromComparedItems(comparedItems, 'ax')
+  if (axText)
+    return { source: 'ax', text: axText }
+
+  if (sourceGroup === 'chrome_dom' && normalizedText(item.text))
+    return { source: 'chrome_dom', text: item.text! }
+
+  const domText = semanticTextFromComparedItems(comparedItems, 'chrome_dom')
+  if (domText)
+    return { source: 'chrome_dom', text: domText }
+
+  if (isOcrAuditSource(sourceGroup) && normalizedText(item.text))
+    return { source: sourceGroup, text: item.text! }
+
+  return null
+}
+
+function semanticTextFromComparedItems(comparedItems: AuditComparison[], source: AuditSourceGroup): string | null {
+  const comparison = comparedItems.find(item =>
+    item.status !== 'conflict'
+    && item.semantic_source === source
+    && typeof item.semantic_text === 'string'
+    && normalizedText(item.semantic_text),
+  )
+  return comparison?.semantic_text ?? null
+}
+
+function semanticComparisonMetadata(
+  candidate: RecognizedItem,
+  other: RecognizedItem,
+): Pick<AuditComparison, 'semantic_source' | 'semantic_text' | 'ocr_raw_text'> | null {
+  const candidateGroup = auditSourceGroup(candidate)
+  const otherGroup = auditSourceGroup(other)
+  if (isOcrAuditSource(candidateGroup) === isOcrAuditSource(otherGroup))
+    return null
+
+  const ocrItem = isOcrAuditSource(candidateGroup) ? candidate : other
+  const semanticItem = isOcrAuditSource(candidateGroup) ? other : candidate
+  const semanticSource = auditSourceGroup(semanticItem)
+  if (!isSemanticAuditSource(semanticSource))
+    return null
+
+  return {
+    semantic_source: semanticSource,
+    semantic_text: semanticItem.text ?? '',
+    ocr_raw_text: ocrRawTextFor(ocrItem),
+  }
+}
+
+function ocrConfusableAlignment(candidate: RecognizedItem, other: RecognizedItem): {
+  semanticSource: AuditSourceGroup
+  semanticText: string
+  ocrRawText: string
+  knownLimit: string
+} | null {
+  const metadata = semanticComparisonMetadata(candidate, other)
+  if (!metadata?.semantic_source || metadata.semantic_text === undefined || metadata.ocr_raw_text === undefined)
+    return null
+
+  const semanticText = normalizedText(metadata.semantic_text)
+  const ocrText = normalizedText(metadata.ocr_raw_text)
+  if (!textMatchesWithOcrConfusables(ocrText, semanticText))
+    return null
+
+  return {
+    semanticSource: metadata.semantic_source,
+    semanticText: metadata.semantic_text,
+    ocrRawText: metadata.ocr_raw_text,
+    knownLimit: `recognition audit: OCR raw text differs from semantic source ${metadata.semantic_source}`,
+  }
+}
+
+function textMatchesWithOcrConfusables(a: string, b: string): boolean {
+  if (a === b || a.length !== b.length)
+    return false
+
+  let sawConfusableDifference = false
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]!
+    const right = b[i]!
+    if (left === right)
+      continue
+
+    const leftClass = ocrConfusableClass(left)
+    const rightClass = ocrConfusableClass(right)
+    if (!leftClass || leftClass !== rightClass)
+      return false
+    sawConfusableDifference = true
+  }
+
+  return sawConfusableDifference
+}
+
+function ocrConfusableClass(char: string): 'i_l_1' | 'o_0' | null {
+  if (char === 'i' || char === 'l' || char === '1' || char === '|')
+    return 'i_l_1'
+  if (char === 'o' || char === '0')
+    return 'o_0'
+  return null
+}
+
+function textCorrectionFromItem(item: RecognizedItem): TextCorrection | null {
+  const canonicalSource = item.detail.canonical_source
+  const canonicalText = item.detail.canonical_text
+  const ocrRawText = item.detail.ocr_raw_text
+  const correctionReason = item.detail.correction_reason
+  if (!isSemanticAuditSourceValue(canonicalSource)
+    || typeof canonicalText !== 'string'
+    || typeof ocrRawText !== 'string'
+    || typeof correctionReason !== 'string') {
+    return null
+  }
+  return {
+    canonicalSource,
+    canonicalText,
+    ocrRawText,
+    correctionReason,
+  }
+}
+
+function ocrRawTextFor(item: RecognizedItem): string {
+  return typeof item.detail.ocr_raw_text === 'string'
+    ? item.detail.ocr_raw_text
+    : item.text ?? ''
 }
 
 function auditSourceGroups(
@@ -385,6 +658,134 @@ function textsAgree(a: string, b: string): boolean {
   return a === b
 }
 
+function nestedTextAlignment(
+  candidate: RecognizedItem,
+  other: RecognizedItem,
+  candidateText: string,
+  otherText: string,
+  geometryRelation: GeometryRelation,
+): { reason: string, knownLimit: string } | null {
+  if (textContainsWithOcrConfusables(candidateText, otherText)
+    || textContainsWithOcrConfusables(otherText, candidateText)) {
+    return {
+      reason: 'window-plane geometry shows nested/coarser evidence, not a same-target text conflict',
+      knownLimit: `recognition audit: item ${candidate.item_id} text is nested within ${other.item_id} (${geometryRelation}); treating as non-blocking granularity mismatch`,
+    }
+  }
+
+  return null
+}
+
+function textContainsWithOcrConfusables(a: string, b: string): boolean {
+  if (!a || !b || a === b)
+    return false
+  const left = tokensForNestedAlignment(foldOcrConfusables(a))
+  const right = tokensForNestedAlignment(foldOcrConfusables(b))
+  return tokenSequenceContains(left, right) || tokenSequenceContains(right, left)
+}
+
+function foldOcrConfusables(value: string): string {
+  let normalized = ''
+  for (const char of value) {
+    const confusable = ocrConfusableClass(char)
+    if (confusable === 'i_l_1') {
+      normalized += 'i'
+      continue
+    }
+    if (confusable === 'o_0') {
+      normalized += 'o'
+      continue
+    }
+    normalized += char
+  }
+  return normalized
+}
+
+function tokensForNestedAlignment(value: string): string[] {
+  return value
+    .split(/[^a-z0-9]+/i)
+    .map(token => token.trim())
+    .filter(Boolean)
+}
+
+function tokenSequenceContains(container: string[], candidate: string[]): boolean {
+  if (candidate.length === 0 || container.length < candidate.length)
+    return false
+
+  for (let start = 0; start <= container.length - candidate.length; start += 1) {
+    let matched = true
+    for (let offset = 0; offset < candidate.length; offset += 1) {
+      if (container[start + offset] !== candidate[offset]) {
+        matched = false
+        break
+      }
+    }
+    if (matched)
+      return true
+  }
+
+  return false
+}
+
+function isCoarseContainerRelation(
+  candidate: RecognizedItem,
+  other: RecognizedItem,
+  geometryRelation: GeometryRelation,
+): boolean {
+  if (geometryRelation !== 'candidate_inside_other' && geometryRelation !== 'other_inside_candidate')
+    return false
+  return isCoarseEvidenceKind(other.kind) || isCoarseEvidenceKind(candidate.kind)
+}
+
+function isCoarseEvidenceKind(kind: string): boolean {
+  return kind === 'ax_webarea'
+    || kind === 'ax_group'
+    || kind === 'dom_evidence'
+    || kind === 'ax_evidence'
+}
+
+function boxArea(box: RecognizedItem['box']): number {
+  return validBox(box) ? box.width * box.height : 0
+}
+
+function geometryRelationFor(
+  candidate: RecognizedItem['box'],
+  other: RecognizedItem['box'],
+): GeometryRelation | null {
+  if (!boundsOverlap(candidate, other))
+    return null
+
+  const candidateArea = boxArea(candidate)
+  const otherArea = boxArea(other)
+  const intersection = intersectionArea(candidate, other)
+  if (candidateArea <= 0 || otherArea <= 0 || intersection <= 0)
+    return null
+
+  const smallerArea = Math.min(candidateArea, otherArea)
+  const largerArea = Math.max(candidateArea, otherArea)
+  const smallerCovered = intersection / smallerArea
+  const areaRatio = largerArea / smallerArea
+
+  if (smallerCovered >= 0.8 && areaRatio >= 3) {
+    return candidateArea <= otherArea
+      ? 'candidate_inside_other'
+      : 'other_inside_candidate'
+  }
+  if (smallerCovered >= 0.65)
+    return 'same_object'
+  return 'partial_overlap'
+}
+
+function intersectionArea(a: RecognizedItem['box'], b: RecognizedItem['box']): number {
+  if (!validBox(a) || !validBox(b))
+    return 0
+  const left = Math.max(a.x, b.x)
+  const top = Math.max(a.y, b.y)
+  const right = Math.min(a.x + a.width, b.x + b.width)
+  const bottom = Math.min(a.y + a.height, b.y + b.height)
+  return Math.max(0, right - left) * Math.max(0, bottom - top)
+}
+
 function pushUnique(values: string[], value: string): void {
   if (!values.includes(value))
     values.push(value)
@@ -398,19 +799,29 @@ function isArtifactRef(value: unknown): value is ArtifactRef {
 }
 
 function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): boolean {
-  const itemText = item.text ?? ''
+  const itemTexts = matchingTextsForItem(item)
   function textMatches(expected: string | RegExp): boolean {
     if (expected instanceof RegExp)
-      return expected.test(itemText)
-    return itemText.toLowerCase().includes(expected.toLowerCase())
+      return itemTexts.some(text => expected.test(text))
+    return itemTexts.some(text => text.toLowerCase().includes(expected.toLowerCase()))
   }
   switch (target.kind) {
     case 'text_input': return TEXT_INPUT_KINDS.has(item.kind) && textMatches(target.name)
     case 'button': return BUTTON_KINDS.has(item.kind) && textMatches(target.text)
     case 'link': return LINK_KINDS.has(item.kind) && textMatches(target.text)
     case 'visible_text': return textMatches(target.text)
+    case 'ocr_text': return item.kind === 'ocr_text' && textMatches(target.text)
     case 'ocr_row': return item.kind === 'ocr_row' && textMatches(target.text)
   }
+}
+
+function matchingTextsForItem(item: RecognizedItem): string[] {
+  const values: string[] = []
+  if (typeof item.text === 'string')
+    values.push(item.text)
+  if (typeof item.detail.ocr_raw_text === 'string' && !values.includes(item.detail.ocr_raw_text))
+    values.push(item.detail.ocr_raw_text)
+  return values
 }
 
 function compareForBest(a: RecognizedItem, b: RecognizedItem): number {
@@ -436,9 +847,23 @@ const ACTIONABLE_KINDS = new Set([
 ])
 
 function isActionable(item: RecognizedItem): boolean {
+  if (isOcrAuditSource(auditSourceGroup(item)))
+    return false
   if (ACTIONABLE_KINDS.has(item.kind))
     return true
   return item.detail?.actionable === true
+}
+
+function isOcrAuditSource(source: AuditSourceGroup): boolean {
+  return source === 'ocr_text' || source === 'ocr_row'
+}
+
+function isSemanticAuditSource(source: AuditSourceGroup): boolean {
+  return source === 'ax' || source === 'chrome_dom'
+}
+
+function isSemanticAuditSourceValue(value: unknown): value is 'ax' | 'chrome_dom' {
+  return value === 'ax' || value === 'chrome_dom'
 }
 
 function inferRecognitionSource(item: RecognizedItem | undefined): RecognitionResult['source'] {

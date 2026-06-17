@@ -83,14 +83,14 @@ it('generates arbitrary JSON through the Vercel AI SDK DeepSeek provider', async
       return {
         output: {
           ok: true,
-          task: 'plan_visual_action',
+          task: 'extract_page_observation',
         },
       }
     },
   })
 
   const output = await adapter.generateJson({
-    task: 'plan_visual_action',
+    task: 'extract_page_observation',
     state: {
       url: 'https://search.example',
     },
@@ -98,7 +98,7 @@ it('generates arbitrary JSON through the Vercel AI SDK DeepSeek provider', async
 
   assert.deepEqual(output, {
     ok: true,
-    task: 'plan_visual_action',
+    task: 'extract_page_observation',
   })
   assert.deepEqual(providerCalls, [
     {
@@ -123,7 +123,7 @@ it('generates arbitrary JSON through the Vercel AI SDK DeepSeek provider', async
     },
   })
   assert.match(String(request.system), /Return only valid JSON/)
-  assert.match(String(request.prompt), /plan_visual_action/)
+  assert.match(String(request.prompt), /extract_page_observation/)
 })
 
 it('rejects JSON mode output that is not an object', async () => {

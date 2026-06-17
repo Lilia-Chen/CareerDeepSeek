@@ -194,6 +194,41 @@ describe('recognizeFromCapture', () => {
     assert.equal(result.source, 'ocr_row')
   })
 
+  it('filters OCR text targets to OCR text while preserving DOM and AX audit evidence', () => {
+    const evidence = evidenceRefs()
+    const items = [
+      makeItem({
+        item_id: 'ocr',
+        kind: 'ocr_text',
+        text: 'Search',
+        detail: cleanOcrDetail(evidence[0]!, evidence[1]!),
+      }),
+      makeItem({
+        item_id: 'dom',
+        kind: 'dom_button',
+        text: 'Search',
+        detail: cleanDomDetail(evidence[0]!, evidence[1]!),
+      }),
+      makeItem({
+        item_id: 'ax',
+        kind: 'ax_button',
+        text: 'Search',
+        detail: cleanAxDetail(evidence[0]!, evidence[1]!),
+      }),
+    ]
+    const target = { kind: 'ocr_text', text: /search/i } as unknown as ChromeRecognitionTarget
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    const audit = crossSourceAudit(result)
+
+    assert.equal(result.found, true)
+    assert.deepEqual(result.filtered.map(item => item.item_id), ['ocr'])
+    assert.equal(result.best?.kind, 'ocr_text')
+    assert.equal(result.all.length, 3)
+    assert.ok((audit.source_groups as string[]).includes('chrome_dom'))
+    assert.ok((audit.source_groups as string[]).includes('ax'))
+  })
+
   it('sorts filtered: actionable first, then provider_score descending', () => {
     const items = [
       makeItem({ item_id: 'low', text: 'Search', provider_score: 0.5, detail: { actionable: false } }),
@@ -203,6 +238,35 @@ describe('recognizeFromCapture', () => {
     const result = recognizeFromCapture(items, target, contract, screenshotPath)
     assert.equal(result.filtered[0]!.item_id, 'high')
     assert.equal(result.filtered[1]!.item_id, 'low')
+  })
+
+  it('does not use OCR detail actionability as enabled evidence for ranking', () => {
+    const evidence = evidenceRefs()
+    const [captureArtifact, captureContractArtifact] = evidence
+    const items = [
+      makeItem({
+        item_id: 'ocr',
+        kind: 'ocr_text',
+        text: 'Search',
+        provider_score: 0.99,
+        detail: {
+          ...cleanOcrDetail(captureArtifact!, captureContractArtifact!),
+          actionable: true,
+        },
+      }),
+      makeItem({
+        item_id: 'dom',
+        kind: 'dom_button',
+        text: 'Search',
+        provider_score: 0.1,
+        detail: cleanDomDetail(captureArtifact!, captureContractArtifact!),
+      }),
+    ]
+    const target: ChromeRecognitionTarget = { kind: 'visible_text', text: /search/i }
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+
+    assert.equal(result.filtered[0]!.item_id, 'dom')
   })
 
   it('all contains all items regardless of filter match', () => {
@@ -439,6 +503,256 @@ describe('recognizeFromCapture', () => {
     assert.equal(sourceStatuses.get('chrome_dom'), 'conflict')
     assert.equal(sourceStatuses.get('ocr_text'), 'conflict')
     assert.ok(result.known_limits.some(limit => limit.includes('conflicting cross-source evidence')))
+  })
+
+  it('uses AX semantic text as OCR candidate canonical text while tracing raw OCR correction', () => {
+    const evidence = evidenceRefs()
+    const [captureArtifact, captureContractArtifact] = evidence
+    const items = [
+      makeItem({
+        item_id: 'ocr_typo',
+        kind: 'ocr_text',
+        text: 'Al agent infrastructure',
+        provider_score: 0.96,
+        detail: cleanOcrDetail(captureArtifact!, captureContractArtifact!),
+      }),
+      makeItem({
+        item_id: 'ax_semantic',
+        kind: 'ax_evidence',
+        text: 'AI agent infrastructure',
+        provider_score: 0.75,
+        detail: {
+          ...cleanAxDetail(captureArtifact!, captureContractArtifact!),
+          ax_title: 'AI agent infrastructure',
+        },
+      }),
+    ]
+    const target = { kind: 'ocr_text', text: /AI agent infrastructure/i } as unknown as ChromeRecognitionTarget
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    const audit = crossSourceAudit(result)
+    const auditedItems = audit.items as Array<Record<string, unknown>>
+    const ocrAudit = auditedItems.find(item => item.item_id === 'ocr_typo')!
+    const comparedItems = ocrAudit.compared_items as Array<Record<string, unknown>>
+    const axComparison = comparedItems.find(item => item.item_id === 'ax_semantic')!
+
+    assert.equal(result.best?.item_id, 'ocr_typo')
+    assert.equal(result.best?.text, 'AI agent infrastructure')
+    assert.equal(result.best?.detail.ocr_raw_text, 'Al agent infrastructure')
+    assert.equal(result.best?.detail.canonical_source, 'ax')
+    assert.equal(result.best?.detail.canonical_text, 'AI agent infrastructure')
+    assert.match(String(result.best?.detail.correction_reason), /OCR confusable/i)
+    assert.notEqual(audit.status, 'conflict')
+    assert.notEqual(ocrAudit.status, 'conflict')
+    assert.equal(ocrAudit.canonical_source, 'ax')
+    assert.equal(ocrAudit.canonical_text, 'AI agent infrastructure')
+    assert.equal(ocrAudit.ocr_raw_text, 'Al agent infrastructure')
+    assert.match(String(ocrAudit.correction_reason), /OCR confusable/i)
+    assert.equal(axComparison.status, 'unknown')
+    assert.equal(axComparison.semantic_source, 'ax')
+    assert.equal(axComparison.semantic_text, 'AI agent infrastructure')
+    assert.equal(axComparison.ocr_raw_text, 'Al agent infrastructure')
+    assert.ok((audit.known_limits as string[]).some(limit => limit.includes('OCR raw text differs from semantic source ax')))
+  })
+
+  it('uses DOM semantic text as OCR candidate canonical text when AX is unavailable', () => {
+    const evidence = evidenceRefs()
+    const [captureArtifact, captureContractArtifact] = evidence
+    const items = [
+      makeItem({
+        item_id: 'ocr_typo',
+        kind: 'ocr_text',
+        text: 'Al agent infrastructure',
+        provider_score: 0.96,
+        detail: cleanOcrDetail(captureArtifact!, captureContractArtifact!),
+      }),
+      makeItem({
+        item_id: 'dom_semantic',
+        kind: 'dom_evidence',
+        text: 'AI agent infrastructure',
+        provider_score: 0.82,
+        detail: {
+          ...cleanDomDetail(captureArtifact!, captureContractArtifact!),
+          dom_name: 'AI agent infrastructure',
+          dom_text: 'AI agent infrastructure',
+        },
+      }),
+    ]
+    const target = { kind: 'ocr_text', text: /AI agent infrastructure/i } as unknown as ChromeRecognitionTarget
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    const audit = crossSourceAudit(result)
+    const ocrAudit = (audit.items as Array<Record<string, unknown>>).find(item => item.item_id === 'ocr_typo')!
+    const domComparison = (ocrAudit.compared_items as Array<Record<string, unknown>>).find(item => item.item_id === 'dom_semantic')!
+
+    assert.equal(result.best?.text, 'AI agent infrastructure')
+    assert.equal(result.best?.detail.ocr_raw_text, 'Al agent infrastructure')
+    assert.equal(result.best?.detail.canonical_source, 'chrome_dom')
+    assert.equal(result.best?.detail.canonical_text, 'AI agent infrastructure')
+    assert.match(String(result.best?.detail.correction_reason), /OCR confusable/i)
+    assert.notEqual(audit.status, 'conflict')
+    assert.notEqual(ocrAudit.status, 'conflict')
+    assert.equal(ocrAudit.canonical_source, 'chrome_dom')
+    assert.equal(ocrAudit.canonical_text, 'AI agent infrastructure')
+    assert.equal(ocrAudit.ocr_raw_text, 'Al agent infrastructure')
+    assert.match(String(ocrAudit.correction_reason), /OCR confusable/i)
+    assert.equal(domComparison.status, 'unknown')
+    assert.equal(domComparison.semantic_source, 'chrome_dom')
+    assert.equal(domComparison.semantic_text, 'AI agent infrastructure')
+    assert.equal(domComparison.ocr_raw_text, 'Al agent infrastructure')
+    assert.ok((audit.known_limits as string[]).some(limit => limit.includes('OCR raw text differs from semantic source chrome_dom')))
+  })
+
+  it('does not mark a canonical OCR title as conflict when coarse page containers overlap it', () => {
+    const evidence = evidenceRefs()
+    const [captureArtifact, captureContractArtifact] = evidence
+    const titleBox = { x: 53, y: 431, width: 492.5, height: 20 }
+    const items = [
+      makeItem({
+        item_id: 'ocr_title',
+        kind: 'ocr_text',
+        text: '82+ Agentic Al Engineering Jobs in London (June 2026)',
+        box: titleBox,
+        provider_score: 0.96,
+        detail: {
+          bounds: {
+            capture_pixel: { x: 106, y: 782, width: 985, height: 40 },
+            source_global_logical: titleBox,
+          },
+          source_artifacts: {
+            capture_artifact: captureArtifact!,
+            capture_contract_artifact: captureContractArtifact!,
+          },
+          known_limits: [],
+        },
+      }),
+      makeItem({
+        item_id: 'dom_title',
+        kind: 'dom_evidence',
+        text: '82+ Agentic AI Engineering Jobs in London (June 2026)',
+        box: { x: 53, y: 424, width: 492.5, height: 32 },
+        provider_score: 0.82,
+        detail: {
+          ...cleanDomDetail(captureArtifact!, captureContractArtifact!),
+          dom_name: '82+ Agentic AI Engineering Jobs in London (June 2026)',
+          dom_text: '82+ Agentic AI Engineering Jobs in London (June 2026)',
+        },
+      }),
+      makeItem({
+        item_id: 'dom_center_col',
+        kind: 'dom_evidence',
+        text: 'Web results 1 to 25 of 360 AI Agents Jobs in London 82+ Agentic AI Engineering Jobs in London (June 2026) Built In London LinkedIn Page navigation',
+        box: { x: 53, y: 154, width: 652, height: 738 },
+        provider_score: 0.5,
+        detail: cleanDomDetail(captureArtifact!, captureContractArtifact!),
+      }),
+      makeItem({
+        item_id: 'ax_webarea',
+        kind: 'ax_webarea',
+        text: 'AI agent infrastructure companies hiring UK 2026 - Google Search',
+        box: { x: 0, y: 154, width: 982, height: 738 },
+        provider_score: 0.5,
+        detail: cleanAxDetail(captureArtifact!, captureContractArtifact!),
+      }),
+    ]
+    const target = { kind: 'ocr_text', text: /82\+ Agentic AI Engineering Jobs in London/i } as unknown as ChromeRecognitionTarget
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    const audit = crossSourceAudit(result)
+    const ocrAudit = (audit.items as Array<Record<string, unknown>>).find(item => item.item_id === 'ocr_title')!
+    const comparedItems = ocrAudit.compared_items as Array<Record<string, unknown>>
+
+    assert.equal(result.best?.item_id, 'ocr_title')
+    assert.equal(result.best?.text, '82+ Agentic AI Engineering Jobs in London (June 2026)')
+    assert.equal(result.best?.detail.ocr_raw_text, '82+ Agentic Al Engineering Jobs in London (June 2026)')
+    assert.notEqual(audit.status, 'conflict')
+    assert.notEqual(ocrAudit.status, 'conflict')
+    assert.equal(comparedItems.find(item => item.item_id === 'dom_title')?.status, 'unknown')
+    assert.equal(comparedItems.find(item => item.item_id === 'dom_center_col')?.status, 'unknown')
+    assert.equal(comparedItems.find(item => item.item_id === 'ax_webarea')?.status, 'unknown')
+    assert.ok((ocrAudit.known_limits as string[]).some(limit => limit.includes('text is nested')))
+    assert.ok((ocrAudit.known_limits as string[]).some(limit => limit.includes('overlaps coarse')))
+  })
+
+  it('treats icon-decorated OCR button text as nested evidence instead of conflict', () => {
+    const evidence = evidenceRefs()
+    const [captureArtifact, captureContractArtifact] = evidence
+    const box = { x: 292.5, y: 379.5, width: 170, height: 16 }
+    const items = [
+      makeItem({
+        item_id: 'ocr_hide_sponsored',
+        kind: 'ocr_text',
+        text: 'Hide sponsored result ^',
+        box,
+        provider_score: 0.96,
+        detail: {
+          bounds: {
+            capture_pixel: { x: 585, y: 679, width: 340, height: 32 },
+            source_global_logical: box,
+          },
+          source_artifacts: {
+            capture_artifact: captureArtifact!,
+            capture_contract_artifact: captureContractArtifact!,
+          },
+          known_limits: [],
+        },
+      }),
+      makeItem({
+        item_id: 'dom_hide_sponsored',
+        kind: 'dom_button',
+        text: 'Hide sponsored result',
+        box: { x: 53, y: 366, width: 652, height: 56 },
+        provider_score: 0.88,
+        detail: cleanDomDetail(captureArtifact!, captureContractArtifact!),
+      }),
+    ]
+    const target = { kind: 'ocr_text', text: /Hide sponsored result/i } as unknown as ChromeRecognitionTarget
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    const audit = crossSourceAudit(result)
+    const ocrAudit = (audit.items as Array<Record<string, unknown>>).find(item => item.item_id === 'ocr_hide_sponsored')!
+    const domComparison = (ocrAudit.compared_items as Array<Record<string, unknown>>).find(item => item.item_id === 'dom_hide_sponsored')!
+
+    assert.equal(result.best?.item_id, 'ocr_hide_sponsored')
+    assert.notEqual(audit.status, 'conflict')
+    assert.notEqual(ocrAudit.status, 'conflict')
+    assert.equal(domComparison.status, 'unknown')
+    assert.match(String(domComparison.reasons), /nested\/coarser evidence/)
+  })
+
+  it('records conflict audit when AX semantic text overlaps different OCR target text', () => {
+    const evidence = evidenceRefs()
+    const [captureArtifact, captureContractArtifact] = evidence
+    const items = [
+      makeItem({
+        item_id: 'ax_submit',
+        kind: 'ax_button',
+        text: 'Submit',
+        provider_score: 0.82,
+        detail: {
+          ...cleanAxDetail(captureArtifact!, captureContractArtifact!),
+          ax_title: 'Submit',
+        },
+      }),
+      makeItem({
+        item_id: 'ocr_cancel',
+        kind: 'ocr_text',
+        text: 'Cancel',
+        provider_score: 0.96,
+        detail: cleanOcrDetail(captureArtifact!, captureContractArtifact!),
+      }),
+    ]
+    const target: ChromeRecognitionTarget = { kind: 'button', text: /submit/i }
+
+    const result = recognizeFromCapture(items, target, contract, screenshotPath, 'run_1', 'span_1', evidence)
+    const audit = crossSourceAudit(result)
+    const axAudit = (audit.items as Array<Record<string, unknown>>).find(item => item.item_id === 'ax_submit')!
+
+    assert.equal(result.best?.item_id, 'ax_submit')
+    assert.equal(audit.status, 'conflict')
+    assert.equal(axAudit.status, 'conflict')
+    assert.deepEqual(axAudit.compared_item_ids, ['ocr_cancel'])
+    assert.ok(result.known_limits.some(limit => limit.includes('text conflicts')))
   })
 
   it('records unknown audit when clean OCR has no comparable DOM or AX source', () => {

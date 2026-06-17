@@ -84,6 +84,8 @@ export function promoteCandidate(
   const best = recognition.best!
   const audit = crossSourceAudit!
   const auditItem = selectedAuditItem!
+  const textResolution = textResolutionFor(best, auditItem)
+  const anchorRecheckText = textResolution?.ocr_raw_text ?? best.text
   const candidate: PromotedCandidate = {
     candidate_local_id: `${recognition.recognition_id}:${best.item_id}`,
     kind: best.kind,
@@ -101,6 +103,7 @@ export function promoteCandidate(
           known_limits: audit.known_limits,
         },
         selected_audit_item: auditItem.raw,
+        ...(textResolution ? { text_resolution: textResolution } : {}),
         evidence_refs: {
           capture_artifact: captureArtifact!,
           capture_contract_artifact: auditItem.artifact_refs.capture_contract_artifact
@@ -118,9 +121,9 @@ export function promoteCandidate(
           window_title_substring: window.title ?? undefined,
           window_number: window.windowNumber,
         },
-        anchor_recheck: best.text
+        anchor_recheck: anchorRecheckText
           ? {
-              text: best.text,
+              text: anchorRecheckText,
               expected_min_confidence: 0.3,
               max_pixel_distance: 50,
             }
@@ -139,29 +142,13 @@ export function promoteCandidate(
   return { status: 'promoted', candidate, residual_known_limits: residualKnownLimits }
 }
 
-const ACTIONABLE_KINDS = new Set([
-  'dom_button',
-  'dom_link',
-  'dom_textbox',
-  'dom_searchbox',
-  'dom_combobox',
-  'ax_button',
-  'ax_link',
-  'ax_textfield',
-  'ax_textarea',
-  'ax_combobox',
-  'ax_menu_item',
-  'ax_tab',
+const PROMOTABLE_CLICK_KINDS = new Set([
   'ocr_text',
   'ocr_row',
 ])
 
 function isActionable(item: { kind: string, detail: Record<string, unknown> }): boolean {
-  if (item.kind === 'visual_row')
-    return false
-  if (ACTIONABLE_KINDS.has(item.kind))
-    return true
-  return item.detail?.actionable === true
+  return PROMOTABLE_CLICK_KINDS.has(item.kind)
 }
 
 function pointInsideWindow(
@@ -404,6 +391,29 @@ function residualKnownLimitsFor(
   ])
 }
 
+function textResolutionFor(
+  item: RecognizedItem,
+  auditItem: ParsedAuditItem,
+): {
+  canonical_text: string
+  canonical_source: string
+  ocr_raw_text: string
+  correction_reason: string
+} | null {
+  const canonicalText = stringDetail(item.detail, 'canonical_text') ?? stringDetail(auditItem.raw, 'canonical_text')
+  const canonicalSource = stringDetail(item.detail, 'canonical_source') ?? stringDetail(auditItem.raw, 'canonical_source')
+  const ocrRawText = stringDetail(item.detail, 'ocr_raw_text') ?? stringDetail(auditItem.raw, 'ocr_raw_text')
+  const correctionReason = stringDetail(item.detail, 'correction_reason') ?? stringDetail(auditItem.raw, 'correction_reason')
+  if (!canonicalText || !canonicalSource || !ocrRawText || !correctionReason)
+    return null
+  return {
+    canonical_text: canonicalText,
+    canonical_source: canonicalSource,
+    ocr_raw_text: ocrRawText,
+    correction_reason: correctionReason,
+  }
+}
+
 function hasTrustworthyProjection(
   item: RecognizedItem,
   recognition: RecognitionResult,
@@ -467,6 +477,11 @@ function parseStringArray(value: unknown): string[] | null {
   if (!Array.isArray(value))
     return null
   return value.every(item => typeof item === 'string') ? value : null
+}
+
+function stringDetail(value: Record<string, unknown>, key: string): string | null {
+  const detailValue = value[key]
+  return typeof detailValue === 'string' ? detailValue : null
 }
 
 function sameStringSet(a: string[], b: string[]): boolean {

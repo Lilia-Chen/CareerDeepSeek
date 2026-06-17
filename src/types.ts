@@ -83,7 +83,6 @@ export type VisualAction
   = | {
     type: 'click'
     elementId: string
-    point: VisualPoint
     target: {
       role: string
       text: string
@@ -107,23 +106,6 @@ export type VisualAction
     type: 'stop'
     reason?: string
   }
-
-export interface ActionProgress {
-  changed: boolean
-  reason: string
-}
-
-export interface VisualActionHistoryItem {
-  before: VisualState
-  action: VisualAction
-  after: VisualState
-  progress: ActionProgress
-}
-
-export interface ComputerUseAdapter {
-  observe: () => Promise<unknown> | unknown
-  act: (action: VisualAction) => Promise<unknown> | unknown
-}
 
 export interface PageObservation {
   sessionId: string

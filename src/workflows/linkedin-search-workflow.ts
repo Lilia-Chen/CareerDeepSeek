@@ -78,7 +78,6 @@ export function decideNextLinkedInSearchAction(
       action: {
         type: 'click',
         elementId: searchBox.id,
-        point: searchBox.center,
         target: {
           role: searchBox.role,
           text: searchBox.text,
@@ -251,7 +250,7 @@ function summarizeAction(action: VisualAction): Record<string, unknown> {
   return {
     type: action.type,
     elementId: 'elementId' in action ? action.elementId : undefined,
-    point: 'point' in action ? action.point : undefined,
+    target: 'target' in action ? action.target : undefined,
   }
 }
 

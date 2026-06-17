@@ -32,6 +32,7 @@ struct AXNodeJSON: Encodable {
   let enabled: Bool?
   let focused: Bool?
   let bounds: BoundsJSON?
+  let scroll: AXScrollEvidenceJSON?
   let children: [AXNodeJSON]
 }
 
@@ -40,6 +41,16 @@ struct BoundsJSON: Encodable {
   let y: Int
   let width: Int
   let height: Int
+}
+
+struct AXScrollEvidenceJSON: Encodable {
+  let role: String
+  let orientation: String?
+  let value: Double?
+  let min_value: Double?
+  let max_value: Double?
+  let bounds: BoundsJSON?
+  let known_limits: [String]
 }
 
 struct OutputJSON: Encodable {
@@ -60,6 +71,70 @@ func getBoolAttr(_ element: AXUIElement, _ attr: String) -> Bool? {
   guard AXUIElementCopyAttributeValue(element, attr as CFString, &value) == .success else { return nil }
   if let num = value as? NSNumber { return num.boolValue }
   return nil
+}
+
+func getNumericAttr(_ element: AXUIElement, _ attr: String, _ label: String) -> (Double?, String?) {
+  var value: AnyObject?
+  guard AXUIElementCopyAttributeValue(element, attr as CFString, &value) == .success else {
+    return (nil, "\(label) unavailable")
+  }
+
+  if let num = value as? NSNumber {
+    return (num.doubleValue, nil)
+  }
+
+  if value is String {
+    return (nil, "\(label) is string, not typed numeric")
+  }
+
+  if CFGetTypeID(value) == AXValueGetTypeID() {
+    let axValue = value as! AXValue
+    let axType = AXValueGetType(axValue)
+    return (nil, "\(label) AXValue type \(axType) is not numeric")
+  }
+
+  return (nil, "\(label) is not numeric")
+}
+
+func normalizeOrientation(_ raw: String?) -> String {
+  guard let raw else { return "unknown" }
+  let normalized = raw.lowercased()
+  if normalized.contains("vertical") { return "vertical" }
+  if normalized.contains("horizontal") { return "horizontal" }
+  return "unknown"
+}
+
+func getScrollEvidence(_ element: AXUIElement, _ role: String, _ bounds: BoundsJSON?) -> AXScrollEvidenceJSON? {
+  guard role == "AXScrollBar" || role == "AXScrollArea" || role == "AXWebArea" else { return nil }
+
+  var knownLimits: [String] = []
+  let (numericValue, valueLimit) = getNumericAttr(element, kAXValueAttribute as String, "AXValue")
+  let (minValue, minLimit) = getNumericAttr(element, kAXMinValueAttribute as String, "AXMinValue")
+  let (maxValue, maxLimit) = getNumericAttr(element, kAXMaxValueAttribute as String, "AXMaxValue")
+  if let valueLimit { knownLimits.append(valueLimit) }
+  if let minLimit { knownLimits.append(minLimit) }
+  if let maxLimit { knownLimits.append(maxLimit) }
+
+  let orientationRaw = getStringAttr(element, kAXOrientationAttribute as String)
+  let orientation = normalizeOrientation(orientationRaw)
+  if orientationRaw == nil {
+    knownLimits.append("AXOrientation unavailable")
+  } else if orientation == "unknown" {
+    knownLimits.append("AXOrientation unknown")
+  }
+  if bounds == nil {
+    knownLimits.append("AX scroll bounds unavailable")
+  }
+
+  return AXScrollEvidenceJSON(
+    role: role,
+    orientation: orientation,
+    value: numericValue,
+    min_value: minValue,
+    max_value: maxValue,
+    bounds: bounds,
+    known_limits: knownLimits
+  )
 }
 
 func getBounds(_ element: AXUIElement) -> BoundsJSON? {
@@ -100,14 +175,15 @@ func walkTree(_ element: AXUIElement, depth: Int, maxDepth: Int, nodeCount: inou
     return nil
   }()
   let desc = getStringAttr(element, kAXDescriptionAttribute as String)
+  let bounds = getBounds(element)
+  let scroll = getScrollEvidence(element, role, bounds)
 
-  if !verbose && role.isEmpty && title == nil && desc == nil && valueStr == nil {
+  if !verbose && role.isEmpty && title == nil && desc == nil && valueStr == nil && scroll == nil {
     return nil
   }
 
   let enabled = getBoolAttr(element, kAXEnabledAttribute as String)
   let focused = getBoolAttr(element, kAXFocusedAttribute as String)
-  let bounds = getBounds(element)
 
   var childNodes: [AXNodeJSON] = []
   var childrenRef: AnyObject?
@@ -128,6 +204,7 @@ func walkTree(_ element: AXUIElement, depth: Int, maxDepth: Int, nodeCount: inou
     enabled: enabled,
     focused: focused,
     bounds: bounds,
+    scroll: scroll,
     children: childNodes
   )
 }
@@ -179,6 +256,15 @@ interface RawAXNode {
   enabled?: boolean
   focused?: boolean
   bounds?: { x: number, y: number, width: number, height: number }
+  scroll?: {
+    role: string
+    orientation?: 'vertical' | 'horizontal' | 'unknown'
+    value?: number
+    min_value?: number
+    max_value?: number
+    bounds?: { x: number, y: number, width: number, height: number }
+    known_limits?: string[]
+  }
   children?: RawAXNode[]
 }
 
@@ -203,11 +289,32 @@ function assignUids(raw: RawAXNode, snapshotId: string): AXNode {
       enabled: node.enabled,
       focused: node.focused,
       bounds: node.bounds,
+      scroll: node.scroll
+        ? {
+            role: node.scroll.role,
+            orientation: normalizeAXOrientation(node.scroll.orientation),
+            value: finiteNumberOrUndefined(node.scroll.value),
+            min_value: finiteNumberOrUndefined(node.scroll.min_value),
+            max_value: finiteNumberOrUndefined(node.scroll.max_value),
+            bounds: node.scroll.bounds,
+            known_limits: Array.isArray(node.scroll.known_limits)
+              ? node.scroll.known_limits.filter((limit): limit is string => typeof limit === 'string')
+              : [],
+          }
+        : undefined,
       children: (node.children ?? []).map(walk),
     }
   }
 
   return walk(raw)
+}
+
+function normalizeAXOrientation(value: unknown): 'vertical' | 'horizontal' | 'unknown' {
+  return value === 'vertical' || value === 'horizontal' ? value : 'unknown'
+}
+
+function finiteNumberOrUndefined(value: unknown): number | undefined {
+  return Number.isFinite(value) ? value as number : undefined
 }
 
 export async function captureAXTree(
