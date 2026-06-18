@@ -299,12 +299,14 @@ export type PromotionRefusal
     | 'cross_source_conflict'
     | 'ambiguous_recognition'
 
+export type CandidateGrounding = 'ocr_anchor' | 'visual_row' | 'ax_node' | 'coordinate'
+
 export interface PromotedCandidate {
   candidate_local_id: string
   kind: string
   label?: string
   target_spec: {
-    grounding: 'coordinate'
+    grounding: CandidateGrounding
     box: RecognitionBox
     anchor_text?: string
     region_hint?: RatioRegion

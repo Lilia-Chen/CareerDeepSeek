@@ -1,6 +1,7 @@
 import type {
   CandidatePromotion,
   ArtifactRef,
+  CandidateGrounding,
   ChromeCaptureContract,
   ChromeWindowRef,
   PromotedCandidate,
@@ -90,7 +91,7 @@ export function promoteCandidate(
     candidate_local_id: `${recognition.recognition_id}:${best.item_id}`,
     kind: best.kind,
     label: best.text,
-    target_spec: { grounding: 'coordinate', box: best.box, anchor_text: best.text },
+    target_spec: { grounding: groundingFor(best), box: best.box, anchor_text: best.text },
     evidence: {
       capture_artifact: captureArtifact!,
       recognition_artifact: recognitionArtifact!,
@@ -104,6 +105,7 @@ export function promoteCandidate(
         },
         selected_audit_item: auditItem.raw,
         ...(textResolution ? { text_resolution: textResolution } : {}),
+        grounding: groundingObservationFor(best),
         evidence_refs: {
           capture_artifact: captureArtifact!,
           capture_contract_artifact: auditItem.artifact_refs.capture_contract_artifact
@@ -142,13 +144,68 @@ export function promoteCandidate(
   return { status: 'promoted', candidate, residual_known_limits: residualKnownLimits }
 }
 
-const PROMOTABLE_CLICK_KINDS = new Set([
+const PROMOTABLE_OCR_KINDS = new Set([
   'ocr_text',
   'ocr_row',
 ])
 
+const PROMOTABLE_TEXT_INPUT_KINDS = new Set([
+  'dom_textbox',
+  'dom_searchbox',
+  'dom_combobox',
+  'ax_textfield',
+  'ax_textarea',
+  'ax_combobox',
+])
+
 function isActionable(item: { kind: string, detail: Record<string, unknown> }): boolean {
-  return PROMOTABLE_CLICK_KINDS.has(item.kind)
+  if (item.kind === 'ocr_row')
+    return hasOcrRowEvidence(item)
+  return PROMOTABLE_OCR_KINDS.has(item.kind) || PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind)
+}
+
+function groundingFor(item: RecognizedItem): CandidateGrounding {
+  if (item.kind === 'ocr_text')
+    return 'ocr_anchor'
+  if (item.kind === 'ocr_row')
+    return 'visual_row'
+  if (PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind))
+    return 'ax_node'
+  return 'coordinate'
+}
+
+function groundingObservationFor(item: RecognizedItem): Record<string, unknown> {
+  if (item.kind === 'ocr_text') {
+    return {
+      item_id: item.item_id,
+      source: 'ocr_text',
+      text: item.text,
+      confidence: item.provider_score,
+    }
+  }
+  if (item.kind === 'ocr_row') {
+    return {
+      item_id: item.item_id,
+      source: 'ocr_row',
+      row_index: numberDetail(item.detail, 'row_index'),
+      text: item.text,
+      confidence: item.provider_score,
+    }
+  }
+  if (PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind)) {
+    return {
+      item_id: item.item_id,
+      source: item.kind.startsWith('dom_') ? 'chrome_dom' : 'ax',
+      node_kind: item.kind,
+      name: item.text,
+    }
+  }
+  return { item_id: item.item_id, source: 'coordinate' }
+}
+
+function hasOcrRowEvidence(item: { detail: Record<string, unknown> }): boolean {
+  return numberDetail(item.detail, 'row_index') !== undefined
+    && isRecord(item.detail.row_bounds)
 }
 
 function pointInsideWindow(
@@ -482,6 +539,11 @@ function parseStringArray(value: unknown): string[] | null {
 function stringDetail(value: Record<string, unknown>, key: string): string | null {
   const detailValue = value[key]
   return typeof detailValue === 'string' ? detailValue : null
+}
+
+function numberDetail(value: Record<string, unknown>, key: string): number | undefined {
+  const detailValue = value[key]
+  return typeof detailValue === 'number' && Number.isFinite(detailValue) ? detailValue : undefined
 }
 
 function sameStringSet(a: string[], b: string[]): boolean {

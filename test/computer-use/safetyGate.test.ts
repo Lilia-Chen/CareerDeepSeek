@@ -28,6 +28,10 @@ describe('detectHardStopSignals', () => {
   it('detects captcha', () => {
     assert.ok(detectHardStopSignals('Please complete this security check to continue').includes('captcha'))
   })
+  it('detects real-person human checks', () => {
+    assert.ok(detectHardStopSignals('Quick Check Needed: confirm you are a real person').includes('captcha'))
+    assert.ok(detectHardStopSignals('Check the box below to continue').includes('captcha'))
+  })
   it('detects login_required', () => {
     assert.ok(detectHardStopSignals('You must sign in to continue').includes('login_required'))
   })

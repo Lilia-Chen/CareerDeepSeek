@@ -101,6 +101,7 @@ function makeOcrRowItem(overrides: Partial<RecognizedItem> & { item_id: string }
     kind: 'ocr_row',
     ...overrides,
     detail: {
+      row_index: 0,
       actionable: true,
       row_bounds: {
         capture_pixel: { x: box.x, y: box.y - 40, width: box.width, height: box.height },
@@ -236,18 +237,50 @@ describe('promoteCandidate', () => {
     }
   })
 
-  it('refuses DOM and AX actionable evidence as promoted click candidates', () => {
-    const unsupportedKinds = [
-      'dom_button',
-      'dom_link',
+  it('promotes DOM and AX text input candidates as ax_node grounded candidates', () => {
+    const textInputKinds = [
       'dom_textbox',
       'dom_searchbox',
       'dom_combobox',
-      'ax_button',
-      'ax_link',
       'ax_textfield',
       'ax_textarea',
       'ax_combobox',
+    ]
+
+    for (const kind of textInputKinds) {
+      const best = makeItem({ item_id: kind, kind, text: 'Search' })
+      const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+      const result = promoteCandidate(recognition, capture, window, {
+        profile_verified: true,
+        chrome_foreground: true,
+        hard_stop_signals: [],
+        ttl_ms: 5000,
+        run_id: 'r1',
+        span_id: 's1',
+        capture_artifact: captureArtifact,
+        recognition_artifact: recognitionArtifact,
+      })
+
+      assert.equal(result.status, 'promoted', `${kind} should promote as text-input target`)
+      if (result.status === 'promoted') {
+        assert.equal(result.candidate.kind, kind)
+        assert.equal(result.candidate.target_spec.grounding, 'ax_node')
+        assert.deepEqual(result.candidate.evidence.observation_blob.grounding, {
+          item_id: kind,
+          source: kind.startsWith('dom_') ? 'chrome_dom' : 'ax',
+          node_kind: kind,
+          name: 'Search',
+        })
+      }
+    }
+  })
+
+  it('refuses DOM and AX non-text actionable evidence as promoted click candidates', () => {
+    const unsupportedKinds = [
+      'dom_button',
+      'dom_link',
+      'ax_button',
+      'ax_link',
       'ax_menu_item',
       'ax_tab',
     ]
@@ -292,9 +325,48 @@ describe('promoteCandidate', () => {
       })
 
       assert.equal(result.status, 'promoted')
-      if (result.status === 'promoted')
+      if (result.status === 'promoted') {
         assert.equal(result.candidate.kind, best.kind)
+        assert.equal(
+          result.candidate.target_spec.grounding,
+          best.kind === 'ocr_text' ? 'ocr_anchor' : 'visual_row',
+        )
+      }
     }
+  })
+
+  it('refuses OCR row promotion when row evidence is missing', () => {
+    const best = makeOcrRowItem({
+      item_id: 'ocr-row-without-row-index',
+      detail: {
+        row_bounds: {
+          capture_pixel: { x: 100, y: 160, width: 120, height: 40 },
+          source_global_logical: { x: 100, y: 200, width: 120, height: 40 },
+        },
+        row_index: undefined,
+        source_artifacts: {
+          capture_artifact: captureArtifact,
+          capture_contract_artifact: captureContractArtifact,
+        },
+        known_limits: [],
+      },
+    })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'refused')
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('item_not_actionable'))
   })
 
   it('refuses promotion instead of inventing missing capture or recognition artifact refs', () => {

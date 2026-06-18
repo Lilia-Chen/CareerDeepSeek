@@ -18,6 +18,8 @@ P1 implementation must preserve the separation between:
 
 P1 inherits the P0 scope freeze in `docs/computer-use-auv-scope-freeze.md`.
 
+P1.5.0 does not reopen P1 implementation scope. It records a later internal programmatic invoke layer and primitive-first QA direction, while keeping the P0/P1 artifact roles, promotion rules, liveness recheck, and action evidence boundaries active.
+
 P0 remains the active foundation for:
 
 - Chrome window capture contract.
@@ -29,14 +31,14 @@ P0 remains the active foundation for:
 - `TraceStore` payload rule.
 - Frozen P0 artifact roles: `screenshot`, `capture-contract`, `observation-snapshot`, `recognition-result`, `promoted-candidate`, `action-execution`.
 - Chrome lease/profile/foreground/hard-stop action gate.
-- Agent-facing path through `MacOSChromeDriver` and `MacOSChromeAgentHarness`.
+- Current P1.5 agent-facing path is the internal programmatic invoke API. `MacOSChromeDriver` remains the low-level primitive layer; `MacOSChromeAgentHarness` is no longer the approved workflow or QA entry point.
 
 P1 must not weaken P0:
 
 - Frozen P0 artifact roles remain non metadata-only.
 - Pointer click actions still require a real `promoted-candidate` artifact.
 - A missing promoted-candidate artifact is a hard refusal, not a successful `action-execution` with `candidate_ref:null`.
-- `typeText`, `pressKey`, and `scroll` may keep `candidate_ref:null` because they are not candidate-click actions.
+- `typeText`, `pressKey`, and `scroll` may keep `action-execution.candidate_ref:null` only as the candidate artifact field because they are not candidate-click artifact consumers. This does not allow action without target/focus provenance: under P1.5 invoke, keyboard input must follow audited promoted target focus/selection in the same command sequence, and scroll must consume a promoted scroll target / region.
 - New fields, new artifact roles, new public exports, new public APIs, and action gate changes require this P1 scope document, or a later scope update, to explicitly authorize them first.
 
 ## P1 Goal and Hard Boundaries
@@ -46,11 +48,12 @@ P1 goal: on top of the P0 Chrome window driver foundation, complete the first pr
 Hard boundaries:
 
 - Only Chrome window driver work is in scope. Full AUV desktop driver work is out of scope.
-- Only `MacOSChromeDriver` and `MacOSChromeAgentHarness` are in scope.
+- For P1.5, only the programmatic invoke API and the low-level `MacOSChromeDriver` primitive layer are approved action surfaces. `MacOSChromeAgentHarness` may remain as a direct-subpath adapter test target, not as a workflow or QA entry point.
 - DOM and AX are read-only evidence sources. They may support observation, audit, role/name/bounds/actionability evidence, and liveness checks. They must not become an action path.
 - Actions are allowed only against the foreground visible Chrome window under the managed Chrome context.
 - Click must go through `PromotedCandidate`. Raw coordinate action paths are forbidden.
 - Scroll must not accept an external `screenPoint`; the driver derives any screen coordinate from the leased Chrome window and an internal/default window-local anchor.
+- P1.5 invoke scroll tightens this by requiring explicit promoted scroll target / region provenance. It must not depend on implicit current mouse position.
 - P1 must not add a public command catalog.
 - P1 must not restore legacy observation, recognition, candidate-promotion, click, `open_url`, Playwright, CDP, page-executed action, or raw browser automation paths.
 - P1 must not change the P0 action gate unless this document is updated to authorize the specific change.
@@ -104,6 +107,7 @@ Goal:
 - Leave action-time liveness, re-observation, and re-match as required inputs for later promotion/action slices. P1-1 defines the evidence those later gates must consume; it does not implement click or action behavior.
 - Delete the current TypeScript PNG reader old code and remove driver dependency on screenshot PNG decoding for visual-row production before P1-1 can be re-accepted. It must not be isolated as a live runtime dependency.
 - If any `visual_row` type or concept remains for future P2/R&D discussion, it must not exist in the P1-1 runtime path and must not count as P1-1 completion evidence.
+- P1.5.9 clarification: the P1-1 `visual_row` prohibition above refers to AUV visual-bands parity, generic retained visual rows, image-pixel row segmentation, and visual-row runtime production. It does not prohibit the P1.5.9 promoted-candidate grounding enum from naming an existing OCR-derived capture-local row/block click grounding `visual_row`. That grounding is only valid when backed by current OCR row evidence such as row bounds and row index inside the same visible capture.
 
 Allowed files:
 
@@ -324,6 +328,7 @@ Acceptance criteria:
 - Promotion must refuse when capture or recognition artifact refs are missing.
 - Promotion must refuse when capture-contract/projection evidence needed to trust coordinates is missing, or when the selected box is invalid, non-finite, non-positive, or outside the current leased Chrome window.
 - Promotion must refuse non-actionable kinds. `visual_row` is not an actionable promotion kind.
+- P1.5.9 clarification: this line refers to generic `visual_row` recognized items and retained visual/list rows. It does not bar `ocr_row` promotion from producing `target_spec.grounding = "visual_row"` when the candidate is OCR-derived capture-local row/block evidence. That grounding must not be treated as stable identity across scroll or later observations.
 - Promotion must refuse stale capture, profile mismatch, Chrome not foreground, and hard-stop signals.
 - Promotion must not refuse solely because audit is `unknown` from no comparable source evidence, capture visibility is reference-only, OCR row grouping is heuristic/capture-local, or provider degradation `known_limits` exist without a conflict/refusal condition.
 
@@ -386,8 +391,10 @@ Acceptance criteria:
 - Click consumes a `PromotedCandidate` artifact produced by the driver session.
 - `row_index` is never treated as stable identity across scroll or later observations.
 - Row/block click candidates must come from OCR-derived capture-local row/block evidence, not `visual_row`, DOM list rows, generic list semantics, or retained UI node identity.
+- P1.5.9 clarification: in the promoted candidate contract, `visual_row` is the grounding label for the OCR-derived row/block evidence described in the previous line. It is not a DOM row, generic list row, AUV visual-band row, or retained row identity.
 - Refusal paths are tested for at least forged/missing candidate artifact, missing current match, ambiguous current match, window mismatch, projection failure, and stale candidate distance beyond the configured liveness threshold.
 - `action-execution` payload records the original candidate ref, fresh observation/recognition evidence refs when available, matched item identity/kind/box, liveness recheck status, refusal reason when refused, and known limits.
+- P1.5.9 adds `action-execution.grounding` so visual trace and QA can verify whether an action consumed `ocr_anchor`, OCR-derived `visual_row`, or `ax_node` focus grounding. This does not create a new artifact role or a generic DOM/AX action path.
 - P1-5 does not introduce any new artifact role.
 - Action evidence remains separate from recognition and candidate evidence.
 
@@ -413,6 +420,10 @@ Goal:
 - Allow only `scroll_effect: changed | no_visible_change | unknown`.
 - Keep single-step scroll effect separate from full `scroll_scan`.
 
+P1.5 status: superseded by promoted-candidate `chrome.scroll`. Targetless
+harness scroll-effect behavior is no longer an approved P1.5 action surface.
+Future scroll-boundary/effect work must return as a new invoke-level contract.
+
 Allowed files:
 
 - `src/computer-use/macos-chrome-driver/agent-harness.ts`
@@ -434,8 +445,8 @@ Acceptance criteria:
 - `changed` means only that the current visible surface changed between the before and after evidence.
 - `no_visible_change` means only that current evidence did not observe visible change.
 - `unknown` is used when evidence is insufficient, failed, unstable, or not comparable.
-- If `driver.scroll()` succeeds but the immediate after-observation fails, the harness may return a scroll result without comparable `after` evidence, must set `scroll_effect: unknown`, and must preserve a bounded failure reason such as `scroll_effect_reason: after_observe_failed` or a sanitized `after_observe_error`.
-- If `driver.scroll()` fails or refuses, the harness must propagate the failure rather than convert it to `unknown`.
+- P1.5 `chrome.scroll` must consume a same-sequence promoted candidate. The low-level `driver.scroll(candidate, ...)` derives coordinates from the candidate after liveness recheck; targetless scroll and harness scroll-effect wrappers are no longer approved P1.5 behavior.
+- Scroll boundary/effect inference remains a P2 concern unless it is reintroduced through an explicit invoke contract.
 - Visible-surface fingerprint comparison must be stable against provider node ordering; reordering the same comparable visible nodes must not be reported as `changed`.
 - Scroll action still uses the foreground visible Chrome window and must not accept an external `screenPoint`.
 
@@ -500,6 +511,7 @@ Explicit forbidden items:
 - Raw coordinate action paths are forbidden.
 - DOM/AX are read-only evidence sources. They must not become action paths.
 - Text/OCR-row-block click must re-observe and re-match before action.
+- P1.5 invoke does not replace that driver liveness recheck with caller pre-action observation. Caller post-action observation remains explicit.
 - `row_index` is valid only within the current capture/visible observation and cannot be treated as stable identity across scroll.
 
 ## Single-step Scroll Effect Semantics
@@ -612,6 +624,7 @@ The second list is the P1-0 task boundary. Later P1 implementation slices may to
 - Keep scroll inside the Chrome window driver and reject external `screenPoint`.
 - Preserve `known_limits` across recognition, audit, promotion, liveness, and action evidence.
 - Stop and update this scope document before implementing if a required design decision is not covered here.
+- P1.5 implementation must also return to scope authorization before adding any new artifact role, `action-execution` schema field beyond the authorized `grounding` field, action result shape, public export, registered tool, CLI, MCP/server entry, browser recovery primitive, or structural overlay detector/dismissal primitive.
 
 ## Acceptance Criteria
 

@@ -3,22 +3,13 @@ export {
 } from './driver.js'
 
 export {
-  MacOSChromeAgentHarness,
-} from './agent-harness.js'
+  createMacOSChromeInvokeEntry,
+} from './invoke-entry.js'
 
 export type {
   MacOSChromeDriverOptions,
   MacOSChromeScrollOptions,
 } from './driver.js'
-
-export type {
-  AgentActionResult,
-  AgentHarnessActionOptions,
-  AgentHarnessScrollOptions,
-  AgentPageObservation,
-  MacOSChromeAgentDriver,
-  OverlayDismissResult,
-} from './agent-harness.js'
 
 export type {
   NormalizeInput,
@@ -27,6 +18,18 @@ export type {
 export type {
   PromotionOptions,
 } from './candidate-promotion.js'
+
+export type {
+  MacOSChromeInvokeEntry,
+  MacOSChromeInvokeEntryOptions,
+} from './invoke-entry.js'
+
+export type {
+  ComputerUseFailureClass,
+  ComputerUseInvokeRequest,
+  ComputerUseInvokeResult,
+  ComputerUseInvokeStatus,
+} from './invoke-types.js'
 
 export type {
   ArtifactRecord,

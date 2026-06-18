@@ -1,10 +1,14 @@
 # P2 Scroll Boundary Evidence
 
-Status: current design contract for the Chrome window driver and agent harness.
+Status: P2 historical/reference design. It is not the current P1.5 action contract.
 
-Scope: CareerDeepSeek Chrome window observation and single-step scroll evidence.
+Scope: possible future CareerDeepSeek Chrome window observation and single-step scroll evidence.
 This document does not define a full scroll-scan controller, pagination workflow,
 or research-completeness policy.
+
+P1.5 supersedes the old harness scroll behavior: `chrome.scroll` must consume a
+same-sequence promoted candidate, and targetless `MacOSChromeAgentHarness`
+scroll helpers are not approved P1.5 behavior.
 
 ## Design Decision
 
@@ -145,8 +149,8 @@ The default is not AX-derived and must not include `ax_tree`,
 
 ## Single-step Scroll Evidence
 
-The harness observes before a scroll, performs one OS-level scroll, then observes
-after the scroll.
+A future invoke-level scroll-boundary primitive would observe before a scroll,
+perform one promoted-target scroll, then observe after the scroll.
 
 Comparable evidence is OCR-only:
 

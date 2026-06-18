@@ -1,50 +1,39 @@
 /**
  * CareerDeepSeek Computer-Use module.
  *
- * Provides macOS Chrome observation, target recognition, and visible input
- * control for bounded browser research automation. The driver uses OS-level
- * capture and input APIs; browser-internal scripts are read-only observers.
- *
- * Primary low-level entry point: MacOSChromeDriver
- * Primary agent-facing entry point: MacOSChromeAgentHarness
+ * Provides the P1.5 internal programmatic invoke entry for bounded macOS
+ * Chrome computer-use automation. The low-level driver remains in the
+ * macOS Chrome submodule; top-level callers use the AUV-style invoke entry.
  *
  * ```ts
- * import { MacOSChromeAgentHarness, MacOSChromeDriver } from './computer-use/index.js'
+ * import { createMacOSChromeInvokeEntry } from './computer-use/index.js'
  *
- * const driver = new MacOSChromeDriver({
- *   sessionId: 'discovery-2026-06-06',
- *   foregroundPolicy: 'auto_focus_chrome',
- * })
- *
- * const browser = new MacOSChromeAgentHarness(driver)
- * await browser.clickObservedButton(/Hide sponsored result/i, {
- *   reason: 'Collapse sponsored results before judging organic sources.',
- * })
+ * const chrome = createMacOSChromeInvokeEntry({ driverOptions })
+ * const snapshot = await chrome.invoke({ commandId: 'chrome.observe' })
  * ```
  */
 
 export {
-  MacOSChromeAgentHarness,
-  MacOSChromeDriver,
+  createMacOSChromeInvokeEntry,
 } from './macos-chrome-driver/index.js'
 
 export type {
-  AgentActionResult,
-  AgentHarnessActionOptions,
-  AgentHarnessScrollOptions,
-  AgentPageObservation,
   ChromeCaptureContract,
   ChromeContextSnapshot,
   ChromeForegroundPolicy,
   ChromeRecognitionTarget,
   ChromeWindowCapture,
   ChromeWindowRef,
-  MacOSChromeAgentDriver,
   MacOSChromeDriverOptions,
   MacOSChromeScrollOptions,
   OcrTextMatch,
-  OverlayDismissResult,
   OcrTextSnapshot,
+  MacOSChromeInvokeEntry,
+  MacOSChromeInvokeEntryOptions,
+  ComputerUseFailureClass,
+  ComputerUseInvokeRequest,
+  ComputerUseInvokeResult,
+  ComputerUseInvokeStatus,
 } from './macos-chrome-driver/index.js'
 
 // New module type exports

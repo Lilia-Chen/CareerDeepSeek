@@ -9,9 +9,6 @@ import type {
   SurfaceNode,
 } from './types.js'
 
-import { detectBlockingStopSignal, planOverlayDismissal } from '../overlay-resolver.js'
-import { cloneObservationWithScrollEffectBoundary } from './scroll-boundary.js'
-
 export interface MacOSChromeAgentDriver {
   readonly lastCapture?: ChromeWindowCapture
   observe: () => Promise<ObservationSnapshot>
@@ -24,23 +21,14 @@ export interface MacOSChromeAgentDriver {
     capture: ChromeWindowCapture,
   ) => Promise<CandidatePromotion>
   click: (candidate: PromotedCandidate) => Promise<void>
+  focusTextInput: (candidate: PromotedCandidate) => Promise<void>
   typeText: (text: string) => Promise<void>
   pressKey: (key: string, modifiers?: string[]) => Promise<void>
-  scroll: (
-    deltaY?: number,
-    deltaX?: number,
-    options?: { windowLocalPoint?: { x: number, y: number }, settleMs?: number },
-  ) => Promise<void>
 }
 
 export interface AgentHarnessActionOptions {
   reason: string
   settleMs?: number
-}
-
-export interface AgentHarnessScrollOptions extends AgentHarnessActionOptions {
-  amount?: number
-  windowLocalPoint?: { x: number, y: number }
 }
 
 export interface AgentPageObservation {
@@ -52,8 +40,6 @@ export interface AgentPageObservation {
   visualState: VisualState
 }
 
-type ScrollEffect = 'changed' | 'no_visible_change' | 'unknown'
-
 interface AgentNonScrollActionResult {
   action: 'click' | 'type' | 'press'
   reason: string
@@ -61,34 +47,7 @@ interface AgentNonScrollActionResult {
   after: ObservationSnapshot
 }
 
-interface AgentScrollActionResult {
-  action: 'scroll'
-  reason: string
-  before: ObservationSnapshot
-  after: ObservationSnapshot | null
-  scroll_effect: ScrollEffect
-  scroll_effect_reason?: 'after_observe_failed'
-  after_observe_error?: string
-}
-
-export type AgentActionResult = AgentNonScrollActionResult | AgentScrollActionResult
-
-export type OverlayDismissResult
-  = | {
-    dismissed: true
-    kind: 'cookie_consent' | 'marketing_modal'
-    reason: string
-    before: ObservationSnapshot
-    after: ObservationSnapshot
-  }
-  | {
-    dismissed: false
-    reason: string
-    stopSignal?: string
-    before: ObservationSnapshot
-  }
-
-const DEFAULT_SCROLL_AMOUNT = 700
+export type AgentActionResult = AgentNonScrollActionResult
 
 export class MacOSChromeAgentHarness {
   readonly #driver: MacOSChromeAgentDriver
@@ -141,12 +100,18 @@ export class MacOSChromeAgentHarness {
     options: AgentHarnessActionOptions,
   ): Promise<AgentActionResult> {
     const before = await this.observePage()
-    const candidate = await this.#promoteOrThrow(
-      before,
-      { kind: 'ocr_text', text: name },
-    )
+    let candidate: PromotedCandidate
+    try {
+      candidate = await this.#promoteOrThrow(
+        before,
+        { kind: 'text_input', name },
+      )
+    }
+    catch (error) {
+      throw new Error(`text_input recognition failed before typing: ${errorMessage(error)}`)
+    }
 
-    await this.#driver.click(candidate)
+    await this.#driver.focusTextInput(candidate)
     await this.#driver.typeText(text)
     const after = await this.observePage()
 
@@ -159,73 +124,16 @@ export class MacOSChromeAgentHarness {
   }
 
   async pressEnter(options: AgentHarnessActionOptions): Promise<AgentActionResult> {
-    const before = await this.observePage()
-    await this.#driver.pressKey('enter')
-    const after = await this.observePage()
-
-    return {
-      action: 'press',
-      reason: options.reason,
-      before: before.snapshot,
-      after: after.snapshot,
-    }
+    void options
+    throw new Error('pressEnter requires explicit focusTextInput provenance in the current command sequence.')
   }
 
-  async scrollDown(options: AgentHarnessScrollOptions): Promise<Extract<AgentActionResult, { action: 'scroll' }>> {
-    return this.#scrollSemantic('down', options)
-  }
-
-  async scrollUp(options: AgentHarnessScrollOptions): Promise<Extract<AgentActionResult, { action: 'scroll' }>> {
-    return this.#scrollSemantic('up', options)
-  }
-
-  async goBack(options: AgentHarnessActionOptions): Promise<AgentActionResult> {
-    return this.clickObservedButton(/^Back$/i, options)
-  }
-
-  async dismissKnownOverlay(): Promise<OverlayDismissResult> {
-    const before = await this.observePage()
-    const stopSignal = detectBlockingStopSignal(before.visualState)
-    if (stopSignal) {
-      return {
-        dismissed: false,
-        reason: `Hard stop signal detected: ${stopSignal}.`,
-        stopSignal,
-        before: before.snapshot,
-      }
-    }
-
-    const decision = planOverlayDismissal(before.visualState)
-    if (!decision) {
-      return {
-        dismissed: false,
-        reason: 'No known dismissible overlay was detected.',
-        before: before.snapshot,
-      }
-    }
-
-    const text = decision.action.target.text?.trim()
-    if (!text) {
-      return {
-        dismissed: false,
-        reason: 'Overlay dismissal target has no stable text label.',
-        before: before.snapshot,
-      }
-    }
-
-    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: exactTextPattern(text) }
-    const candidate = await this.#promoteOrThrow(before, target)
-
-    await this.#driver.click(candidate)
-    const after = await this.observePage()
-
-    return {
-      dismissed: true,
-      kind: decision.kind,
-      reason: decision.reason,
-      before: before.snapshot,
-      after: after.snapshot,
-    }
+  /**
+   * @deprecated P1.5 does not model browser recovery/back/close. Browser
+   * recovery requires a P2 transition contract before it can act safely.
+   */
+  async goBack(_options: AgentHarnessActionOptions): Promise<AgentActionResult> {
+    throw new Error('browser recovery/back/close requires P2 transition contract')
   }
 
   async #clickObservedTarget(
@@ -259,136 +167,6 @@ export class MacOSChromeAgentHarness {
 
     return promotion.candidate
   }
-
-  async #scrollSemantic(
-    direction: 'down' | 'up',
-    options: AgentHarnessScrollOptions,
-  ): Promise<Extract<AgentActionResult, { action: 'scroll' }>> {
-    const before = await this.observePage()
-    const amount = Math.abs(options.amount ?? DEFAULT_SCROLL_AMOUNT)
-    const deltaY = direction === 'down' ? -amount : amount
-
-    await this.#driver.scroll(deltaY, 0, {
-      settleMs: options.settleMs,
-      windowLocalPoint: options.windowLocalPoint,
-    })
-    let after: AgentPageObservation
-    try {
-      after = await this.observePage()
-    }
-    catch (error) {
-      return {
-        action: 'scroll',
-        reason: options.reason,
-        before: before.snapshot,
-        after: null,
-        scroll_effect: 'unknown',
-        scroll_effect_reason: 'after_observe_failed',
-        after_observe_error: sanitizeErrorMessage(error),
-      }
-    }
-
-    const scrollEffect = inferScrollEffect(before, after)
-    const afterSnapshot = cloneObservationWithScrollEffectBoundary({
-      snapshot: after.snapshot,
-      direction,
-      effect: scrollEffect,
-      reason: options.reason,
-      generatedAtMillis: Date.now(),
-    })
-
-    return {
-      action: 'scroll',
-      reason: options.reason,
-      before: before.snapshot,
-      after: afterSnapshot,
-      scroll_effect: scrollEffect,
-    }
-  }
-}
-
-function inferScrollEffect(
-  before: AgentPageObservation,
-  after: AgentPageObservation,
-): ScrollEffect {
-  if (!sameComparableWindow(before.snapshot, after.snapshot))
-    return 'unknown'
-
-  const beforeFingerprint = visibleSurfaceFingerprint(before.snapshot)
-  const afterFingerprint = visibleSurfaceFingerprint(after.snapshot)
-  if (!beforeFingerprint || !afterFingerprint)
-    return 'unknown'
-
-  return beforeFingerprint === afterFingerprint ? 'no_visible_change' : 'changed'
-}
-
-function sameComparableWindow(before: ObservationSnapshot, after: ObservationSnapshot): boolean {
-  return before.scope.surface === 'window'
-    && after.scope.surface === 'window'
-    && typeof before.scope.window_number === 'number'
-    && before.scope.window_number === after.scope.window_number
-    && before.scope.app_bundle_id === after.scope.app_bundle_id
-}
-
-function visibleSurfaceFingerprint(snapshot: ObservationSnapshot): string | null {
-  const items = snapshot.nodes
-    .map(visibleNodeFingerprint)
-    .filter((item): item is string => item !== null)
-    .sort()
-
-  if (items.length === 0)
-    return null
-
-  return items.join('\n')
-}
-
-function visibleNodeFingerprint(node: SurfaceNode): string | null {
-  if (node.kind !== 'ocr_text' && node.kind !== 'ocr_row')
-    return null
-  if (hasUncertainVisibility(node))
-    return null
-
-  const label = node.label?.replace(/\s+/g, ' ').trim()
-  if (!label)
-    return null
-  if (node.box.width <= 0 || node.box.height <= 0)
-    return null
-
-  return [
-    node.kind,
-    label,
-    Math.round(node.box.x),
-    Math.round(node.box.y),
-    Math.round(node.box.width),
-    Math.round(node.box.height),
-  ].join('|')
-}
-
-function hasUncertainVisibility(node: SurfaceNode): boolean {
-  const knownLimits = node.detail.known_limits
-  if (!Array.isArray(knownLimits))
-    return false
-
-  return knownLimits.some((limit) => {
-    if (typeof limit !== 'string')
-      return false
-    const normalized = limit.toLowerCase()
-    return normalized.includes('hidden')
-      || normalized.includes('offscreen')
-      || normalized.includes('covered')
-      || normalized.includes('visibility')
-      || normalized.includes('outside viewport')
-      || normalized.includes('does not intersect')
-      || normalized.includes('actionability unavailable')
-      || normalized.includes('actionability is not clean')
-      || normalized.includes('enabled unavailable')
-  })
-}
-
-function sanitizeErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
-  const sanitized = message.replace(/\s+/g, ' ').trim()
-  return sanitized.length > 0 ? sanitized.slice(0, 200) : 'unknown error'
 }
 
 function toVisualState(
@@ -489,12 +267,8 @@ function readSignals(snapshot: ObservationSnapshot): string[] {
     : []
 }
 
-function exactTextPattern(text: string): RegExp {
-  return new RegExp(`^${escapeRegExp(text)}$`, 'i')
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

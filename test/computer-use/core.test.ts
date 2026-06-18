@@ -1,6 +1,6 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 
 import { buildPointerTrace } from '../../src/computer-use/pointer-trace.js'
 import { resolveComputerUseConfig } from '../../src/computer-use/config.js'
@@ -309,9 +309,26 @@ describe('macOS scroll foreground HID fallback', () => {
 })
 
 describe('opencode browser-use skill', () => {
-  it('documents the computer-use workflow boundary and LinkedIn page workflow', async () => {
+  it('does not ship fixed executable browser workflows under src/workflows', async () => {
+    const workflowDir = new URL('../../src/workflows/', import.meta.url)
+    const files = (await readdir(workflowDir)).filter(file => file.endsWith('.ts'))
+
+    for (const file of files) {
+      const source = await readFile(new URL(file, workflowDir), 'utf8')
+      assert.doesNotMatch(source, /^#!/, `${file} must not be an executable workflow`)
+      assert.doesNotMatch(source, /MacOSChromeAgentHarness|MacOSChromeDriver/, `${file} must not directly drive Chrome`)
+      assert.doesNotMatch(source, /runLinkedInSearchExperiment|decideNextLinkedInSearchAction/, `${file} must not encode a fixed LinkedIn workflow`)
+    }
+  })
+
+  it('documents the P1.5 invoke workflow boundary without fixed page workflows', async () => {
     const source = await readFile(new URL('../../.opencode/skills/browser-use-policy/SKILL.md', import.meta.url), 'utf8')
 
+    assert.match(
+      source,
+      /programmatic invoke/i,
+      'skill must make P1.5 invoke the approved primitive entry point',
+    )
     assert.match(
       source,
       /Desktop foreground state/,
@@ -329,18 +346,18 @@ describe('opencode browser-use skill', () => {
     )
     assert.match(
       source,
-      /LinkedIn feed/,
-      'skill must tell agents how to continue from an already-open LinkedIn feed',
+      /observe -> recognize -> promote -> action -> observe/,
+      'skill must preserve the primitive invoke action chain',
     )
     assert.match(
       source,
-      /observe -> decide -> act -> observe/,
-      'skill must preserve the observation/action loop',
+      /hard-stop \/ safety signals only/i,
+      'skill must keep overlay handling at hard-stop signal level in P1.5',
     )
-    assert.match(
+    assert.doesNotMatch(
       source,
-      /cookie consent/i,
-      'skill must include overlay handling',
+      /LinkedIn search workflow:/,
+      'skill must not encode a fixed LinkedIn workflow',
     )
     assert.match(
       source,
@@ -359,7 +376,7 @@ describe('opencode browser-use skill', () => {
     )
   })
 
-  it('documents duplicate-label disambiguation and browser-history recovery', async () => {
+  it('documents duplicate-label disambiguation and recovery boundaries', async () => {
     const source = await readFile(new URL('../../.opencode/skills/browser-use-policy/SKILL.md', import.meta.url), 'utf8')
 
     assert.match(
@@ -369,13 +386,8 @@ describe('opencode browser-use skill', () => {
     )
     assert.match(
       source,
-      /\/company\/\{slug\}\/jobs\//,
-      'skill must distinguish company-local Jobs links from global LinkedIn Jobs navigation',
-    )
-    assert.match(
-      source,
       /Back\/Forward recovery/,
-      'skill must instruct agents to recover wrong navigation with observed browser Back/Forward controls',
+      'skill must document the browser recovery boundary',
     )
     assert.match(
       source,
@@ -384,14 +396,10 @@ describe('opencode browser-use skill', () => {
     )
     assert.match(
       source,
-      /If browser history does not reach the intended workflow page/,
-      'skill must handle SPA history gaps through observed page controls rather than address-bar URL re-entry',
+      /Without a recovery primitive, continue only through observed page controls/,
+      'P1.5 must avoid unmodeled browser history recovery and continue only through observed page controls',
     )
-    assert.match(
-      source,
-      /observed exact recent query/,
-      'LinkedIn workflow should allow selecting an observed exact recent search query from the page search UI',
-    )
+    assert.doesNotMatch(source, /observed exact recent query/)
   })
 })
 

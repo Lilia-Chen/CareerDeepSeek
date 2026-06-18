@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const HARD_STOP_PATTERNS: Array<[string, RegExp]> = [
-  ['captcha', /\b(?:captcha|verify you are human|human verification|complete (?:this )?security check)\b/i],
+  ['captcha', /\b(?:captcha|verify you are human|human verification|complete (?:this )?security check|quick check needed|confirm (?:you(?:'re| are)(?: a)? )?real person|check the box below)\b/i],
   ['login_required', /\b(?:please )?(?:sign in|log in|login|create an account|create account|register).{0,40}(?:to continue|before continuing|required)|\bto continue.{0,40}(?:sign in|log in|login|required)\b/i],
   ['payment_required', /\b(?:enter|provide|add).{0,24}(?:payment details|billing details|credit card|card details)|\b(?:pay now|checkout to continue|purchase required)\b/i],
   ['checkout', /\b(?:checkout|complete purchase|place order|confirm and pay)\b/i],

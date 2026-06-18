@@ -4,6 +4,8 @@ Status: P0A/P0B freeze candidate for final P0 review.
 
 CareerDeepSeek's P0 target is a Chrome window driver. It is not a full AUV desktop driver, not a public command catalog, and not a general desktop automation product.
 
+P1.5.0 scope reset does not invalidate the P0/P1 frozen contracts. It adds a planned internal programmatic invoke layer after owner review; that layer is not public command catalog parity and does not authorize runtime implementation by this P0 document.
+
 ## Source Baseline
 
 Reviewed AUV sources:
@@ -42,7 +44,7 @@ Reviewed CareerDeepSeek sources:
 - `ArtifactRef`.
 - `TraceStore` payload rule.
 - Chrome lease/profile/foreground/hard-stop action gate.
-- Agent-facing Chrome workflow path through `MacOSChromeDriver` and `MacOSChromeAgentHarness`.
+- Current P1.5 agent-facing Chrome primitive path through the internal programmatic invoke API. `MacOSChromeDriver` remains the low-level primitive layer; `MacOSChromeAgentHarness` is not an approved workflow entry point.
 
 ### Out of Scope for P0
 
@@ -130,7 +132,8 @@ Each slice below is the only authorized P0B input. A slice must not expand its o
 - CareerDeepSeek target file: `src/computer-use/macos-chrome-driver/candidate-promotion.ts`, `src/computer-use/macos-chrome-driver/types.ts`, `src/computer-use/macos-chrome-driver/driver.ts`.
 - Test entry: `test/computer-use/macosChromeDriver.test.ts`, `test/computer-use/safetyGate.test.ts`, `test/computer-use/candidatePromotion.test.ts`.
 - Depends on contract: `PromotedCandidate`, `CandidatePromotion`, `PromotionRefusal`, `ArtifactRef`, Chrome lease/foreground/hard-stop state.
-- Boundary: promotion produces a short-lived coordinate-grounded candidate for the active Chrome window and writes a `promoted-candidate` artifact. Pointer click actions must consume that traced artifact. They must not accept an externally forged `PromotedCandidate` as sufficient action evidence. Promotion does not introduce generic retained UI nodes, AX press candidates, or legacy candidate consumers.
+- Boundary: promotion produces a short-lived grounded candidate for the active Chrome window and writes a `promoted-candidate` artifact. Pointer click actions must consume that traced artifact. They must not accept an externally forged `PromotedCandidate` as sufficient action evidence. Promotion does not introduce generic retained UI nodes, AX press candidates, or legacy candidate consumers.
+- P1.5.9 update: the internal Chrome driver `PromotedCandidate.target_spec.grounding` uses the AUV-style grounding enum values `ocr_anchor | visual_row | ax_node | coordinate`. This is not a generic DOM/AX action surface. `ocr_anchor` and OCR-derived `visual_row` are click candidate groundings; `ax_node` is only consumable by the internal `focusTextInput` primitive for text-input focus provenance before keyboard input. `chrome.clickCandidate` / `driver.click()` must refuse `ax_node`.
 
 ### Slice 6: Chrome Action Gate
 
@@ -147,7 +150,7 @@ Each slice below is the only authorized P0B input. A slice must not expand its o
 - CareerDeepSeek target file: `src/computer-use/macos-chrome-driver/agent-harness.ts`, `src/computer-use/macos-chrome-driver/index.ts`.
 - Test entry: `test/computer-use/macosChromeAgentHarness.test.ts`.
 - Depends on contract: `observe -> recognize -> promote -> act -> observe`, `ObservationSnapshot`, `RecognitionResult`, `PromotedCandidate`.
-- Boundary: harness owns repetitive glue only. It must not decide research strategy, source value, page budgets, or stop criteria.
+- Boundary: harness owns repetitive glue only. It must not decide research strategy, source value, page budgets, or stop criteria. This is a P0/P1 transition contract; after P1.5 programmatic invoke is implemented and policy is updated, new primitive QA should center on invoke rather than harness helpers.
 
 ## Frozen Artifact Roles
 
@@ -182,7 +185,8 @@ Minimum `action-execution` JSON payload:
 - `action_type`: action kind such as `click`, `type`, `press`, or `scroll`.
 - `run_id`: source run id.
 - `span_id`: source span id.
-- `candidate_ref`: `ArtifactRef` for the consumed `promoted-candidate` artifact when `action_type` is `click` or another pointer-candidate action. It may be `null` only for non candidate-click actions such as `type`, `press`, or `scroll`.
+- `grounding`: optional P1.5.9 action-consumption grounding, such as `ocr_anchor`, `visual_row`, or `ax_node`, when the action consumed a promoted candidate or focus target.
+- `candidate_ref`: `ArtifactRef` for the consumed `promoted-candidate` artifact when `action_type` is `click` or another pointer-candidate action. It may be `null` only as the `action-execution` candidate artifact field for non candidate-click actions such as `type`, `press`, or `scroll`; this is not permission to act without target, focus, or scroll-region provenance.
 - `precondition_result`: object recording Chrome lease/profile/foreground/hard-stop checks.
 - `executed`: boolean.
 - `refused`: boolean.
@@ -211,7 +215,7 @@ For P0 traces:
 - `application/json` artifacts must contain valid JSON.
 - Pointer click actions must consume a real `promoted-candidate` artifact. The `promoted-candidate` role is not metadata-only, and a missing promoted-candidate artifact ref is a hard refusal rather than a successful `action-execution` with `candidate_ref:null`.
 - On that refusal, `action-execution` must still be written with `executed:false`, `refused:true`, `candidate_ref:null`, and a refusal reason such as `missing_promoted_candidate_artifact`.
-- `typeText`, `pressKey`, and `scroll` actions may write `action-execution.candidate_ref:null` because they are not candidate-click actions.
+- `typeText`, `pressKey`, and `scroll` actions may write `action-execution.candidate_ref:null` only because they are not candidate-click artifact consumers. Under P1.5 invoke, `typeText` and `pressKey` still require audited promoted target focus/selection in the same command sequence, and `scroll` requires a promoted scroll target / region.
 - The `capture-contract` JSON payload must include:
   - `coordinateContractVersion`
   - `captureSource.kind = "window"`
@@ -227,5 +231,6 @@ For P0 traces:
 - Workflow agents must not recreate legacy observation, recognition, candidate-promotion, click, or `open_url` paths.
 - Workflow agents must not expand a capability slice's contract locally.
 - Workflow agents must treat this P0A scope freeze and the P0B contract as the source of truth for browser-use workflow boundaries.
-- Workflow agents may use `MacOSChromeAgentHarness` for registered semantic helpers. They remain responsible for research strategy and evidence judgment.
+- Workflow agents must use the P1.5 programmatic invoke entry for Chrome primitives. They remain responsible for research strategy and evidence judgment.
+- Harness semantic helpers, fixed executable browser workflows, targetless scroll, and dismissible overlay dismissal helpers are not approved P1.5 workflow entry points.
 - Any request for public catalog parity, full desktop driver behavior, domain/media/overlay behavior, or OCR/AX/scroll productization is a new scope decision, not a P0 implementation detail.

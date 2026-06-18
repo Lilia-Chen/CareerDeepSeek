@@ -221,9 +221,10 @@ describe('macOS Chrome driver', () => {
     assert.equal('clickLegacy' in MacOSChromeDriver.prototype, false)
   })
 
-  it('keeps the macOS Chrome driver barrel limited to driver and harness runtime values', () => {
+  it('keeps the macOS Chrome driver barrel focused on driver plus P1.5 invoke entry', () => {
     assert.equal('MacOSChromeDriver' in driverModule, true)
-    assert.equal('MacOSChromeAgentHarness' in driverModule, true)
+    assert.equal('createMacOSChromeInvokeEntry' in driverModule, true)
+    assert.equal('MacOSChromeAgentHarness' in driverModule, false)
 
     const forbiddenRuntimeExports = [
       'captureChromeWindow',
@@ -1136,6 +1137,140 @@ describe('macOS Chrome driver', () => {
     })
   })
 
+  it('refuses ax_node text input candidates through driver.click', async () => {
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.captureAXTree
+      .mockResolvedValueOnce(axSnapshot())
+      .mockResolvedValueOnce(axSnapshotWithSearchInput({ x: 90, y: 76, width: 124, height: 38 }))
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'text_input', name: /search/i })
+    const promotion = await driver.promoteCandidate(result, driver.lastCapture!)
+    assert.equal(promotion.status, 'promoted')
+    if (promotion.status !== 'promoted')
+      return
+    assert.equal(promotion.candidate.kind, 'ax_textfield')
+    assert.equal(promotion.candidate.target_spec.grounding, 'ax_node')
+
+    await assert.rejects(
+      () => driver.click(promotion.candidate),
+      /unsupported_click_candidate_kind/i,
+    )
+
+    assert.equal(mocks.executeMoveAndClick.mock.calls.length, 0)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.action_type, 'click')
+    assert.equal(actionPayload.executed, false)
+    assert.equal(actionPayload.refused, true)
+    assert.ok(actionPayload.refusal_reasons.includes('unsupported_click_candidate_kind'))
+  })
+
+  it('focuses an ax_node text input candidate after a text_input fresh liveness recheck', async () => {
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.captureAXTree
+      .mockResolvedValueOnce(axSnapshot())
+      .mockResolvedValueOnce(axSnapshotWithSearchInput({ x: 90, y: 76, width: 124, height: 38 }))
+      .mockResolvedValueOnce(axSnapshotWithSearchInput({ x: 110, y: 90, width: 160, height: 36 }))
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'text_input', name: /search/i })
+    const promotion = await driver.promoteCandidate(result, driver.lastCapture!)
+    assert.equal(promotion.status, 'promoted')
+    if (promotion.status !== 'promoted')
+      return
+    assert.equal(promotion.candidate.kind, 'ax_textfield')
+    assert.equal(promotion.candidate.target_spec.grounding, 'ax_node')
+
+    await driver.focusTextInput(promotion.candidate)
+
+    assert.equal(mocks.executeMoveAndClick.mock.calls.length, 1)
+    const payload = mocks.executeMoveAndClick.mock.calls[0]?.[1]
+    assert.equal(payload.pointerTrace.at(-1).x, 190)
+    assert.equal(payload.pointerTrace.at(-1).y, 108)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.executed, true)
+    assert.equal(actionPayload.refused, false)
+    assert.equal(actionPayload.liveness_recheck.status, 'passed')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'text_input')
+    assert.equal(actionPayload.liveness_recheck.grounding, 'ax_node')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'ax_textfield')
+    assert.deepEqual(actionPayload.liveness_recheck.fresh_selected_item.box, { x: 110, y: 90, width: 160, height: 36 })
+    assert.equal(actionPayload.grounding, 'ax_node')
+  })
+
+  it('refuses low-level keyboard delivery without focusTextInput provenance', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+    await driver.observe()
+
+    await assert.rejects(
+      () => driver.typeText('hello'),
+      /focused_text_input_missing/i,
+    )
+    await assert.rejects(
+      () => driver.pressKey('Enter'),
+      /focused_text_input_missing/i,
+    )
+
+    assert.equal(mocks.executeTypeText.mock.calls.length, 0)
+    assert.equal(mocks.executePressKeys.mock.calls.length, 0)
+    const actionPayloads = readJsonArtifactsByRole('action-execution')
+      .filter(payload => payload.action_type === 'typeText' || payload.action_type === 'pressKey')
+    assert.deepEqual(actionPayloads.map(payload => payload.action_type), ['typeText', 'pressKey'])
+    for (const payload of actionPayloads) {
+      assert.equal(payload.executed, false)
+      assert.equal(payload.refused, true)
+      assert.ok(payload.refusal_reasons.includes('focused_text_input_missing'))
+    }
+  })
+
+  it('allows low-level keyboard delivery after focusTextInput and invalidates focus on observe', async () => {
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithSearchInput({ x: 90, y: 76, width: 124, height: 38 }))
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'text_input', name: /search/i })
+    const promotion = await driver.promoteCandidate(result, driver.lastCapture!)
+    assert.equal(promotion.status, 'promoted')
+    if (promotion.status !== 'promoted')
+      return
+
+    await driver.focusTextInput(promotion.candidate)
+    await driver.typeText('AI engineer')
+    await driver.pressKey('Enter')
+
+    assert.deepEqual(mocks.executeTypeText.mock.calls.map(call => call[1].text), ['AI engineer'])
+    assert.deepEqual(mocks.executePressKeys.mock.calls.map(call => call[1].keys), [['Enter']])
+
+    await driver.observe()
+    await assert.rejects(
+      () => driver.typeText('again'),
+      /focused_text_input_missing/i,
+    )
+    assert.deepEqual(mocks.executeTypeText.mock.calls.map(call => call[1].text), ['AI engineer'])
+  })
+
   it('refuses a fresh current DOM match for an OCR click candidate', async () => {
     useOcrTextOnly([acceptCookiesOcrMatch()])
     const driver = new MacOSChromeDriver({
@@ -1502,31 +1637,7 @@ describe('macOS Chrome driver', () => {
     assert.equal(actionPayload.precondition_result.passed, false)
   })
 
-  it('scrolls through the AUV-style window-targeted executor with Chrome window routing fields', async () => {
-    const driver = new MacOSChromeDriver({
-      sessionId: 'driver-test',
-      config,
-      foregroundPolicy: 'auto_focus_chrome',
-    })
-
-    await driver.observe()
-    await driver.scroll(240, -12, { windowLocalPoint: { x: 320, y: 180 }, settleMs: 25 })
-
-    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
-    assert.equal(mocks.executeScroll.mock.calls.length, 0)
-    const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
-    assert.deepEqual(payload, {
-      pid: 123,
-      windowNumber: 42,
-      screenPoint: { x: 320, y: 220 },
-      windowLocalPoint: { x: 320, y: 180 },
-      deltaX: -12,
-      deltaY: 240,
-      settleMs: 25,
-    })
-  })
-
-  it('rejects caller-supplied screenPoint and derives screen coordinates from the leased window', async () => {
+  it('refuses targetless scroll even after a Chrome context lease exists', async () => {
     const driver = new MacOSChromeDriver({
       sessionId: 'driver-test',
       config,
@@ -1536,7 +1647,61 @@ describe('macOS Chrome driver', () => {
     await driver.observe()
 
     await assert.rejects(
-      () => driver.scroll(240, 0, {
+      () => driver.scroll(240 as never),
+      /promoted_scroll_candidate_missing/i,
+    )
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
+    assert.equal(mocks.executeScroll.mock.calls.length, 0)
+  })
+
+  it('scrolls a promoted candidate through the AUV-style window-targeted executor with Chrome window routing fields', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    const recognition = await driver.recognizeFromCapture(
+      driver.lastCapture!,
+      { kind: 'ocr_text', text: 'Search' },
+    )
+    const promotion = await driver.promoteCandidate(recognition, driver.lastCapture!)
+    assert.equal(promotion.status, 'promoted')
+
+    await driver.scroll(promotion.candidate, 240, -12, { settleMs: 25 })
+
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
+    assert.equal(mocks.executeScroll.mock.calls.length, 0)
+    const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
+    assert.deepEqual(payload, {
+      pid: 123,
+      windowNumber: 42,
+      screenPoint: { x: 152, y: 135 },
+      windowLocalPoint: { x: 152, y: 95 },
+      deltaX: -12,
+      deltaY: 240,
+      settleMs: 25,
+    })
+  })
+
+  it('rejects caller-supplied screenPoint and derives scroll coordinates from the promoted candidate', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+    const recognition = await driver.recognizeFromCapture(
+      driver.lastCapture!,
+      { kind: 'ocr_text', text: 'Search' },
+    )
+    const promotion = await driver.promoteCandidate(recognition, driver.lastCapture!)
+    assert.equal(promotion.status, 'promoted')
+
+    await assert.rejects(
+      () => driver.scroll(promotion.candidate, 240, 0, {
         screenPoint: { x: 9999, y: 9999 },
       } as never),
       /screenPoint/i,
@@ -1544,12 +1709,12 @@ describe('macOS Chrome driver', () => {
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
     assert.equal(mocks.executeScroll.mock.calls.length, 0)
 
-    await driver.scroll(240, 0, { windowLocalPoint: { x: 320, y: 180 } })
+    await driver.scroll(promotion.candidate, 240, 0)
 
     const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
-    assert.equal(payload.screenPoint.x, 320)
-    assert.equal(payload.screenPoint.y, 220)
-    assert.deepEqual(payload.windowLocalPoint, { x: 320, y: 180 })
+    assert.equal(payload.screenPoint.x, 152)
+    assert.equal(payload.screenPoint.y, 135)
+    assert.deepEqual(payload.windowLocalPoint, { x: 152, y: 95 })
   })
 
   it('establishes a managed Chrome context lease on first observe without probing chrome://version', async () => {
@@ -1649,7 +1814,7 @@ describe('macOS Chrome driver', () => {
       /Chrome context lease has not been established/i,
     )
     await assert.rejects(
-      () => driver.scroll(240),
+      () => driver.scroll(240 as never),
       /Chrome context lease has not been established/i,
     )
     assert.equal(mocks.executeMoveAndClick.mock.calls.length, 0)
@@ -1697,7 +1862,7 @@ describe('macOS Chrome driver', () => {
     })
 
     await assert.rejects(
-      () => driver.scroll(240),
+      () => driver.scroll(240 as never),
       /Chrome context lease has not been established/i,
     )
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
@@ -1713,13 +1878,20 @@ describe('macOS Chrome driver', () => {
     mocks.executeWindowTargetedScroll.mockRejectedValueOnce(new Error('CGEventSetWindowLocation unavailable'))
 
     await driver.observe()
-    await driver.scroll(240, 0, { windowLocalPoint: { x: 300, y: 200 } })
+    const recognition = await driver.recognizeFromCapture(
+      driver.lastCapture!,
+      { kind: 'ocr_text', text: 'Search' },
+    )
+    const promotion = await driver.promoteCandidate(recognition, driver.lastCapture!)
+    assert.equal(promotion.status, 'promoted')
+
+    await driver.scroll(promotion.candidate, 240, 0)
 
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
     assert.equal(mocks.executeScroll.mock.calls.length, 1)
     const payload = mocks.executeScroll.mock.calls[0]?.[1]
-    assert.equal(payload.pointerTrace.at(-1).x, 300)
-    assert.equal(payload.pointerTrace.at(-1).y, 240)
+    assert.equal(payload.pointerTrace.at(-1).x, 152)
+    assert.equal(payload.pointerTrace.at(-1).y, 135)
   })
 })
 
@@ -1917,7 +2089,7 @@ function promotedCandidate(overrides: { windowNumber?: number, kind?: string } =
     kind: overrides.kind ?? 'ocr_text',
     label: 'Accept all cookies',
     target_spec: {
-      grounding: 'coordinate' as const,
+      grounding: 'ocr_anchor' as const,
       box: { x: 520, y: 280, width: 280, height: 44 },
       anchor_text: 'Accept all cookies',
     },
@@ -1961,6 +2133,33 @@ function axSnapshot(): AXSnapshot {
             role: 'AXTextField',
             description: 'Search',
             bounds: { x: 90, y: 76, width: 124, height: 38 },
+            children: [],
+          },
+        ]),
+      ],
+    },
+  }
+}
+
+function axSnapshotWithSearchInput(bounds: { x: number, y: number, width: number, height: number }): AXSnapshot {
+  return {
+    snapshotId: 'ax-search',
+    pid: 123,
+    appName: 'Google Chrome',
+    capturedAt: '2026-06-14T00:00:00.000Z',
+    maxDepth: 15,
+    truncated: false,
+    root: {
+      uid: 'root',
+      role: 'AXApplication',
+      children: [
+        managedAxWindow([
+          {
+            uid: 'search-ax',
+            role: 'AXTextField',
+            description: 'Search',
+            enabled: true,
+            bounds,
             children: [],
           },
         ]),
