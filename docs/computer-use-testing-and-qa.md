@@ -28,7 +28,7 @@ For P0B, deterministic tests should cover only the frozen contract slices:
 - `action-execution` JSON payloads with `action_id`, `action_type`, `run_id`, `span_id`, candidate/ref, precondition result, executed/refused status, timestamp, and known limits.
 - Pointer click actions must consume a traced `promoted-candidate` artifact produced by `driver.promoteCandidate()`. Tests must reject `candidate_ref:null` click success, even when the Chrome lease/profile/foreground/hard-stop gate passes.
 - Missing promoted-candidate artifact ref is a hard refusal for click/pointer actions. Tests should assert `action-execution` is still written with `executed:false`, `refused:true`, `candidate_ref:null`, and `missing_promoted_candidate_artifact`.
-- For `typeText`, `pressKey`, and `scroll`, `action-execution.candidate_ref` can be `null` only as the candidate artifact field because they are not candidate-click artifact consumers. This does not allow targetless input: P1.5 invoke requires audited promoted target focus/selection for `typeText` and `pressKey`, and a promoted scroll target / region for `scroll`.
+- For `typeText`, `pressKey`, and `scroll`, `action-execution.candidate_ref` can be `null` only as the candidate artifact field because they are not candidate-click artifact consumers. This does not allow targetless input: P1.5 invoke requires audited promoted target focus/selection for `typeText` and `pressKey`, and a latest observe-derived Chrome scroll region lease for `scroll`.
 - `ObservationSnapshot`, `RecognitionResult`, `SurfaceNode`, and `PromotedCandidate` shape and provenance.
 - Chrome lease/profile/foreground/hard-stop action refusal.
 - Harness sequencing: `observe -> recognize -> promote -> act -> observe`.
@@ -93,7 +93,7 @@ The `visual_report` path is produced by the static visual trace report generator
 P1.5 action sequence expectations:
 
 - click consumes a promoted candidate.
-- scroll consumes a promoted scroll target / region.
+- scroll consumes a latest observe-derived Chrome scroll region lease.
 - `typeText` and `pressKey` follow audited promoted target focus/selection in the same command sequence; for text inputs this means `chrome.focusTextInput` consumes a promoted `ax_node` candidate before keyboard input.
 - driver liveness recheck remains mandatory and is not replaced by caller pre-action observation.
 - caller post-action observation is explicit; action commands do not hide automatic post-observe.

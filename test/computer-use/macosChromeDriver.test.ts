@@ -1637,7 +1637,8 @@ describe('macOS Chrome driver', () => {
     assert.equal(actionPayload.precondition_result.passed, false)
   })
 
-  it('refuses targetless scroll even after a Chrome context lease exists', async () => {
+  it('scrolls the latest observed AXWebArea region without a promoted candidate', async () => {
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithWebArea({ x: 0, y: 120, width: 1000, height: 720 }))
     const driver = new MacOSChromeDriver({
       sessionId: 'driver-test',
       config,
@@ -1646,30 +1647,7 @@ describe('macOS Chrome driver', () => {
 
     await driver.observe()
 
-    await assert.rejects(
-      () => driver.scroll(240 as never),
-      /promoted_scroll_candidate_missing/i,
-    )
-    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
-    assert.equal(mocks.executeScroll.mock.calls.length, 0)
-  })
-
-  it('scrolls a promoted candidate through the AUV-style window-targeted executor with Chrome window routing fields', async () => {
-    const driver = new MacOSChromeDriver({
-      sessionId: 'driver-test',
-      config,
-      foregroundPolicy: 'auto_focus_chrome',
-    })
-
-    await driver.observe()
-    const recognition = await driver.recognizeFromCapture(
-      driver.lastCapture!,
-      { kind: 'ocr_text', text: 'Search' },
-    )
-    const promotion = await driver.promoteCandidate(recognition, driver.lastCapture!)
-    assert.equal(promotion.status, 'promoted')
-
-    await driver.scroll(promotion.candidate, 240, -12, { settleMs: 25 })
+    await driver.scroll(240, -12, { settleMs: 25 })
 
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
     assert.equal(mocks.executeScroll.mock.calls.length, 0)
@@ -1677,15 +1655,21 @@ describe('macOS Chrome driver', () => {
     assert.deepEqual(payload, {
       pid: 123,
       windowNumber: 42,
-      screenPoint: { x: 152, y: 135 },
-      windowLocalPoint: { x: 152, y: 95 },
+      screenPoint: { x: 500, y: 516 },
+      windowLocalPoint: { x: 500, y: 476 },
       deltaX: -12,
       deltaY: 240,
       settleMs: 25,
     })
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.action_type, 'scroll')
+    assert.equal(actionPayload.executed, true)
+    assert.equal(actionPayload.grounding, 'observed_scroll_region')
+    assert.deepEqual(actionPayload.scroll_region.anchor.screen_point, { x: 500, y: 516 })
+    assert.ok(actionPayload.known_limits.includes('caller_must_post_scroll_observe'))
   })
 
-  it('rejects caller-supplied screenPoint and derives scroll coordinates from the promoted candidate', async () => {
+  it('falls back to a conservative observed window content region when AXWebArea is unavailable', async () => {
     const driver = new MacOSChromeDriver({
       sessionId: 'driver-test',
       config,
@@ -1693,15 +1677,108 @@ describe('macOS Chrome driver', () => {
     })
 
     await driver.observe()
-    const recognition = await driver.recognizeFromCapture(
-      driver.lastCapture!,
-      { kind: 'ocr_text', text: 'Search' },
-    )
-    const promotion = await driver.promoteCandidate(recognition, driver.lastCapture!)
+
+    await driver.scroll(240)
+
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
+    assert.equal(mocks.executeScroll.mock.calls.length, 0)
+    const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
+    assert.deepEqual(payload.screenPoint, { x: 500, y: 480 })
+    assert.deepEqual(payload.windowLocalPoint, { x: 500, y: 440 })
+    const snapshot = readLastJsonArtifactByRole('observation-snapshot')
+    assert.equal(snapshot.detail.scroll_region.source, 'window_content_fallback')
+    assert.ok(snapshot.detail.scroll_region.known_limits.includes('scroll_region_uses_window_bounds_fallback'))
+    assert.ok(snapshot.detail.scroll_region.known_limits.includes('browser_chrome_height_estimated'))
+  })
+
+  it('does not lease an AXWebArea from another Chrome AXWindow when the leased AXWindow has none', async () => {
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithChromeWindows([
+      managedAxWindow(),
+      axWindowNode('other-window', 'Other - Google Chrome', { x: 0, y: 40, width: 1000, height: 800 }, [
+        {
+          uid: 'other-web-area',
+          role: 'AXWebArea',
+          title: 'Other page',
+          bounds: { x: 0, y: 120, width: 1000, height: 720 },
+          children: [],
+        },
+      ]),
+    ]))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const snapshot = await driver.observe()
+    const region = scrollRegion(snapshot)
+
+    assert.equal(region.source, 'window_content_fallback')
+    assert.ok(region.known_limits.includes('scroll_region_uses_window_bounds_fallback'))
+  })
+
+  it('falls back when no AXWindow binds to the leased Chrome window even if another AXWebArea intersects', async () => {
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+    await driver.observe()
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithChromeWindows([
+      axWindowNode('offscreen-window', 'Other - Google Chrome', { x: 2000, y: 40, width: 1000, height: 800 }, [
+        {
+          uid: 'intersecting-web-area',
+          role: 'AXWebArea',
+          title: 'Other page',
+          bounds: { x: 0, y: 120, width: 1000, height: 720 },
+          children: [],
+        },
+      ]),
+    ]))
+
+    const snapshot = await driver.observe()
+    const region = scrollRegion(snapshot)
+
+    assert.equal(region.source, 'window_content_fallback')
+    assert.ok(region.known_limits.includes('scroll_region_uses_window_bounds_fallback'))
+  })
+
+  it('requires a new caller observe before scroll after an action reobserve', async () => {
+    useOcrTextOnly([acceptCookiesOcrMatch()])
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+    await driver.observe()
+    const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'visible_text', text: /accept all cookies/i })
+    const promotion = await driver.promoteCandidate(result, driver.lastCapture!)
     assert.equal(promotion.status, 'promoted')
+    if (promotion.status !== 'promoted')
+      return
+
+    await driver.click(promotion.candidate)
+    mocks.executeWindowTargetedScroll.mockClear()
 
     await assert.rejects(
-      () => driver.scroll(promotion.candidate, 240, 0, {
+      () => driver.scroll(240),
+      /scroll_region_not_observed/i,
+    )
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
+  })
+
+  it('rejects caller-supplied screenPoint and derives scroll coordinates from the latest observed region', async () => {
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithWebArea({ x: 0, y: 120, width: 1000, height: 720 }))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    await driver.observe()
+
+    await assert.rejects(
+      () => driver.scroll(240, 0, {
         screenPoint: { x: 9999, y: 9999 },
       } as never),
       /screenPoint/i,
@@ -1709,12 +1786,12 @@ describe('macOS Chrome driver', () => {
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
     assert.equal(mocks.executeScroll.mock.calls.length, 0)
 
-    await driver.scroll(promotion.candidate, 240, 0)
+    await driver.scroll(240, 0)
 
     const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
-    assert.equal(payload.screenPoint.x, 152)
-    assert.equal(payload.screenPoint.y, 135)
-    assert.deepEqual(payload.windowLocalPoint, { x: 152, y: 95 })
+    assert.equal(payload.screenPoint.x, 500)
+    assert.equal(payload.screenPoint.y, 516)
+    assert.deepEqual(payload.windowLocalPoint, { x: 500, y: 476 })
   })
 
   it('establishes a managed Chrome context lease on first observe without probing chrome://version', async () => {
@@ -1814,7 +1891,7 @@ describe('macOS Chrome driver', () => {
       /Chrome context lease has not been established/i,
     )
     await assert.rejects(
-      () => driver.scroll(240 as never),
+      () => driver.scroll(240),
       /Chrome context lease has not been established/i,
     )
     assert.equal(mocks.executeMoveAndClick.mock.calls.length, 0)
@@ -1862,7 +1939,7 @@ describe('macOS Chrome driver', () => {
     })
 
     await assert.rejects(
-      () => driver.scroll(240 as never),
+      () => driver.scroll(240),
       /Chrome context lease has not been established/i,
     )
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
@@ -1870,6 +1947,7 @@ describe('macOS Chrome driver', () => {
   })
 
   it('falls back to foreground HID scroll when window-targeted delivery is unavailable', async () => {
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithWebArea({ x: 0, y: 120, width: 1000, height: 720 }))
     const driver = new MacOSChromeDriver({
       sessionId: 'driver-test',
       config,
@@ -1878,20 +1956,14 @@ describe('macOS Chrome driver', () => {
     mocks.executeWindowTargetedScroll.mockRejectedValueOnce(new Error('CGEventSetWindowLocation unavailable'))
 
     await driver.observe()
-    const recognition = await driver.recognizeFromCapture(
-      driver.lastCapture!,
-      { kind: 'ocr_text', text: 'Search' },
-    )
-    const promotion = await driver.promoteCandidate(recognition, driver.lastCapture!)
-    assert.equal(promotion.status, 'promoted')
 
-    await driver.scroll(promotion.candidate, 240, 0)
+    await driver.scroll(240, 0)
 
     assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
     assert.equal(mocks.executeScroll.mock.calls.length, 1)
     const payload = mocks.executeScroll.mock.calls[0]?.[1]
-    assert.equal(payload.pointerTrace.at(-1).x, 152)
-    assert.equal(payload.pointerTrace.at(-1).y, 135)
+    assert.equal(payload.pointerTrace.at(-1).x, 500)
+    assert.equal(payload.pointerTrace.at(-1).y, 516)
   })
 })
 
@@ -2141,6 +2213,32 @@ function axSnapshot(): AXSnapshot {
   }
 }
 
+function axSnapshotWithWebArea(bounds: { x: number, y: number, width: number, height: number }): AXSnapshot {
+  return {
+    snapshotId: 'ax-web-area',
+    pid: 123,
+    appName: 'Google Chrome',
+    capturedAt: '2026-06-14T00:00:00.000Z',
+    maxDepth: 15,
+    truncated: false,
+    root: {
+      uid: 'root',
+      role: 'AXApplication',
+      children: [
+        managedAxWindow([
+          {
+            uid: 'web-area',
+            role: 'AXWebArea',
+            title: 'Search results',
+            bounds,
+            children: [],
+          },
+        ]),
+      ],
+    },
+  }
+}
+
 function axSnapshotWithSearchInput(bounds: { x: number, y: number, width: number, height: number }): AXSnapshot {
   return {
     snapshotId: 'ax-search',
@@ -2287,6 +2385,12 @@ function scrollBoundary(snapshot: { detail: Record<string, unknown> }): any {
   const boundary = snapshot.detail.scroll_boundary
   assert.ok(boundary && typeof boundary === 'object' && !Array.isArray(boundary))
   return boundary as any
+}
+
+function scrollRegion(snapshot: { detail: Record<string, unknown> }): any {
+  const region = snapshot.detail.scroll_region
+  assert.ok(region && typeof region === 'object' && !Array.isArray(region))
+  return region as any
 }
 
 function axSnapshotWithAcceptCookies(

@@ -215,7 +215,7 @@ For P0 traces:
 - `application/json` artifacts must contain valid JSON.
 - Pointer click actions must consume a real `promoted-candidate` artifact. The `promoted-candidate` role is not metadata-only, and a missing promoted-candidate artifact ref is a hard refusal rather than a successful `action-execution` with `candidate_ref:null`.
 - On that refusal, `action-execution` must still be written with `executed:false`, `refused:true`, `candidate_ref:null`, and a refusal reason such as `missing_promoted_candidate_artifact`.
-- `typeText`, `pressKey`, and `scroll` actions may write `action-execution.candidate_ref:null` only because they are not candidate-click artifact consumers. Under P1.5 invoke, `typeText` and `pressKey` still require audited promoted target focus/selection in the same command sequence, and `scroll` requires a promoted scroll target / region.
+- `typeText`, `pressKey`, and `scroll` actions may write `action-execution.candidate_ref:null` only because they are not candidate-click artifact consumers. Under P1.5 invoke, `typeText` and `pressKey` still require audited promoted target focus/selection in the same command sequence, and `scroll` requires a latest observe-derived Chrome scroll region lease.
 - The `capture-contract` JSON payload must include:
   - `coordinateContractVersion`
   - `captureSource.kind = "window"`

@@ -394,7 +394,7 @@ describe('prepare and action Chrome invoke commands', () => {
     assert.equal(driver.observeCalls, beforeObserveCalls)
   })
 
-  it('refuses scroll without a promoted scroll target candidateLocalId', async () => {
+  it('refuses scroll before an observe-derived scroll region exists', async () => {
     const driver = fakeDriver()
 
     const result = await invoke(
@@ -403,19 +403,24 @@ describe('prepare and action Chrome invoke commands', () => {
     )
 
     assert.equal(result.status, 'refused')
-    assert.equal(result.failure?.class, 'candidate_provenance')
-    assert.equal(result.failure?.code, 'missing_scroll_candidate_local_id')
+    assert.equal(result.failure?.class, 'safety_gate')
+    assert.equal(result.failure?.code, 'scroll_region_not_observed')
     assert.equal(driver.scrollCalls.length, 0)
   })
 
-  it('scrolls a promoted target using a derived windowLocalPoint instead of current mouse position', async () => {
-    const { driver, handlers, candidate } = await promotedSequence()
+  it('scrolls the latest observed viewport region without a promoted candidate', async () => {
+    const driver = fakeDriver()
+    const handlers = createMacOSChromeInvokeHandlers(driver)
+
+    await invoke(
+      { commandId: 'chrome.observe' },
+      { handlers },
+    )
 
     const result = await invoke(
       {
         commandId: 'chrome.scroll',
         inputs: {
-          candidateLocalId: candidate.candidate_local_id,
           deltaY: 320,
           deltaX: 16,
           settleMs: 40,
@@ -426,7 +431,6 @@ describe('prepare and action Chrome invoke commands', () => {
 
     assert.equal(result.status, 'completed')
     assert.deepEqual(driver.scrollCalls, [{
-      candidate,
       deltaY: 320,
       deltaX: 16,
       options: {
@@ -434,9 +438,28 @@ describe('prepare and action Chrome invoke commands', () => {
       },
     }])
     assert.ok(result.signals.includes('scroll_delivered'))
+    assert.equal('candidateLocalId' in (result.output as Record<string, unknown>), false)
   })
 
-  it('invalidates promoted candidates after a new observe boundary', async () => {
+  it('refuses legacy candidateLocalId input for scroll even after observe', async () => {
+    const { driver, handlers, candidate } = await promotedSequence()
+
+    await invoke(
+      { commandId: 'chrome.observe' },
+      { handlers },
+    )
+    const result = await invoke(
+      { commandId: 'chrome.scroll', inputs: { candidateLocalId: candidate.candidate_local_id } },
+      { handlers },
+    )
+
+    assert.equal(result.status, 'refused')
+    assert.equal(result.failure?.class, 'invalid_input')
+    assert.equal(result.failure?.code, 'scroll_target_input_not_accepted')
+    assert.equal(driver.scrollCalls.length, 0)
+  })
+
+  it('invalidates promoted candidates after a new observe boundary without requiring one for scroll', async () => {
     const { driver, handlers, candidate } = await promotedSequence()
 
     await invoke(
@@ -448,18 +471,16 @@ describe('prepare and action Chrome invoke commands', () => {
       { handlers },
     )
     const scrollResult = await invoke(
-      { commandId: 'chrome.scroll', inputs: { candidateLocalId: candidate.candidate_local_id } },
+      { commandId: 'chrome.scroll' },
       { handlers },
     )
 
     assert.equal(clickResult.status, 'refused')
     assert.equal(clickResult.failure?.class, 'candidate_provenance')
     assert.equal(clickResult.failure?.code, 'candidate_not_in_sequence')
-    assert.equal(scrollResult.status, 'refused')
-    assert.equal(scrollResult.failure?.class, 'candidate_provenance')
-    assert.equal(scrollResult.failure?.code, 'candidate_not_in_sequence')
+    assert.equal(scrollResult.status, 'completed')
     assert.equal(driver.clickCalls.length, 0)
-    assert.equal(driver.scrollCalls.length, 0)
+    assert.equal(driver.scrollCalls.length, 1)
   })
 
   it('invalidates latest recognition after a new observe boundary before promote', async () => {
@@ -549,11 +570,16 @@ describe('prepare and action Chrome invoke commands', () => {
   })
 
   it('maps action driver delivery failures to action_delivery/action_execution_error', async () => {
-    const { driver, handlers, candidate } = await promotedSequence()
+    const driver = fakeDriver()
+    const handlers = createMacOSChromeInvokeHandlers(driver)
     driver.scrollError = new Error('CGEvent delivery failed')
 
+    await invoke(
+      { commandId: 'chrome.observe' },
+      { handlers },
+    )
     const result = await invoke(
-      { commandId: 'chrome.scroll', inputs: { candidateLocalId: candidate.candidate_local_id } },
+      { commandId: 'chrome.scroll' },
       { handlers },
     )
 
@@ -682,7 +708,6 @@ interface FakeInvokeDriver extends MacOSChromeInvokeDriver {
   typeTextCalls: string[]
   pressKeyCalls: Array<{ key: string, modifiers: string[] }>
   scrollCalls: Array<{
-    candidate: PromotedCandidate
     deltaY: number
     deltaX: number
     options: { settleMs?: number }
@@ -742,10 +767,10 @@ function fakeDriver(options: {
         throw driver.pressKeyError
       driver.pressKeyCalls.push({ key, modifiers })
     },
-    scroll: async (candidate, deltaY = 600, deltaX = 0, options = {}) => {
+    scroll: async (deltaY = 600, deltaX = 0, options = {}) => {
       if (driver.scrollError)
         throw driver.scrollError
-      driver.scrollCalls.push({ candidate, deltaY, deltaX, options })
+      driver.scrollCalls.push({ deltaY, deltaX, options })
     },
   }
   return driver

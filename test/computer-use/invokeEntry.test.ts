@@ -160,7 +160,7 @@ describe('macOS Chrome programmatic invoke entry', () => {
     assert.deepEqual(driver.pressKeyCalls, [])
   })
 
-  it('enforces promoted target provenance for scroll', async () => {
+  it('requires observe before scroll and then scrolls the observed viewport region', async () => {
     const recognition = fakeRecognitionResult()
     const candidate = fakeCandidate({ recognition })
     const driver = fakeDriver({
@@ -171,20 +171,19 @@ describe('macOS Chrome programmatic invoke entry', () => {
 
     const nakedScroll = await entry.invoke({
       commandId: 'chrome.scroll',
-      inputs: { candidateLocalId: candidate.candidate_local_id },
+      inputs: { deltaY: 240 },
     })
-    await promoteCandidateThroughEntry(entry, recognition)
+    await entry.invoke({ commandId: 'chrome.observe' })
     const scroll = await entry.invoke({
       commandId: 'chrome.scroll',
-      inputs: { candidateLocalId: candidate.candidate_local_id, deltaY: 240 },
+      inputs: { deltaY: 240 },
     })
 
     assert.equal(nakedScroll.status, 'refused')
-    assert.equal(nakedScroll.failure?.class, 'candidate_provenance')
-    assert.equal(nakedScroll.failure?.code, 'candidate_not_in_sequence')
+    assert.equal(nakedScroll.failure?.class, 'safety_gate')
+    assert.equal(nakedScroll.failure?.code, 'scroll_region_not_observed')
     assert.equal(scroll.status, 'completed')
     assert.deepEqual(driver.scrollCalls, [{
-      candidate,
       deltaY: 240,
       deltaX: 0,
       options: {},
@@ -266,7 +265,6 @@ interface FakeInvokeDriver extends MacOSChromeInvokeDriver {
   typeTextCalls: string[]
   pressKeyCalls: Array<{ key: string, modifiers: string[] }>
   scrollCalls: Array<{
-    candidate: PromotedCandidate
     deltaY: number
     deltaX: number
     options: { settleMs?: number }
@@ -321,8 +319,8 @@ function fakeDriver(options: {
     pressKey: async (key, modifiers = []) => {
       driver.pressKeyCalls.push({ key, modifiers })
     },
-    scroll: async (candidate, deltaY = 600, deltaX = 0, options = {}) => {
-      driver.scrollCalls.push({ candidate, deltaY, deltaX, options })
+    scroll: async (deltaY = 600, deltaX = 0, options = {}) => {
+      driver.scrollCalls.push({ deltaY, deltaX, options })
     },
     totalCalls: () =>
       driver.observeCalls

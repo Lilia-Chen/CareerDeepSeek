@@ -38,7 +38,7 @@ P1 must not weaken P0:
 - Frozen P0 artifact roles remain non metadata-only.
 - Pointer click actions still require a real `promoted-candidate` artifact.
 - A missing promoted-candidate artifact is a hard refusal, not a successful `action-execution` with `candidate_ref:null`.
-- `typeText`, `pressKey`, and `scroll` may keep `action-execution.candidate_ref:null` only as the candidate artifact field because they are not candidate-click artifact consumers. This does not allow action without target/focus provenance: under P1.5 invoke, keyboard input must follow audited promoted target focus/selection in the same command sequence, and scroll must consume a promoted scroll target / region.
+- `typeText`, `pressKey`, and `scroll` may keep `action-execution.candidate_ref:null` only as the candidate artifact field because they are not candidate-click artifact consumers. This does not allow action without target/focus provenance: under P1.5 invoke, keyboard input must follow audited promoted target focus/selection in the same command sequence, and scroll must consume the latest observe-derived Chrome scroll region lease.
 - New fields, new artifact roles, new public exports, new public APIs, and action gate changes require this P1 scope document, or a later scope update, to explicitly authorize them first.
 
 ## P1 Goal and Hard Boundaries
@@ -53,7 +53,7 @@ Hard boundaries:
 - Actions are allowed only against the foreground visible Chrome window under the managed Chrome context.
 - Click must go through `PromotedCandidate`. Raw coordinate action paths are forbidden.
 - Scroll must not accept an external `screenPoint`; the driver derives any screen coordinate from the leased Chrome window and an internal/default window-local anchor.
-- P1.5 invoke scroll tightens this by requiring explicit promoted scroll target / region provenance. It must not depend on implicit current mouse position.
+- P1.5 invoke scroll tightens this by requiring explicit observe-derived Chrome scroll region provenance. It must not depend on implicit current mouse position.
 - P1 must not add a public command catalog.
 - P1 must not restore legacy observation, recognition, candidate-promotion, click, `open_url`, Playwright, CDP, page-executed action, or raw browser automation paths.
 - P1 must not change the P0 action gate unless this document is updated to authorize the specific change.
@@ -420,9 +420,10 @@ Goal:
 - Allow only `scroll_effect: changed | no_visible_change | unknown`.
 - Keep single-step scroll effect separate from full `scroll_scan`.
 
-P1.5 status: superseded by promoted-candidate `chrome.scroll`. Targetless
-harness scroll-effect behavior is no longer an approved P1.5 action surface.
-Future scroll-boundary/effect work must return as a new invoke-level contract.
+P1.5 status: superseded by observe-derived scroll-region `chrome.scroll`.
+Legacy harness scroll-effect behavior is no longer an approved P1.5 action
+surface. Future scroll-boundary/effect work must return as a new invoke-level
+contract.
 
 Allowed files:
 
@@ -445,7 +446,7 @@ Acceptance criteria:
 - `changed` means only that the current visible surface changed between the before and after evidence.
 - `no_visible_change` means only that current evidence did not observe visible change.
 - `unknown` is used when evidence is insufficient, failed, unstable, or not comparable.
-- P1.5 `chrome.scroll` must consume a same-sequence promoted candidate. The low-level `driver.scroll(candidate, ...)` derives coordinates from the candidate after liveness recheck; targetless scroll and harness scroll-effect wrappers are no longer approved P1.5 behavior.
+- P1.5 `chrome.scroll` consumes the latest same-sequence observe-derived Chrome scroll region lease. The low-level `driver.scroll(deltaY, deltaX, options)` derives coordinates from that lease, stores the region/anchor in trace, and rejects caller-supplied coordinates or promoted-candidate scroll inputs.
 - Scroll boundary/effect inference remains a P2 concern unless it is reintroduced through an explicit invoke contract.
 - Visible-surface fingerprint comparison must be stable against provider node ordering; reordering the same comparable visible nodes must not be reported as `changed`.
 - Scroll action still uses the foreground visible Chrome window and must not accept an external `screenPoint`.
@@ -624,7 +625,7 @@ The second list is the P1-0 task boundary. Later P1 implementation slices may to
 - Keep scroll inside the Chrome window driver and reject external `screenPoint`.
 - Preserve `known_limits` across recognition, audit, promotion, liveness, and action evidence.
 - Stop and update this scope document before implementing if a required design decision is not covered here.
-- P1.5 implementation must also return to scope authorization before adding any new artifact role, `action-execution` schema field beyond the authorized `grounding` field, action result shape, public export, registered tool, CLI, MCP/server entry, browser recovery primitive, or structural overlay detector/dismissal primitive.
+- P1.5 implementation must also return to scope authorization before adding any new artifact role, `action-execution` schema field beyond the authorized `grounding` and scroll-only `scroll_region` fields, action result shape, public export, registered tool, CLI, MCP/server entry, browser recovery primitive, or structural overlay detector/dismissal primitive.
 
 ## Acceptance Criteria
 

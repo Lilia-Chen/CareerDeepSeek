@@ -116,7 +116,7 @@ const commandSpecs = [
   },
   {
     id: 'chrome.scroll',
-    summary: 'Scroll an explicit promoted scroll target or region in the managed Chrome window.',
+    summary: 'Scroll the latest observe-derived Chrome viewport region in the managed Chrome window.',
     namespace: 'action',
     driverId: 'macos.chrome',
     operation: 'scroll',

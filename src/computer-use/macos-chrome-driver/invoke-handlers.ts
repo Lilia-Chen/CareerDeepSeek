@@ -51,7 +51,6 @@ export interface MacOSChromeInvokeDriver {
   typeText: (text: string) => Promise<void>
   pressKey: (key: string, modifiers?: string[]) => Promise<void>
   scroll: (
-    candidate: PromotedCandidate,
     deltaY?: number,
     deltaX?: number,
     options?: MacOSChromeInvokeScrollOptions,
@@ -63,6 +62,7 @@ export function createMacOSChromeInvokeHandlers(driver: MacOSChromeInvokeDriver)
   let latestRecognitionTargetKind: ChromeRecognitionTarget['kind'] | undefined
   let latestFocusedTarget: RegisteredFocusedTarget | undefined
   let latestNonTextInputClickedTarget: RegisteredFocusedTarget | undefined
+  let latestObservation: ObservationSnapshot | undefined
   const promotedCandidates = new Map<string, RegisteredPromotedCandidate>()
   const resetActionSequence = (): void => {
     latestRecognition = undefined
@@ -75,7 +75,9 @@ export function createMacOSChromeInvokeHandlers(driver: MacOSChromeInvokeDriver)
   return Object.freeze({
     'chrome.observe': async ({ spec }) => {
       resetActionSequence()
-      return invokeObserve(spec, driver)
+      const result = await invokeObserve(spec, driver)
+      latestObservation = isObservationSnapshot(result.output) ? result.output : undefined
+      return result
     },
     'chrome.recognize': async ({ request, spec }) => {
       resetActionSequence()
@@ -92,20 +94,37 @@ export function createMacOSChromeInvokeHandlers(driver: MacOSChromeInvokeDriver)
       invokePromote(request, spec, driver, latestRecognition, latestRecognitionTargetKind, promotedCandidates),
     'chrome.clickCandidate': async ({ request, spec }) =>
       invokeClickCandidate(request, spec, driver, promotedCandidates, (target) => {
+        latestObservation = undefined
         latestFocusedTarget = undefined
         latestNonTextInputClickedTarget = target
       }),
     'chrome.focusTextInput': async ({ request, spec }) =>
       invokeFocusTextInput(request, spec, driver, promotedCandidates, (target) => {
+        latestObservation = undefined
         latestFocusedTarget = target
         latestNonTextInputClickedTarget = undefined
       }),
     'chrome.typeText': async ({ request, spec }) =>
-      invokeTypeText(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget),
+      invokeTypeText(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget)
+        .then((result) => {
+          if (result.status === 'completed')
+            latestObservation = undefined
+          return result
+        }),
     'chrome.pressKey': async ({ request, spec }) =>
-      invokePressKey(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget),
+      invokePressKey(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget)
+        .then((result) => {
+          if (result.status === 'completed')
+            latestObservation = undefined
+          return result
+        }),
     'chrome.scroll': async ({ request, spec }) =>
-      invokeScroll(request, spec, driver, promotedCandidates),
+      invokeScroll(request, spec, driver, latestObservation)
+        .then((result) => {
+          if (result.status === 'completed')
+            latestObservation = undefined
+          return result
+        }),
   })
 }
 
@@ -697,22 +716,19 @@ async function invokeScroll(
   request: ComputerUseInvokeRequest,
   spec: Readonly<ComputerUseCommandSpec>,
   driver: MacOSChromeInvokeDriver,
-  promotedCandidates: Map<string, RegisteredPromotedCandidate>,
+  latestObservation: ObservationSnapshot | undefined,
 ): Promise<ComputerUseInvokeResult> {
-  const parsed = parseCandidateLocalIdInput(request.inputs, {
-    missingCode: 'missing_scroll_candidate_local_id',
-    rawCandidateCode: 'raw_candidate_not_accepted',
-  })
-  if (!parsed.ok)
-    return parsed.result(spec.id)
-
-  const registered = promotedCandidates.get(parsed.candidateLocalId)
-  if (!registered) {
-    return candidateProvenanceRefusal({
+  const forbiddenInput = firstForbiddenScrollInput(request.inputs)
+  if (forbiddenInput) {
+    return failureResult({
       commandId: spec.id,
-      code: 'candidate_not_in_sequence',
-      message: 'Scroll candidateLocalId was not produced by chrome.promote in this handler sequence.',
-      signals: ['candidate_not_in_sequence'],
+      status: 'refused',
+      summary: 'scroll rejected unsupported target input.',
+      failureClass: 'invalid_input',
+      code: 'scroll_target_input_not_accepted',
+      message: `chrome.scroll does not accept inputs.${forbiddenInput}; run chrome.observe and let the driver derive the scroll region.`,
+      signals: ['scroll_target_input_not_accepted', forbiddenInput],
+      knownLimits: ['scroll_uses_latest_observed_chrome_region'],
     })
   }
 
@@ -726,14 +742,30 @@ async function invokeScroll(
   if (!settleMs.ok)
     return settleMs.result(spec.id, 'settleMs')
 
-  const windowLocalPoint = centerOfBox(registered.candidate.target_spec.box)
+  if (!latestObservation) {
+    return failureResult({
+      commandId: spec.id,
+      status: 'refused',
+      summary: 'scroll requires a prior observe command.',
+      failureClass: 'safety_gate',
+      code: 'scroll_region_not_observed',
+      message: 'chrome.scroll requires a latest chrome.observe result so the driver can use its observed Chrome scroll region.',
+      signals: ['scroll_region_not_observed'],
+      knownLimits: ['caller_must_invoke_chrome_observe_before_scroll'],
+    })
+  }
+
   const options: MacOSChromeInvokeScrollOptions = {}
   if (settleMs.value !== undefined)
     options.settleMs = settleMs.value
 
-  const artifacts = uniqueArtifactRefs([registered.candidateRef, ...candidateEvidenceRefs(registered.candidate)])
+  const artifacts = uniqueArtifactRefs([
+    observationArtifactRef(latestObservation),
+    ...latestObservation.evidence,
+    ...(latestObservation.capture_contract_ref ? [latestObservation.capture_contract_ref] : []),
+  ])
   try {
-    await driver.scroll(registered.candidate, deltaY.value, deltaX.value, options)
+    await driver.scroll(deltaY.value, deltaX.value, options)
   }
   catch (error) {
     return driverActionFailureResult(spec.id, 'scroll', error, artifacts)
@@ -742,18 +774,16 @@ async function invokeScroll(
   return {
     commandId: spec.id,
     status: 'completed',
-    summary: `Scrolled promoted target ${registered.candidate.candidate_local_id}.`,
+    summary: `Scrolled observed Chrome region from snapshot ${latestObservation.snapshot_id}.`,
     output: {
-      candidateLocalId: registered.candidate.candidate_local_id,
-      candidateRef: registered.candidateRef,
+      observationSnapshotId: latestObservation.snapshot_id,
       deltaY: deltaY.value,
       deltaX: deltaX.value,
-      windowLocalPoint,
     },
     signals: ['scroll_delivered'],
     artifacts,
     knownLimits: [
-      'scroll_target_must_be_promoted_candidate',
+      'scroll_uses_latest_observed_chrome_region',
       'scroll_result_does_not_claim_page_boundary',
       'caller_must_invoke_chrome_observe_after_action',
     ],
@@ -765,6 +795,23 @@ function isRecognitionResult(value: unknown): value is RecognitionResult {
     && typeof value.recognition_id === 'string'
     && typeof value.found === 'boolean'
     && Array.isArray(value.evidence)
+}
+
+function isObservationSnapshot(value: unknown): value is ObservationSnapshot {
+  return isRecord(value)
+    && value.api_version === 'careerdeepseek.observation_snapshot.v1alpha1'
+    && typeof value.snapshot_id === 'string'
+    && Array.isArray(value.evidence)
+}
+
+function firstForbiddenScrollInput(inputs: Record<string, unknown> | undefined): string | undefined {
+  if (!inputs)
+    return undefined
+  for (const field of ['candidateLocalId', 'candidateRef', 'candidate', 'screenPoint', 'windowLocalPoint']) {
+    if (Object.hasOwn(inputs, field))
+      return field
+  }
+  return undefined
 }
 
 function observationArtifactRef(snapshot: ObservationSnapshot): ArtifactRef {
@@ -1014,15 +1061,8 @@ function optionalNumberInput(value: unknown): NumberInputResult {
       code: `invalid_${field}`,
       message: `${field} must be a finite number when provided.`,
       signals: [`invalid_${field}`],
-      knownLimits: ['explicit_scroll_target_required'],
+      knownLimits: ['scroll_uses_latest_observed_chrome_region'],
     }),
-  }
-}
-
-function centerOfBox(box: { x: number, y: number, width: number, height: number }): { x: number, y: number } {
-  return {
-    x: box.x + box.width / 2,
-    y: box.y + box.height / 2,
   }
 }
 
@@ -1067,6 +1107,10 @@ const SAFETY_GATE_FAILURE_CODES = new Set([
   'anchor_recheck_low_confidence',
   'anchor_recheck_moved',
   'anchor_recheck_outside_window',
+  'scroll_region_not_observed',
+  'scroll_region_stale',
+  'scroll_region_window_changed',
+  'scroll_region_outside_window',
 ])
 
 function mapDriverActionError(error: unknown): {

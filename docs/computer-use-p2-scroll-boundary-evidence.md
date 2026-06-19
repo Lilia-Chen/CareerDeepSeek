@@ -6,9 +6,10 @@ Scope: possible future CareerDeepSeek Chrome window observation and single-step 
 This document does not define a full scroll-scan controller, pagination workflow,
 or research-completeness policy.
 
-P1.5 supersedes the old harness scroll behavior: `chrome.scroll` must consume a
-same-sequence promoted candidate, and targetless `MacOSChromeAgentHarness`
-scroll helpers are not approved P1.5 behavior.
+P1.5 supersedes the old harness scroll behavior: `chrome.scroll` consumes the
+latest same-sequence observe-derived Chrome scroll region lease, and legacy
+targetless `MacOSChromeAgentHarness` scroll helpers are not approved P1.5
+behavior.
 
 ## Design Decision
 

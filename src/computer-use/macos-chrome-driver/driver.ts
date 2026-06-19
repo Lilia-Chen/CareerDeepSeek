@@ -61,7 +61,11 @@ export interface MacOSChromeScrollOptions {
 }
 
 type ActionType = 'click' | 'focusTextInput' | 'typeText' | 'pressKey' | 'scroll'
-type ActionExecutorResult = void | { livenessRecheck?: Record<string, unknown> }
+type ActionExecutorResult = void | {
+  livenessRecheck?: Record<string, unknown>
+  scrollRegion?: Record<string, unknown>
+  knownLimits?: string[]
+}
 
 interface StoredPromotedCandidate {
   ref: ArtifactRef
@@ -73,6 +77,46 @@ interface FocusedTextInputLease {
   candidateRef: ArtifactRef
   windowNumber?: number
   grounding: 'ax_node'
+}
+
+interface ChromeScrollRegionLease {
+  apiVersion: 'careerdeepseek.chrome_scroll_region_lease.v1alpha1'
+  leaseId: string
+  observationSnapshotId: string
+  capturedAtMillis: number
+  ttlMillis: number
+  observationRef: ArtifactRef
+  source: 'ax_web_area' | 'window_content_fallback'
+  basis: string[]
+  regionWindowLocal: Bounds
+  anchorWindowLocal: { x: number, y: number }
+  windowRef: {
+    appBundleId?: string
+    ownerPid: number
+    windowNumber?: number
+    profilePath?: string
+    profileName?: string
+  }
+  knownLimits: string[]
+}
+
+interface ChromeViewportBoundsCandidate {
+  bounds: Bounds
+  source: 'ax_web_area'
+  basis: string[]
+  knownLimits: string[]
+}
+
+interface ResolvedScrollRegionLease {
+  lease: ChromeScrollRegionLease
+  region: {
+    screenBounds: Bounds
+    windowLocalBounds: Bounds
+  }
+  anchor: {
+    screenPoint: { x: number, y: number }
+    windowLocalPoint: { x: number, y: number }
+  }
 }
 
 interface CandidateLivenessCheck {
@@ -92,6 +136,11 @@ interface ManagedChromeProfileIdentity {
 const NORMAL_CHROME_MIN_WIDTH = 480
 const NORMAL_CHROME_MIN_HEIGHT = 300
 const WINDOW_MATCH_TOLERANCE = 8
+const SCROLL_REGION_LEASE_TTL_MS = 15_000
+const MIN_SCROLL_REGION_WIDTH = 100
+const MIN_SCROLL_REGION_HEIGHT = 100
+const BROWSER_CHROME_FALLBACK_TOP_INSET = 96
+const SCROLL_REGION_ANCHOR_Y_RATIO = 0.55
 
 export class MacOSChromeDriver {
   readonly #sessionId: string
@@ -113,6 +162,7 @@ export class MacOSChromeDriver {
   #recognitionArtifacts = new Map<string, ArtifactRef>()
   #promotedCandidateArtifacts = new Map<string, StoredPromotedCandidate>()
   #focusedTextInputLease?: FocusedTextInputLease
+  #scrollRegionLease?: ChromeScrollRegionLease
 
   constructor(options: MacOSChromeDriverOptions) {
     if (!options.sessionId?.trim()) {
@@ -229,8 +279,9 @@ export class MacOSChromeDriver {
       ? { run_id: this.#runId, artifact_id: ocrRowReportArtifact.artifact_id, span_id: ocrRowReportArtifact.span_id }
       : undefined
 
-    // Compute viewport bounds from AX tree (falls back to window bounds)
-    const viewportBounds = findChromeViewportBounds(axSnapshot) ?? chromeContext.window.bounds
+    // Compute viewport bounds from the leased Chrome AXWindow when possible.
+    const axViewportBounds = findChromeViewportBounds(axSnapshot, chromeContext.window.bounds)
+    const viewportBounds = axViewportBounds?.bounds ?? chromeContext.window.bounds
 
     // Normalize ALL sources → SurfaceNode[]
     const nodes = normalizeToSurfaceNodes({
@@ -255,6 +306,22 @@ export class MacOSChromeDriver {
       captureContractRef: captureContractArtifact,
       sourceArtifacts: [captureArtifact, captureContractArtifact],
     })
+    const observationRef = {
+      run_id: this.#runId,
+      artifact_id: `observation_${snapshotId}`,
+      span_id: spanId,
+    }
+    const scrollRegionLease = buildChromeScrollRegionLease({
+      snapshotId,
+      runId: this.#runId,
+      spanId,
+      capturedAtMillis,
+      window: chromeContext.window,
+      profile: chromeContext.profile,
+      observationRef,
+      viewportCandidate: axViewportBounds,
+    })
+    this.#scrollRegionLease = scrollRegionLease
 
     const result: ObservationSnapshot = {
       api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
@@ -288,11 +355,13 @@ export class MacOSChromeDriver {
         ocr_known_limits: ocr.knownLimits ?? [],
         ocr_rows: ocrRowSummary(ocrRows),
         scroll_boundary: scrollBoundary,
+        scroll_region: serializeScrollRegionLease(scrollRegionLease, chromeContext.window.bounds),
       },
       known_limits: uniqueStrings([
         this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked',
         ...(ocr.knownLimits ?? []),
         ...ocrRows.knownLimits,
+        ...scrollRegionLease.knownLimits,
       ]),
     }
 
@@ -475,39 +544,44 @@ export class MacOSChromeDriver {
       isSupportedClickCandidateGrounding,
       ['ocr_anchor', 'visual_row'],
     )
-    await this.#executeAction('click', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
-      const candidateFromArtifact = storedCandidate!.candidate
-      const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
-      if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
-        throw new Error('Refusing click: Chrome window changed after candidate promotion.')
-      }
+    try {
+      await this.#executeAction('click', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
+        const candidateFromArtifact = storedCandidate!.candidate
+        const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
+        if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
+          throw new Error('Refusing click: Chrome window changed after candidate promotion.')
+        }
 
-      const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
-      const box = liveness.item.box
-      const center = centerOf(box)
+        const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
+        const box = liveness.item.box
+        const center = centerOf(box)
 
-      if (!pointInsideBounds(center, liveness.context.window.bounds)) {
-        throw new Error('Refusing click: candidate point is outside the active Chrome window.')
-      }
+        if (!pointInsideBounds(center, liveness.context.window.bounds)) {
+          throw new Error('Refusing click: candidate point is outside the active Chrome window.')
+        }
 
-      const pointerTrace = buildPointerTrace({
-        from: this.#lastCursorPosition,
-        to: center,
-        bounds: this.#config.allowedBounds,
-      })
-      try {
-        await executeMoveAndClick(this.#config, {
-          pointerTrace,
-          button: 0,
-          clickCount: 1,
+        const pointerTrace = buildPointerTrace({
+          from: this.#lastCursorPosition,
+          to: center,
+          bounds: this.#config.allowedBounds,
         })
-      }
-      catch (err) {
-        throw new ActionExecutionError((err as Error).message, liveness.detail)
-      }
-      this.#lastCursorPosition = center
-      return { livenessRecheck: liveness.detail }
-    }, callerPreconditionFailure)
+        try {
+          await executeMoveAndClick(this.#config, {
+            pointerTrace,
+            button: 0,
+            clickCount: 1,
+          })
+        }
+        catch (err) {
+          throw new ActionExecutionError((err as Error).message, liveness.detail)
+        }
+        this.#lastCursorPosition = center
+        return { livenessRecheck: liveness.detail }
+      }, callerPreconditionFailure)
+    }
+    finally {
+      this.#scrollRegionLease = undefined
+    }
   }
 
   async focusTextInput(candidate: PromotedCandidate): Promise<void> {
@@ -519,39 +593,44 @@ export class MacOSChromeDriver {
       isSupportedFocusTextInputCandidateGrounding,
       ['ax_node text_input'],
     )
-    await this.#executeAction('focusTextInput', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
-      const candidateFromArtifact = storedCandidate!.candidate
-      const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
-      if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
-        throw new Error('Refusing focusTextInput: Chrome window changed after candidate promotion.')
-      }
+    try {
+      await this.#executeAction('focusTextInput', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
+        const candidateFromArtifact = storedCandidate!.candidate
+        const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
+        if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
+          throw new Error('Refusing focusTextInput: Chrome window changed after candidate promotion.')
+        }
 
-      const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
-      const box = liveness.item.box
-      const center = centerOf(box)
+        const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
+        const box = liveness.item.box
+        const center = centerOf(box)
 
-      if (!pointInsideBounds(center, liveness.context.window.bounds)) {
-        throw new Error('Refusing focusTextInput: candidate point is outside the active Chrome window.')
-      }
+        if (!pointInsideBounds(center, liveness.context.window.bounds)) {
+          throw new Error('Refusing focusTextInput: candidate point is outside the active Chrome window.')
+        }
 
-      const pointerTrace = buildPointerTrace({
-        from: this.#lastCursorPosition,
-        to: center,
-        bounds: this.#config.allowedBounds,
-      })
-      try {
-        await executeMoveAndClick(this.#config, {
-          pointerTrace,
-          button: 0,
-          clickCount: 1,
+        const pointerTrace = buildPointerTrace({
+          from: this.#lastCursorPosition,
+          to: center,
+          bounds: this.#config.allowedBounds,
         })
-      }
-      catch (err) {
-        throw new ActionExecutionError((err as Error).message, liveness.detail)
-      }
-      this.#lastCursorPosition = center
-      return { livenessRecheck: liveness.detail }
-    }, callerPreconditionFailure)
+        try {
+          await executeMoveAndClick(this.#config, {
+            pointerTrace,
+            button: 0,
+            clickCount: 1,
+          })
+        }
+        catch (err) {
+          throw new ActionExecutionError((err as Error).message, liveness.detail)
+        }
+        this.#lastCursorPosition = center
+        return { livenessRecheck: liveness.detail }
+      }, callerPreconditionFailure)
+    }
+    finally {
+      this.#scrollRegionLease = undefined
+    }
 
     if (storedCandidate && candidateArtifactRef) {
       this.#focusedTextInputLease = {
@@ -565,80 +644,89 @@ export class MacOSChromeDriver {
 
   async typeText(text: string): Promise<void> {
     const focusLease = this.#focusedTextInputLease
-    await this.#executeAction('typeText', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executeTypeText(this.#config, {
-      pointerTrace: [],
-      text,
-    }), focusedTextInputPreconditionFailure(focusLease))
+    try {
+      await this.#executeAction('typeText', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executeTypeText(this.#config, {
+        pointerTrace: [],
+        text,
+      }), focusedTextInputPreconditionFailure(focusLease))
+    }
+    finally {
+      this.#scrollRegionLease = undefined
+    }
   }
 
   async pressKey(key: string, modifiers: string[] = []): Promise<void> {
     const focusLease = this.#focusedTextInputLease
-    await this.#executeAction('pressKey', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executePressKeys(this.#config, { keys: [key], modifiers }), focusedTextInputPreconditionFailure(focusLease))
+    try {
+      await this.#executeAction('pressKey', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executePressKeys(this.#config, { keys: [key], modifiers }), focusedTextInputPreconditionFailure(focusLease))
+    }
+    finally {
+      this.#scrollRegionLease = undefined
+    }
   }
 
-  async scroll(candidate: PromotedCandidate, deltaY = 600, deltaX = 0, options: MacOSChromeScrollOptions = {}): Promise<void> {
-    const invalidCandidateFailure = promotedScrollCandidateInputFailure(candidate)
-    const storedCandidate = invalidCandidateFailure
-      ? null
-      : this.#promotedCandidateArtifacts.get(candidate.candidate_local_id) ?? null
-    const candidateArtifactRef = storedCandidate?.ref ?? null
-    const callerPreconditionFailure = invalidCandidateFailure
-      ?? promotedCandidatePreconditionFailure(
-        candidate,
-        storedCandidate,
-        isSupportedScrollCandidateGrounding,
-        ['ocr_anchor', 'visual_row'],
-      )
-    await this.#executeAction('scroll', candidateArtifactRef, candidate?.target_spec?.grounding, async (context) => {
-      rejectCallerSuppliedScrollCoordinates(options)
-      const candidateFromArtifact = storedCandidate!.candidate
-      const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
-      if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
-        throw new Error('Refusing scroll: Chrome window changed after candidate promotion.')
-      }
+  async scroll(deltaY = 600, deltaX = 0, options: MacOSChromeScrollOptions = {}): Promise<void> {
+    rejectLegacyScrollCandidateInput(deltaY)
+    const lease = this.#scrollRegionLease
+    const callerPreconditionFailure = scrollRegionPreconditionFailure(lease)
 
-      const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
-      const center = centerOf(liveness.item.box)
-      if (!pointInsideBounds(center, liveness.context.window.bounds)) {
-        throw new Error('Refusing scroll: candidate point is outside the active Chrome window.')
-      }
-      const anchor = {
-        screenPoint: center,
-        windowLocalPoint: {
-          x: center.x - liveness.context.window.bounds.x,
-          y: center.y - liveness.context.window.bounds.y,
-        },
-      }
+    await this.#executeAction('scroll', null, 'observed_scroll_region', async (context) => {
+      rejectCallerSuppliedScrollCoordinates(options)
+      const resolved = resolveScrollRegionForAction(lease!, context)
+      const baseKnownLimits = [
+        ...resolved.lease.knownLimits,
+        'caller_must_post_scroll_observe',
+        'scroll_result_does_not_claim_page_boundary',
+      ]
 
       try {
         await executeWindowTargetedScroll(this.#config, {
           pid: context.window.ownerPid,
           windowNumber: context.window.windowNumber,
-          screenPoint: anchor.screenPoint,
-          windowLocalPoint: anchor.windowLocalPoint,
+          screenPoint: resolved.anchor.screenPoint,
+          windowLocalPoint: resolved.anchor.windowLocalPoint,
           deltaX,
           deltaY,
           settleMs: options.settleMs,
         })
-        return
+        this.#scrollRegionLease = undefined
+        return {
+          scrollRegion: serializeScrollRegionActionDetail(resolved, {
+            selectedPath: 'window_targeted_scroll',
+            attemptedPaths: ['window_targeted_scroll'],
+          }),
+          knownLimits: baseKnownLimits,
+        }
       }
-      catch {
+      catch (error) {
         // Fall back to foreground HID delivery when the private window-targeted
         // route is unavailable. The Swift fallback restores the real cursor.
+        const pointerTrace = buildPointerTrace({
+          from: this.#lastCursorPosition,
+          to: resolved.anchor.screenPoint,
+          bounds: this.#config.allowedBounds,
+        })
+        await executeScroll(this.#config, {
+          pointerTrace,
+          deltaX,
+          deltaY,
+          settleMs: options.settleMs,
+        })
+        this.#lastCursorPosition = resolved.anchor.screenPoint
+        this.#scrollRegionLease = undefined
+        return {
+          scrollRegion: serializeScrollRegionActionDetail(resolved, {
+            selectedPath: 'foreground_hid_scroll',
+            attemptedPaths: ['window_targeted_scroll', 'foreground_hid_scroll'],
+            fallbackReason: errorMessage(error),
+          }),
+          knownLimits: uniqueStrings([
+            ...baseKnownLimits,
+            'window_targeted_scroll_unavailable_fell_back_to_foreground_hid',
+            `window_targeted_scroll_error: ${errorMessage(error)}`,
+          ]),
+        }
       }
-
-      const pointerTrace = buildPointerTrace({
-        from: this.#lastCursorPosition,
-        to: anchor.screenPoint,
-        bounds: this.#config.allowedBounds,
-      })
-      await executeScroll(this.#config, {
-        pointerTrace,
-        deltaX,
-        deltaY,
-        settleMs: options.settleMs,
-      })
-      return { livenessRecheck: liveness.detail }
     }, callerPreconditionFailure)
   }
 
@@ -688,8 +776,9 @@ export class MacOSChromeDriver {
         executed: true,
         refused: false,
         refusalReasons: [],
-        knownLimits: [],
+        knownLimits: actionDetail?.knownLimits ?? [],
         livenessRecheck: actionDetail?.livenessRecheck,
+        scrollRegion: actionDetail?.scrollRegion,
       })
       this.#traceStore?.endSpan(spanId, 'ok')
     }
@@ -811,6 +900,7 @@ export class MacOSChromeDriver {
     refusalReasons: string[]
     knownLimits: string[]
     livenessRecheck?: Record<string, unknown>
+    scrollRegion?: Record<string, unknown>
   }): void {
     this.#traceStore?.writeJsonArtifact({
       artifact_id: `action_execution_${input.actionId}`,
@@ -828,6 +918,7 @@ export class MacOSChromeDriver {
         refused: input.refused,
         refusal_reasons: input.refusalReasons,
         liveness_recheck: input.livenessRecheck,
+        scroll_region: input.scrollRegion,
         timestamp_millis: Date.now(),
         known_limits: input.knownLimits,
       },
@@ -1324,6 +1415,7 @@ class ActionRefusalError extends Error {
     message: string
     detail: Record<string, unknown>
     knownLimits: string[]
+    expected?: string
   }) {
     super(input.message)
     this.name = 'ActionRefusalError'
@@ -1334,7 +1426,7 @@ class ActionRefusalError extends Error {
       code: input.code,
       detail: input.message,
       observed: input.detail,
-      expected: 'fresh promoted-candidate liveness check before macOS event delivery',
+      expected: input.expected ?? 'fresh promoted-candidate liveness check before macOS event delivery',
     }
   }
 }
@@ -1391,21 +1483,6 @@ function promotedCandidatePreconditionFailure(
   return undefined
 }
 
-function promotedScrollCandidateInputFailure(candidate: unknown): SafetyFailure | undefined {
-  if (isRecord(candidate)
-    && typeof candidate.candidate_local_id === 'string'
-    && isRecord(candidate.target_spec)) {
-    return undefined
-  }
-
-  return {
-    code: 'promoted_scroll_candidate_missing',
-    detail: 'Scroll requires a promoted candidate produced by driver.promoteCandidate().',
-    observed: candidate,
-    expected: 'promoted scroll candidate argument',
-  }
-}
-
 function focusedTextInputPreconditionFailure(
   lease: FocusedTextInputLease | undefined,
 ): SafetyFailure | undefined {
@@ -1458,10 +1535,6 @@ function isSupportedClickCandidateGrounding(candidate: PromotedCandidate): boole
   const grounding = candidate.target_spec.grounding
   return (grounding === 'ocr_anchor' && candidate.kind === 'ocr_text')
     || (grounding === 'visual_row' && candidate.kind === 'ocr_row')
-}
-
-function isSupportedScrollCandidateGrounding(candidate: PromotedCandidate): boolean {
-  return isSupportedClickCandidateGrounding(candidate)
 }
 
 function isSupportedFocusTextInputCandidateGrounding(candidate: PromotedCandidate): boolean {
@@ -1814,27 +1887,325 @@ function readChromeLocalStateProfileInfo(
 }
 
 /**
- * Finds the AXWebArea viewport bounds from an accessibility snapshot.
- * Falls back to undefined when no AXWebArea is found (caller should use
- * window bounds instead).
+ * Finds a usable AXWebArea viewport inside the leased Chrome window.
+ * Falls back to undefined when no valid AXWebArea intersects the window.
  */
-function findChromeViewportBounds(axSnapshot?: AXSnapshot): Bounds | undefined {
+function findChromeViewportBounds(
+  axSnapshot: AXSnapshot | undefined,
+  windowBounds: Bounds,
+): ChromeViewportBoundsCandidate | undefined {
   if (!axSnapshot)
     return undefined
-  let result: Bounds | undefined
-  function walk(node: AXNode) {
-    if (result)
-      return
-    if (node.role === 'AXWebArea' && node.bounds && node.bounds.width > 0 && node.bounds.height > 0) {
-      result = node.bounds
-      return
+
+  const exactWindow = collectAXWindows(axSnapshot)
+    .find(node => node.bounds && boundsNear(node.bounds, windowBounds))
+  if (exactWindow) {
+    const candidate = selectLargestValidWebArea(exactWindow, windowBounds)
+    if (candidate) {
+      return {
+        bounds: candidate,
+        source: 'ax_web_area',
+        basis: ['ax_window_bounds_match', 'ax_web_area_bounds', 'chrome_window_intersection'],
+        knownLimits: [],
+      }
     }
-    for (const child of node.children) {
+    return undefined
+  }
+
+  return undefined
+}
+
+function selectLargestValidWebArea(root: AXNode, windowBounds: Bounds): Bounds | undefined {
+  const candidates = collectAXWebAreas(root)
+    .map(node => node.bounds ? intersectBounds(node.bounds, windowBounds) : undefined)
+    .filter((bounds): bounds is Bounds => isValidScrollRegionBounds(bounds))
+    .sort((a, b) => areaOfBounds(b) - areaOfBounds(a))
+
+  return candidates[0]
+}
+
+function collectAXWebAreas(root: AXNode): AXNode[] {
+  const webAreas: AXNode[] = []
+  function walk(node: AXNode): void {
+    if (node.role === 'AXWebArea')
+      webAreas.push(node)
+    for (const child of node.children)
       walk(child)
+  }
+  walk(root)
+  return webAreas
+}
+
+function buildChromeScrollRegionLease(input: {
+  snapshotId: string
+  runId: string
+  spanId: string
+  capturedAtMillis: number
+  window: ChromeWindowRef
+  profile: ChromeContextSnapshot['profile']
+  observationRef: ArtifactRef
+  viewportCandidate?: ChromeViewportBoundsCandidate
+}): ChromeScrollRegionLease {
+  const source = input.viewportCandidate?.source ?? 'window_content_fallback'
+  const regionScreenBounds = input.viewportCandidate?.bounds
+    ?? windowContentFallbackBounds(input.window.bounds)
+  const basis = input.viewportCandidate?.basis ?? [
+    'chrome_window_bounds',
+    'browser_chrome_height_estimate',
+    'conservative_content_region',
+  ]
+  const knownLimits = uniqueStrings([
+    ...(input.viewportCandidate?.knownLimits ?? []),
+    ...(input.viewportCandidate
+      ? []
+      : ['scroll_region_uses_window_bounds_fallback', 'browser_chrome_height_estimated']),
+  ])
+  const anchorScreenPoint = scrollRegionAnchorScreenPoint(regionScreenBounds, input.window.bounds, source)
+
+  return {
+    apiVersion: 'careerdeepseek.chrome_scroll_region_lease.v1alpha1',
+    leaseId: `scroll_region_${input.snapshotId}`,
+    observationSnapshotId: input.snapshotId,
+    capturedAtMillis: input.capturedAtMillis,
+    ttlMillis: SCROLL_REGION_LEASE_TTL_MS,
+    observationRef: input.observationRef,
+    source,
+    basis,
+    regionWindowLocal: boundsToWindowLocal(regionScreenBounds, input.window.bounds),
+    anchorWindowLocal: pointToWindowLocal(anchorScreenPoint, input.window.bounds),
+    windowRef: {
+      appBundleId: input.window.ownerBundleId,
+      ownerPid: input.window.ownerPid,
+      windowNumber: input.window.windowNumber,
+      profilePath: input.profile.profile_path,
+      profileName: input.profile.profile_name,
+    },
+    knownLimits,
+  }
+}
+
+function windowContentFallbackBounds(windowBounds: Bounds): Bounds {
+  const topInset = Math.min(
+    BROWSER_CHROME_FALLBACK_TOP_INSET,
+    Math.max(0, windowBounds.height - MIN_SCROLL_REGION_HEIGHT),
+  )
+  return {
+    x: windowBounds.x,
+    y: windowBounds.y + topInset,
+    width: windowBounds.width,
+    height: windowBounds.height - topInset,
+  }
+}
+
+function scrollRegionAnchorScreenPoint(
+  regionScreenBounds: Bounds,
+  windowBounds: Bounds,
+  source: ChromeScrollRegionLease['source'],
+): { x: number, y: number } {
+  const y = source === 'window_content_fallback'
+    ? windowBounds.y + windowBounds.height * SCROLL_REGION_ANCHOR_Y_RATIO
+    : regionScreenBounds.y + regionScreenBounds.height * SCROLL_REGION_ANCHOR_Y_RATIO
+  return {
+    x: Math.round(regionScreenBounds.x + regionScreenBounds.width / 2),
+    y: Math.round(y),
+  }
+}
+
+function resolveScrollRegionForAction(
+  lease: ChromeScrollRegionLease,
+  context: ChromeContextSnapshot,
+): ResolvedScrollRegionLease {
+  const mismatch = scrollRegionWindowMismatch(lease, context)
+  if (mismatch) {
+    throw new ActionRefusalError({
+      code: 'scroll_region_window_changed',
+      message: `Refusing scroll: ${mismatch}. Run observe() again before scrolling.`,
+      detail: {
+        lease: serializeScrollRegionLease(lease, context.window.bounds),
+        current_window: context.window,
+      },
+      expected: 'current Chrome window matches observe-derived scroll region lease',
+      knownLimits: ['action refused before macOS event delivery'],
+    })
+  }
+
+  const regionScreenBounds = boundsFromWindowLocal(lease.regionWindowLocal, context.window.bounds)
+  const anchorScreenPoint = pointFromWindowLocal(lease.anchorWindowLocal, context.window.bounds)
+  if (!pointInsideBounds(anchorScreenPoint, context.window.bounds)) {
+    throw new ActionRefusalError({
+      code: 'scroll_region_outside_window',
+      message: 'Refusing scroll: observed scroll anchor is outside the current Chrome window.',
+      detail: {
+        lease: serializeScrollRegionLease(lease, context.window.bounds),
+        current_window: context.window,
+      },
+      expected: 'observe-derived scroll anchor inside current Chrome window bounds',
+      knownLimits: ['action refused before macOS event delivery'],
+    })
+  }
+
+  return {
+    lease,
+    region: {
+      screenBounds: regionScreenBounds,
+      windowLocalBounds: lease.regionWindowLocal,
+    },
+    anchor: {
+      screenPoint: anchorScreenPoint,
+      windowLocalPoint: lease.anchorWindowLocal,
+    },
+  }
+}
+
+function scrollRegionWindowMismatch(lease: ChromeScrollRegionLease, context: ChromeContextSnapshot): string | undefined {
+  if (lease.windowRef.windowNumber !== undefined && context.window.windowNumber !== lease.windowRef.windowNumber)
+    return 'window_number_changed'
+  if (context.window.ownerPid !== lease.windowRef.ownerPid)
+    return 'owner_pid_changed'
+  if (lease.windowRef.appBundleId && context.window.ownerBundleId !== lease.windowRef.appBundleId)
+    return 'app_bundle_id_changed'
+  if (lease.windowRef.profilePath && context.profile.profile_path !== lease.windowRef.profilePath)
+    return 'profile_path_changed'
+  if (lease.windowRef.profileName && context.profile.profile_name !== lease.windowRef.profileName)
+    return 'profile_name_changed'
+  return undefined
+}
+
+function serializeScrollRegionLease(
+  lease: ChromeScrollRegionLease,
+  windowBounds: Bounds,
+): Record<string, unknown> {
+  return {
+    api_version: lease.apiVersion,
+    lease_id: lease.leaseId,
+    observation_snapshot_id: lease.observationSnapshotId,
+    captured_at_millis: lease.capturedAtMillis,
+    ttl_millis: lease.ttlMillis,
+    source: lease.source,
+    basis: lease.basis,
+    window_ref: lease.windowRef,
+    observation_ref: lease.observationRef,
+    region: {
+      window_local_bounds: lease.regionWindowLocal,
+      screen_bounds: boundsFromWindowLocal(lease.regionWindowLocal, windowBounds),
+    },
+    anchor: {
+      window_local_point: lease.anchorWindowLocal,
+      screen_point: pointFromWindowLocal(lease.anchorWindowLocal, windowBounds),
+    },
+    known_limits: lease.knownLimits,
+  }
+}
+
+function serializeScrollRegionActionDetail(
+  resolved: ResolvedScrollRegionLease,
+  delivery: {
+    selectedPath: string
+    attemptedPaths: string[]
+    fallbackReason?: string
+  },
+): Record<string, unknown> {
+  return {
+    api_version: resolved.lease.apiVersion,
+    lease_id: resolved.lease.leaseId,
+    observation_snapshot_id: resolved.lease.observationSnapshotId,
+    captured_at_millis: resolved.lease.capturedAtMillis,
+    ttl_millis: resolved.lease.ttlMillis,
+    source: resolved.lease.source,
+    basis: resolved.lease.basis,
+    window_ref: resolved.lease.windowRef,
+    observation_ref: resolved.lease.observationRef,
+    region: {
+      window_local_bounds: resolved.region.windowLocalBounds,
+      screen_bounds: resolved.region.screenBounds,
+    },
+    anchor: {
+      window_local_point: resolved.anchor.windowLocalPoint,
+      screen_point: resolved.anchor.screenPoint,
+    },
+    known_limits: resolved.lease.knownLimits,
+    delivery,
+  }
+}
+
+function scrollRegionPreconditionFailure(lease: ChromeScrollRegionLease | undefined): SafetyFailure | undefined {
+  if (!lease) {
+    return {
+      code: 'scroll_region_not_observed',
+      detail: 'Scroll requires an observe-derived Chrome scroll region lease from the current command sequence.',
+      observed: null,
+      expected: 'driver.observe() before driver.scroll()',
     }
   }
-  walk(axSnapshot.root)
-  return result
+
+  const ageMillis = Date.now() - lease.capturedAtMillis
+  if (ageMillis > lease.ttlMillis) {
+    return {
+      code: 'scroll_region_stale',
+      detail: 'Observed Chrome scroll region lease is stale. Run observe() again before scrolling.',
+      observed: { age_millis: ageMillis, ttl_millis: lease.ttlMillis },
+      expected: 'fresh observe-derived Chrome scroll region lease',
+    }
+  }
+
+  return undefined
+}
+
+function boundsToWindowLocal(bounds: Bounds, windowBounds: Bounds): Bounds {
+  return {
+    x: Math.round(bounds.x - windowBounds.x),
+    y: Math.round(bounds.y - windowBounds.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  }
+}
+
+function boundsFromWindowLocal(bounds: Bounds, windowBounds: Bounds): Bounds {
+  return {
+    x: Math.round(windowBounds.x + bounds.x),
+    y: Math.round(windowBounds.y + bounds.y),
+    width: bounds.width,
+    height: bounds.height,
+  }
+}
+
+function pointToWindowLocal(point: { x: number, y: number }, windowBounds: Bounds): { x: number, y: number } {
+  return {
+    x: Math.round(point.x - windowBounds.x),
+    y: Math.round(point.y - windowBounds.y),
+  }
+}
+
+function pointFromWindowLocal(point: { x: number, y: number }, windowBounds: Bounds): { x: number, y: number } {
+  return {
+    x: Math.round(windowBounds.x + point.x),
+    y: Math.round(windowBounds.y + point.y),
+  }
+}
+
+function intersectBounds(a: Bounds, b: Bounds): Bounds | undefined {
+  const x1 = Math.max(a.x, b.x)
+  const y1 = Math.max(a.y, b.y)
+  const x2 = Math.min(a.x + a.width, b.x + b.width)
+  const y2 = Math.min(a.y + a.height, b.y + b.height)
+  if (x2 <= x1 || y2 <= y1)
+    return undefined
+  return {
+    x: x1,
+    y: y1,
+    width: x2 - x1,
+    height: y2 - y1,
+  }
+}
+
+function isValidScrollRegionBounds(bounds: Bounds | undefined): bounds is Bounds {
+  return bounds !== undefined
+    && bounds.width >= MIN_SCROLL_REGION_WIDTH
+    && bounds.height >= MIN_SCROLL_REGION_HEIGHT
+}
+
+function areaOfBounds(bounds: Bounds): number {
+  return bounds.width * bounds.height
 }
 
 function emptyOcrTextSnapshot(capture: ChromeWindowCapture, error?: unknown): OcrTextSnapshot {
@@ -1965,10 +2336,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function rejectCallerSuppliedScrollCoordinates(options: MacOSChromeScrollOptions): void {
   const rawOptions = options as Record<string, unknown>
   if (Object.hasOwn(rawOptions, 'screenPoint')) {
-    throw new Error('MacOSChromeDriver.scroll does not accept screenPoint; pass a promoted scroll candidate so the driver can derive coordinates after liveness recheck.')
+    throw new Error('MacOSChromeDriver.scroll does not accept screenPoint; run observe() first so the driver can derive coordinates from the observed Chrome scroll region.')
   }
   if (Object.hasOwn(rawOptions, 'windowLocalPoint')) {
-    throw new Error('MacOSChromeDriver.scroll does not accept windowLocalPoint; pass a promoted scroll candidate so the driver can derive coordinates after liveness recheck.')
+    throw new Error('MacOSChromeDriver.scroll does not accept windowLocalPoint; run observe() first so the driver can derive coordinates from the observed Chrome scroll region.')
+  }
+}
+
+function rejectLegacyScrollCandidateInput(deltaY: unknown): void {
+  if (isRecord(deltaY)
+    && typeof deltaY.candidate_local_id === 'string'
+    && isRecord(deltaY.target_spec)) {
+    throw new Error('MacOSChromeDriver.scroll does not accept promoted candidates; run observe() first and call scroll(deltaY, deltaX, options).')
   }
 }
 

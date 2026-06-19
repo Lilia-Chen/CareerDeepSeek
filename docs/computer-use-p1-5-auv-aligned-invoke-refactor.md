@@ -154,10 +154,10 @@ P1.5 的 visual trace pack 只读取既有 trace/artifact，生成便于审查�
 
 ### 8. All input actions require explicit target selection
 
-P1.5 不允许 action command 依赖“当前鼠标位置刚好正确”或“当前键盘焦点刚好正确”。所有会投递输入的网页内动作都必须先通过 caller pre-action observation / recognition / promotion 建立明确目标。
+P1.5 不允许 action command 依赖“当前鼠标位置刚好正确”或“当前键盘焦点刚好正确”。所有会投递输入的网页内动作都必须先通过 caller pre-action observation 建立明确目标；需要元素身份的动作再进入 recognition / promotion。
 
 - pointer click 消费 promoted candidate。
-- scroll 必须消费 promoted scroll target / region，不能对未知鼠标位置滚动。
+- scroll 消费最近一次 `chrome.observe` 生成的 Chrome scroll region lease。它不消费 promoted candidate，也不接受 caller 坐标。
 - keyboard input 必须先通过 promoted candidate 显式选中或聚焦目标，再投递 `typeText` / `pressKey`。
 - action 后仍由调用者显式执行 caller post-action observation。
 
@@ -357,7 +357,7 @@ Contract 规则：
 - pointer action 必须消费 traced `promoted-candidate` artifact。
 - command result 不能吞掉 driver refusal。
 - failure class 和 failure code 必须稳定，便于 QA 聚合。
-- P1.5.9 授权 `action-execution.grounding` 记录动作消费的 grounding。除此之外，P1.5 不授权新增 action-result schema 或新的 `action-execution` schema field；invoke linkage 只能通过 invoke result、trace span/event 和既有 artifact refs 表达。
+- P1.5 授权 `action-execution.grounding` 记录动作消费的 grounding，并授权 `action-execution.scroll_region` 记录 `chrome.scroll` 消费的 observe-derived Chrome scroll region lease、anchor、delivery path 和 fallback reason。除此之外，P1.5 不授权新增 action-result schema 或新的 `action-execution` schema field；invoke linkage 只能通过 invoke result、trace span/event 和既有 artifact refs 表达。
 
 ## Observation Terminology
 
@@ -489,7 +489,7 @@ chrome.scroll
 
 - `chrome.clickCandidate` 必须消费 `ocr_anchor` 或 OCR-derived `visual_row` grounded `promoted-candidate` artifact，并拒绝 `ax_node`。
 - `chrome.focusTextInput` 必须消费同一 command sequence 中 promoted 的 `ax_node` text-input candidate；这是 `typeText` / `pressKey` 的 focus provenance 来源。
-- `chrome.scroll` 必须消费 promoted scroll target / region，不能依赖当前鼠标位置。
+- `chrome.scroll` 必须消费最近一次 `chrome.observe` 生成的 Chrome scroll region lease，不能依赖当前鼠标位置或 caller 坐标。
 - `chrome.typeText`、`chrome.pressKey` 必须在同一 audited command sequence 中跟随一次成功的 promoted target focus/selection，不能依赖当前键盘焦点。
 - 所有 `action` namespace command 都必须写 `action-execution` artifact。
 - post-action caller observation 由调用者显式调用，runtime 不隐藏自动 workflow。
@@ -502,7 +502,7 @@ chrome.scroll
 | `chrome.focusTextInput` | `action` | true | true | true | `focus` | promoted `ax_node` text input |
 | `chrome.typeText` | `action` | true | true | true | `keyboard` | audited focused target |
 | `chrome.pressKey` | `action` | true | true | true | `keyboard` | audited focused target |
-| `chrome.scroll` | `action` | false | true | true | `pointer` | promoted scroll target / region |
+| `chrome.scroll` | `action` | false | true | true | `pointer` | observe-derived Chrome scroll region lease |
 
 ### Deferred commands
 
@@ -680,7 +680,7 @@ tab、navigation、browser recovery 相关命令依赖 browser-level liveness �
 - forged、mismatched、expired candidate 返回 `candidate_provenance` failure class。
 - `typeText`、`pressKey`、`scroll` 仍走 safety gate。
 - `typeText`、`pressKey` 缺少 audited focused target 时拒绝。
-- `scroll` 缺少 promoted scroll target / region 时拒绝。
+- `scroll` 缺少 observe-derived Chrome scroll region lease 时拒绝。
 - action command 不读取或信任隐式 OS mouse position / keyboard focus 作为目标来源。
 - action failure 返回 stable failure class。
 - `action-execution` artifact 继续满足 frozen role contract。
@@ -772,10 +772,8 @@ chrome.focusTextInput
 chrome.typeText
 chrome.observe
 
-# scroll explicit target / region
+# scroll observed Chrome region
 chrome.observe
-chrome.recognize
-chrome.promote
 chrome.scroll
 chrome.observe
 ```
@@ -937,9 +935,9 @@ P1.5.0 owner decisions 已经收敛以下边界。每个后续实现阶段开始
 4. `chrome.promote` 归入 `prepare` namespace，并禁止写 `action-execution`。
 5. caller post-action observation 必须由调用者显式执行；action command 不隐藏自动 post-observe。
 6. live primitive QA 必须输出 command sequence、trace/artifact refs、`visual_report` path、stable failure class/code，并与 research workflow 分离。
-7. P1.5.9 授权 `action-execution.grounding` 作为动作 consumed grounding 的 trace 字段；除此之外不新增 action-result schema 或新的 `action-execution` schema field。invoke linkage 留在 invoke result、trace span/event 和既有 artifact refs。
+7. P1.5 授权 `action-execution.grounding` 作为动作 consumed grounding 的 trace 字段，并授权 `action-execution.scroll_region` 作为 `chrome.scroll` 的 region/anchor/delivery provenance 字段；除此之外不新增 action-result schema 或新的 `action-execution` schema field。invoke linkage 留在 invoke result、trace span/event 和既有 artifact refs。
 8. `clickCandidate` 初版只接受 same live driver session 的 `candidateLocalId`，可选 `candidateRef` 仅用于交叉校验，不实现 TraceStore artifact resolver。
 9. `chrome.detectWebPageOverlayNodes`、dismissible overlay detector / dismissal primitive、browser recovery/back/close、Chrome tab transition 全部留在 P2；P1.5 只暴露 hard-stop / safety signal。
-10. visual trace pack 保持 QA file-only；不新增 artifact role、action result shape、public export，且除 `action-execution.grounding` 外不新增 trace schema field。
+10. visual trace pack 保持 QA file-only；不新增 artifact role、action result shape、public export，且除 `action-execution.grounding` 和 scroll-only `action-execution.scroll_region` 外不新增 trace schema field。
 
 任何实现计划如果需要突破这些检查项，必须先回到 scope authorization。
