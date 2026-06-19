@@ -88,8 +88,7 @@ export function promoteCandidate(
   const best = recognition.best!
   const audit = crossSourceAudit
   const auditItem = selectedAuditItem
-  const textResolution = auditItem ? textResolutionFor(best, auditItem) : null
-  const anchorRecheckText = textResolution?.ocr_raw_text ?? best.text
+  const anchorRecheckText = best.text
   const candidate: PromotedCandidate = {
     candidate_local_id: `${recognition.recognition_id}:${best.item_id}`,
     kind: best.kind,
@@ -111,7 +110,6 @@ export function promoteCandidate(
             }
           : {}),
         ...(auditItem ? { selected_audit_item: auditItem.raw } : {}),
-        ...(textResolution ? { text_resolution: textResolution } : {}),
         grounding: groundingObservationFor(best),
         evidence_refs: {
           capture_artifact: captureArtifact!,
@@ -505,29 +503,6 @@ function auditConflictKnownLimits(audit: ParsedCrossSourceAudit | null): string[
   return uniqueStrings(limits)
 }
 
-function textResolutionFor(
-  item: RecognizedItem,
-  auditItem: ParsedAuditItem,
-): {
-  canonical_text: string
-  canonical_source: string
-  ocr_raw_text: string
-  correction_reason: string
-} | null {
-  const canonicalText = stringDetail(item.detail, 'canonical_text') ?? stringDetail(auditItem.raw, 'canonical_text')
-  const canonicalSource = stringDetail(item.detail, 'canonical_source') ?? stringDetail(auditItem.raw, 'canonical_source')
-  const ocrRawText = stringDetail(item.detail, 'ocr_raw_text') ?? stringDetail(auditItem.raw, 'ocr_raw_text')
-  const correctionReason = stringDetail(item.detail, 'correction_reason') ?? stringDetail(auditItem.raw, 'correction_reason')
-  if (!canonicalText || !canonicalSource || !ocrRawText || !correctionReason)
-    return null
-  return {
-    canonical_text: canonicalText,
-    canonical_source: canonicalSource,
-    ocr_raw_text: ocrRawText,
-    correction_reason: correctionReason,
-  }
-}
-
 function hasTrustworthyProjection(
   item: RecognizedItem,
   recognition: RecognitionResult,
@@ -591,11 +566,6 @@ function parseStringArray(value: unknown): string[] | null {
   if (!Array.isArray(value))
     return null
   return value.every(item => typeof item === 'string') ? value : null
-}
-
-function stringDetail(value: Record<string, unknown>, key: string): string | null {
-  const detailValue = value[key]
-  return typeof detailValue === 'string' ? detailValue : null
 }
 
 function numberDetail(value: Record<string, unknown>, key: string): number | undefined {

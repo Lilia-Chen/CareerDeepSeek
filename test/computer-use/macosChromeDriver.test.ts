@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 import type { ComputerUseConfig } from '../../src/computer-use/config.js'
 import type {
@@ -472,15 +472,17 @@ describe('macOS Chrome driver', () => {
     const rowReport = records.find(record => record.role === 'ocr-row-report')
 
     assert.ok(screenshot)
-    assert.equal(existsSync(screenshot.path), true)
-    assert.equal(readFileSync(screenshot.path).subarray(0, 8).toString('hex'), '89504e470d0a1a0a')
+    assert.equal(screenshot.path, 'artifacts/screenshot_mco_1.png')
+    assert.equal(resolveArtifactPath(screenshot.path).startsWith(resolve(traceDir, 'artifacts')), true)
+    assert.equal(existsSync(resolveArtifactPath(screenshot.path)), true)
+    assert.equal(readFileSync(resolveArtifactPath(screenshot.path)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a')
     assert.ok(contract)
     assert.ok(observation)
     assert.ok(rowReport)
     assert.equal(records.some(record => record.role === 'capture_contract'), false)
     assert.equal(records.some(record => record.role === 'observation_snapshot'), false)
 
-    const contractPayload = JSON.parse(readFileSync(contract.path, 'utf-8'))
+    const contractPayload = JSON.parse(readFileSync(resolveArtifactPath(contract.path), 'utf-8'))
     assert.equal(contractPayload.coordinateContractVersion, 1)
     assert.equal(contractPayload.captureSource.kind, 'window')
     assert.equal(contractPayload.captureSource.windowNumber, 42)
@@ -491,7 +493,7 @@ describe('macOS Chrome driver', () => {
     assert.deepEqual(contractPayload.pixelToLogicalScale, { x: 1, y: 1 })
     assert.ok(typeof contractPayload.capturedAt === 'string')
 
-    const observationPayload = JSON.parse(readFileSync(observation.path, 'utf-8'))
+    const observationPayload = JSON.parse(readFileSync(resolveArtifactPath(observation.path), 'utf-8'))
     assert.equal(observationPayload.api_version, 'careerdeepseek.observation_snapshot.v1alpha1')
     assert.equal(observationPayload.capture_contract_ref.artifact_id, contract.artifact_id)
     assert.ok(observationPayload.evidence.some((ref: { artifact_id: string }) => ref.artifact_id === screenshot.artifact_id))
@@ -502,7 +504,7 @@ describe('macOS Chrome driver', () => {
     assert.ok(observationPayload.detail.scroll_boundary.vertical.bottom)
     assert.deepEqual(observationPayload.detail.scroll_boundary, snapshot.detail.scroll_boundary)
 
-    const rowReportPayload = JSON.parse(readFileSync(rowReport.path, 'utf-8'))
+    const rowReportPayload = JSON.parse(readFileSync(resolveArtifactPath(rowReport.path), 'utf-8'))
     assert.equal(rowReportPayload.strategy, 'ocr-text')
     assert.equal(rowReportPayload.rowCount, 1)
     assert.equal(rowReportPayload.rawMatchCount, 1)
@@ -812,7 +814,8 @@ describe('macOS Chrome driver', () => {
     const audit = payload.detail.cross_source_audit as Record<string, unknown>
     const auditKnownLimits = audit.known_limits as string[]
 
-    assert.equal(audit.status, 'conflict')
+    assert.equal(audit.status, 'unknown')
+    assert.ok(auditKnownLimits.includes('ocr_text_deferred_to_ax_or_dom'))
     assert.ok(auditKnownLimits.some(limit => limit.includes('raw OCR provider degraded')))
     assert.ok(auditKnownLimits.some(limit => limit.includes('row producer degraded')))
   })
@@ -891,8 +894,8 @@ describe('macOS Chrome driver', () => {
     const audit = result.detail.cross_source_audit as { status?: string }
     const recognitionPayload = readLastJsonArtifactByRole('recognition-result')
 
-    assert.equal(audit.status, 'conflict')
-    assert.equal((recognitionPayload.detail.cross_source_audit as { status?: string }).status, 'conflict')
+    assert.equal(audit.status, 'unknown')
+    assert.equal((recognitionPayload.detail.cross_source_audit as { status?: string }).status, 'unknown')
 
     const promotion = await driver.promoteCandidate(result, driver.lastCapture!)
 
@@ -930,7 +933,7 @@ describe('macOS Chrome driver', () => {
     assert.equal(actionPayload.precondition_result.passed, true)
     const candidateRecord = readArtifactRecordById(actionPayload.candidate_ref.artifact_id)
     assert.equal(candidateRecord.role, 'promoted-candidate')
-    const candidatePayload = JSON.parse(readFileSync(candidateRecord.path, 'utf-8'))
+    const candidatePayload = JSON.parse(readFileSync(resolveArtifactPath(candidateRecord.path), 'utf-8'))
     assert.equal(candidatePayload.candidate_local_id, promotion.candidate.candidate_local_id)
   })
 
@@ -2088,13 +2091,17 @@ function readArtifactRecords(): Array<{
 function readLastJsonArtifactByRole(role: string): Record<string, any> {
   const record = readArtifactRecords().filter(item => item.role === role).at(-1)
   assert.ok(record)
-  return JSON.parse(readFileSync(record.path, 'utf-8'))
+  return JSON.parse(readFileSync(resolveArtifactPath(record.path), 'utf-8'))
 }
 
 function readJsonArtifactsByRole(role: string): Array<Record<string, any>> {
   return readArtifactRecords()
     .filter(item => item.role === role)
-    .map(item => JSON.parse(readFileSync(item.path, 'utf-8')))
+    .map(item => JSON.parse(readFileSync(resolveArtifactPath(item.path), 'utf-8')))
+}
+
+function resolveArtifactPath(path: string): string {
+  return isAbsolute(path) || existsSync(path) ? path : resolve(traceDir, path)
 }
 
 function readArtifactRecordById(artifactId: string): {

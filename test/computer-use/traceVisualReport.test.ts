@@ -87,6 +87,24 @@ describe('static visual trace report generator', () => {
     assert.equal(report.failures.some(failure => failure.failureCode === 'missing_promoted_candidate_artifact'), true)
   })
 
+  it('resolves relative artifact paths from the trace directory', () => {
+    const traceDir = createTraceRoot()
+    writeJson(join(traceDir, 'run.json'), fakeRunRecord())
+    writeJsonl(join(traceDir, 'spans.jsonl'), [fakeSpan('observe_mco_1', 'observe')])
+    writeJsonl(join(traceDir, 'events.jsonl'), [])
+    writeFileSync(join(traceDir, 'artifacts', 'observe.png'), Buffer.from('89504e470d0a1a0a', 'hex'))
+    writeJsonl(join(traceDir, 'artifacts.jsonl'), [
+      fakeArtifact('screenshot_mco_1', 'screenshot', 'artifacts/observe.png', 'observe_mco_1', 'image/png'),
+    ])
+
+    const result = generateVisualTraceReport({ traceDir })
+    const report = JSON.parse(readFileSync(result.jsonPath, 'utf-8')) as VisualTraceReportFixture
+
+    assert.equal(result.summary.missing_file_count, 0)
+    assert.equal(report.artifacts[0]?.path, join(traceDir, 'artifacts', 'observe.png'))
+    assert.equal(report.screenshots[0]?.path, join(traceDir, 'artifacts', 'observe.png'))
+  })
+
   it('builds command sequence from final invoke resolution events only', () => {
     const traceDir = createTraceRoot()
     writeJson(join(traceDir, 'run.json'), fakeRunRecord())

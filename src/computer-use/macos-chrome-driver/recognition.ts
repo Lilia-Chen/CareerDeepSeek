@@ -6,15 +6,7 @@ const LINK_KINDS = new Set(['dom_link', 'ax_link'])
 const AUDIT_SOURCE_GROUPS = ['ocr_text', 'ocr_row', 'chrome_dom', 'ax', 'capture_visibility', 'custom'] as const
 type AuditStatus = 'agreement' | 'conflict' | 'unknown'
 type AuditSourceGroup = typeof AUDIT_SOURCE_GROUPS[number]
-type OcrConfusableAlignment = 'ocr_confusable_text'
 type GeometryRelation = 'same_object' | 'candidate_inside_other' | 'other_inside_candidate' | 'partial_overlap'
-
-interface TextCorrection {
-  canonicalSource: AuditSourceGroup
-  canonicalText: string
-  ocrRawText: string
-  correctionReason: string
-}
 
 interface AuditComparison {
   item_id: string
@@ -26,7 +18,6 @@ interface AuditComparison {
   semantic_source?: AuditSourceGroup
   semantic_text?: string
   ocr_raw_text?: string
-  alignment?: OcrConfusableAlignment
   geometry_relation?: GeometryRelation
 }
 
@@ -39,7 +30,7 @@ export function recognizeFromCapture(
   spanId = 'standalone',
   evidence: ArtifactRef[] = [],
 ): RecognitionResult {
-  const recognizedItems = canonicalizeRecognitionItems(items)
+  const recognizedItems = items
   const filtered = recognizedItems
     .filter(item => matchesTarget(item, target))
     .sort(compareForBest)
@@ -113,50 +104,6 @@ export function recognizeFromCapture(
   }
 }
 
-function canonicalizeRecognitionItems(items: RecognizedItem[]): RecognizedItem[] {
-  return items.map((item) => {
-    if (!isOcrAuditSource(auditSourceGroup(item)))
-      return item
-
-    const correction = correctionForOcrItem(item, items)
-    if (!correction)
-      return item
-
-    return {
-      ...item,
-      text: correction.canonicalText,
-      detail: {
-        ...item.detail,
-        ocr_raw_text: correction.ocrRawText,
-        canonical_source: correction.canonicalSource,
-        canonical_text: correction.canonicalText,
-        correction_reason: correction.correctionReason,
-      },
-    }
-  })
-}
-
-function correctionForOcrItem(item: RecognizedItem, all: RecognizedItem[]): TextCorrection | null {
-  for (const source of ['ax', 'chrome_dom'] as const) {
-    for (const other of all) {
-      if (other.item_id === item.item_id || auditSourceGroup(other) !== source || !boundsOverlap(item.box, other.box))
-        continue
-
-      const alignment = ocrConfusableAlignment(item, other)
-      if (alignment) {
-        return {
-          canonicalSource: alignment.semanticSource,
-          canonicalText: alignment.semanticText,
-          ocrRawText: alignment.ocrRawText,
-          correctionReason: `OCR confusable text corrected from semantic source ${alignment.semanticSource}`,
-        }
-      }
-    }
-  }
-
-  return null
-}
-
 function buildCrossSourceAudit(input: {
   all: RecognizedItem[]
   filtered: RecognizedItem[]
@@ -221,7 +168,6 @@ function auditItem(
     .map(other => compareAuditItems(item, other))
     .filter((comparison): comparison is NonNullable<typeof comparison> => comparison !== null)
   const canonicalText = canonicalAuditText(item, sourceGroup, comparedItems)
-  const textCorrection = textCorrectionFromItem(item)
 
   if (!captureArtifact) {
     reasons.push('missing capture artifact ref')
@@ -266,13 +212,7 @@ function auditItem(
       ? {
           canonical_source: canonicalText.source,
           canonical_text: canonicalText.text,
-          raw_text: textCorrection?.ocrRawText ?? item.text,
-        }
-      : {}),
-    ...(textCorrection
-      ? {
-          ocr_raw_text: textCorrection.ocrRawText,
-          correction_reason: textCorrection.correctionReason,
+          raw_text: item.text,
         }
       : {}),
   }
@@ -298,24 +238,6 @@ function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem): Au
       known_limits: knownLimits,
       geometry_relation: geometryRelation,
       ...semanticMetadata,
-    }
-  }
-
-  const confusableAlignment = ocrConfusableAlignment(candidate, other)
-  if (confusableAlignment) {
-    pushUnique(knownLimits, confusableAlignment.knownLimit)
-    return {
-      item_id: other.item_id,
-      kind: other.kind,
-      source_group: auditSourceGroup(other),
-      status: 'unknown' as AuditStatus,
-      reasons: ['semantic text aligns despite OCR confusable characters'],
-      known_limits: knownLimits,
-      semantic_source: confusableAlignment.semanticSource,
-      semantic_text: confusableAlignment.semanticText,
-      ocr_raw_text: confusableAlignment.ocrRawText,
-      alignment: 'ocr_confusable_text',
-      geometry_relation: geometryRelation,
     }
   }
 
@@ -368,6 +290,20 @@ function compareAuditItems(candidate: RecognizedItem, other: RecognizedItem): Au
       source_group: auditSourceGroup(other),
       status: 'unknown' as AuditStatus,
       reasons: ['overlapping coarse evidence is not a same-target text conflict'],
+      known_limits: knownLimits,
+      geometry_relation: geometryRelation,
+      ...semanticMetadata,
+    }
+  }
+
+  if (semanticMetadata && geometryRelation === 'same_object') {
+    pushUnique(knownLimits, 'ocr_text_deferred_to_ax_or_dom')
+    return {
+      item_id: other.item_id,
+      kind: other.kind,
+      source_group: auditSourceGroup(other),
+      status: 'unknown' as AuditStatus,
+      reasons: ['OCR text differs from overlapping AX/DOM semantic evidence'],
       known_limits: knownLimits,
       geometry_relation: geometryRelation,
       ...semanticMetadata,
@@ -443,81 +379,8 @@ function semanticComparisonMetadata(
   }
 }
 
-function ocrConfusableAlignment(candidate: RecognizedItem, other: RecognizedItem): {
-  semanticSource: AuditSourceGroup
-  semanticText: string
-  ocrRawText: string
-  knownLimit: string
-} | null {
-  const metadata = semanticComparisonMetadata(candidate, other)
-  if (!metadata?.semantic_source || metadata.semantic_text === undefined || metadata.ocr_raw_text === undefined)
-    return null
-
-  const semanticText = normalizedText(metadata.semantic_text)
-  const ocrText = normalizedText(metadata.ocr_raw_text)
-  if (!textMatchesWithOcrConfusables(ocrText, semanticText))
-    return null
-
-  return {
-    semanticSource: metadata.semantic_source,
-    semanticText: metadata.semantic_text,
-    ocrRawText: metadata.ocr_raw_text,
-    knownLimit: `recognition audit: OCR raw text differs from semantic source ${metadata.semantic_source}`,
-  }
-}
-
-function textMatchesWithOcrConfusables(a: string, b: string): boolean {
-  if (a === b || a.length !== b.length)
-    return false
-
-  let sawConfusableDifference = false
-  for (let i = 0; i < a.length; i += 1) {
-    const left = a[i]!
-    const right = b[i]!
-    if (left === right)
-      continue
-
-    const leftClass = ocrConfusableClass(left)
-    const rightClass = ocrConfusableClass(right)
-    if (!leftClass || leftClass !== rightClass)
-      return false
-    sawConfusableDifference = true
-  }
-
-  return sawConfusableDifference
-}
-
-function ocrConfusableClass(char: string): 'i_l_1' | 'o_0' | null {
-  if (char === 'i' || char === 'l' || char === '1' || char === '|')
-    return 'i_l_1'
-  if (char === 'o' || char === '0')
-    return 'o_0'
-  return null
-}
-
-function textCorrectionFromItem(item: RecognizedItem): TextCorrection | null {
-  const canonicalSource = item.detail.canonical_source
-  const canonicalText = item.detail.canonical_text
-  const ocrRawText = item.detail.ocr_raw_text
-  const correctionReason = item.detail.correction_reason
-  if (!isSemanticAuditSourceValue(canonicalSource)
-    || typeof canonicalText !== 'string'
-    || typeof ocrRawText !== 'string'
-    || typeof correctionReason !== 'string') {
-    return null
-  }
-  return {
-    canonicalSource,
-    canonicalText,
-    ocrRawText,
-    correctionReason,
-  }
-}
-
 function ocrRawTextFor(item: RecognizedItem): string {
-  return typeof item.detail.ocr_raw_text === 'string'
-    ? item.detail.ocr_raw_text
-    : item.text ?? ''
+  return item.text ?? ''
 }
 
 function auditSourceGroups(
@@ -665,8 +528,8 @@ function nestedTextAlignment(
   otherText: string,
   geometryRelation: GeometryRelation,
 ): { reason: string, knownLimit: string } | null {
-  if (textContainsWithOcrConfusables(candidateText, otherText)
-    || textContainsWithOcrConfusables(otherText, candidateText)) {
+  if (textContains(candidateText, otherText)
+    || textContains(otherText, candidateText)) {
     return {
       reason: 'window-plane geometry shows nested/coarser evidence, not a same-target text conflict',
       knownLimit: `recognition audit: item ${candidate.item_id} text is nested within ${other.item_id} (${geometryRelation}); treating as non-blocking granularity mismatch`,
@@ -676,29 +539,12 @@ function nestedTextAlignment(
   return null
 }
 
-function textContainsWithOcrConfusables(a: string, b: string): boolean {
+function textContains(a: string, b: string): boolean {
   if (!a || !b || a === b)
     return false
-  const left = tokensForNestedAlignment(foldOcrConfusables(a))
-  const right = tokensForNestedAlignment(foldOcrConfusables(b))
+  const left = tokensForNestedAlignment(a)
+  const right = tokensForNestedAlignment(b)
   return tokenSequenceContains(left, right) || tokenSequenceContains(right, left)
-}
-
-function foldOcrConfusables(value: string): string {
-  let normalized = ''
-  for (const char of value) {
-    const confusable = ocrConfusableClass(char)
-    if (confusable === 'i_l_1') {
-      normalized += 'i'
-      continue
-    }
-    if (confusable === 'o_0') {
-      normalized += 'o'
-      continue
-    }
-    normalized += char
-  }
-  return normalized
 }
 
 function tokensForNestedAlignment(value: string): string[] {
@@ -819,8 +665,6 @@ function matchingTextsForItem(item: RecognizedItem): string[] {
   const values: string[] = []
   if (typeof item.text === 'string')
     values.push(item.text)
-  if (typeof item.detail.ocr_raw_text === 'string' && !values.includes(item.detail.ocr_raw_text))
-    values.push(item.detail.ocr_raw_text)
   return values
 }
 
@@ -829,7 +673,22 @@ function compareForBest(a: RecognizedItem, b: RecognizedItem): number {
   const bActionable = isActionable(b)
   if (aActionable !== bActionable)
     return Number(bActionable) - Number(aActionable)
+  if (geometryRelationFor(a.box, b.box) === 'same_object') {
+    const sourcePriorityDelta = sourcePriority(auditSourceGroup(b)) - sourcePriority(auditSourceGroup(a))
+    if (sourcePriorityDelta !== 0)
+      return sourcePriorityDelta
+  }
   return (b.provider_score ?? 0) - (a.provider_score ?? 0)
+}
+
+function sourcePriority(source: AuditSourceGroup): number {
+  if (source === 'ax')
+    return 3
+  if (source === 'chrome_dom')
+    return 2
+  if (isOcrAuditSource(source))
+    return 1
+  return 0
 }
 
 const ACTIONABLE_KINDS = new Set([
@@ -860,10 +719,6 @@ function isOcrAuditSource(source: AuditSourceGroup): boolean {
 
 function isSemanticAuditSource(source: AuditSourceGroup): boolean {
   return source === 'ax' || source === 'chrome_dom'
-}
-
-function isSemanticAuditSourceValue(value: unknown): value is 'ax' | 'chrome_dom' {
-  return value === 'ax' || value === 'chrome_dom'
 }
 
 function inferRecognitionSource(item: RecognizedItem | undefined): RecognitionResult['source'] {

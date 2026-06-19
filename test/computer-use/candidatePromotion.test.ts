@@ -651,7 +651,7 @@ describe('promoteCandidate', () => {
     }
   })
 
-  it('promotes OCR candidate when AX semantic evidence only differs by OCR confusable text', () => {
+  it('promotes raw OCR candidate while recording overlapping AX semantic evidence without text correction', () => {
     const box = { x: 100, y: 200, width: 240, height: 40 }
     const best = makeOcrItem({
       item_id: 'ocr_typo',
@@ -674,7 +674,7 @@ describe('promoteCandidate', () => {
         known_limits: [],
       },
     })
-    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: /AI agent infrastructure/i }
+    const target: ChromeRecognitionTarget = { kind: 'ocr_text', text: /Al agent infrastructure/i }
     const recognition = recognizeFromCapture(
       [best, axEvidence],
       target,
@@ -698,20 +698,15 @@ describe('promoteCandidate', () => {
 
     assert.equal(result.status, 'promoted')
     if (result.status === 'promoted') {
-      assert.equal(result.candidate.label, 'AI agent infrastructure')
-      assert.equal(result.candidate.target_spec.anchor_text, 'AI agent infrastructure')
+      assert.equal(result.candidate.label, 'Al agent infrastructure')
+      assert.equal(result.candidate.target_spec.anchor_text, 'Al agent infrastructure')
       assert.equal(result.candidate.liveness.preconditions.anchor_recheck?.text, 'Al agent infrastructure')
-      assert.deepEqual(result.candidate.evidence.observation_blob.text_resolution, {
-        canonical_text: 'AI agent infrastructure',
-        canonical_source: 'ax',
-        ocr_raw_text: 'Al agent infrastructure',
-        correction_reason: 'OCR confusable text corrected from semantic source ax',
-      })
-      assert.ok(result.residual_known_limits.some(limit => limit.includes('OCR raw text differs from semantic source ax')))
+      assert.equal(result.candidate.evidence.observation_blob.text_resolution, undefined)
+      assert.ok(result.residual_known_limits.includes('ocr_text_deferred_to_ax_or_dom'))
     }
   })
 
-  it('promotes OCR candidate when cross-source evidence names a different target but records the conflict', () => {
+  it('promotes OCR candidate when cross-source semantic evidence differs and records deferred OCR evidence', () => {
     const box = { x: 100, y: 200, width: 120, height: 40 }
     const best = makeOcrItem({
       item_id: 'ocr_cancel',
@@ -757,8 +752,8 @@ describe('promoteCandidate', () => {
     })
 
     assert.equal(result.status, 'promoted')
-    assert.ok(result.residual_known_limits.includes('cross_source_audit_conflict_observed'))
-    assert.ok(result.residual_known_limits.some(limit => limit.includes('text differs')))
+    assert.ok(result.residual_known_limits.includes('ocr_text_deferred_to_ax_or_dom'))
+    assert.equal(result.residual_known_limits.includes('cross_source_audit_conflict_observed'), false)
   })
 
   it('promotes OCR candidate when semantic evidence is a coarser nested button label', () => {
