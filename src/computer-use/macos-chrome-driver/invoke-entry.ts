@@ -23,6 +23,13 @@ export function createMacOSChromeInvokeEntry(
   const driver = options.driver ?? createLiveDriver(options.driverOptions)
   const handlers = createMacOSChromeInvokeHandlers(driver)
 
+  // AUV-aligned: the driver's TraceStore is the single source of truth for
+  // events, spans, and artifacts. When no external trace sink is provided,
+  // wire the driver's own TraceStore into the invoke runtime so events.jsonl
+  // is always populated and command_count > 0 for executed commands.
+  const driverTrace: ComputerUseInvokeOptions['trace'] | undefined
+    = driver instanceof MacOSChromeDriver ? driver.traceSink as unknown as ComputerUseInvokeOptions['trace'] : undefined
+
   return Object.freeze({
     invoke: async (request: unknown) => {
       const parsed = parseInvokeRequest(request)
@@ -31,7 +38,7 @@ export function createMacOSChromeInvokeEntry(
 
       return invoke(parsed.request, {
         handlers,
-        trace: options.trace,
+        trace: options.trace ?? driverTrace,
         now: options.now,
       })
     },

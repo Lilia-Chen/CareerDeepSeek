@@ -136,6 +136,14 @@ export class MacOSChromeDriver {
     return this.#lastCapture
   }
 
+  /**
+   * Exposes the driver-level TraceStore so invoke-entry can wire it into the invoke runtime as the trace sink.
+   * Without this, the invoke runtime's events.jsonl stays empty and command_count === 0.
+   */
+  get traceSink(): TraceStore | undefined {
+    return this.#traceStore
+  }
+
   async checkSafetyGate(): Promise<SafetyCheckResult> {
     const precondition = await this.#checkActionPreconditions()
     return precondition.result
@@ -414,6 +422,7 @@ export class MacOSChromeDriver {
   async promoteCandidate(
     recognition: NewRecognitionResult,
     capture: ChromeWindowCapture,
+    targetKind?: ChromeRecognitionTarget['kind'],
   ): Promise<CandidatePromotion> {
     const chromeContext = await this.#requireLeasedChromeContext()
     const hardStopSignals = detectHardStopSignals(
@@ -429,6 +438,7 @@ export class MacOSChromeDriver {
       span_id: this.#spanId,
       capture_artifact: recognition.scope.capture_artifact ?? this.#captureEvidenceRefs(capture).find(ref => ref.artifact_id.startsWith('screenshot')),
       recognition_artifact: this.#recognitionArtifacts.get(recognition.recognition_id),
+      target_kind: targetKind,
     })
     if (promotion.status === 'promoted') {
       const candidateSnapshot = immutableJsonSnapshot(promotion.candidate)

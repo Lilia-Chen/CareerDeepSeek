@@ -275,6 +275,170 @@ describe('promoteCandidate', () => {
     }
   })
 
+  it('promotes text input candidates without cross-source audit', () => {
+    const best = makeItem({ item_id: 'search', kind: 'dom_searchbox', text: 'Search' })
+    const recognition = makeRecognition({
+      best,
+      all: [best],
+      filtered: [best],
+      found: true,
+      detail: {},
+    })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.target_spec.grounding, 'ax_node')
+      assert.equal('audit_rollup' in result.candidate.evidence.observation_blob, false)
+      assert.equal('selected_audit_item' in result.candidate.evidence.observation_blob, false)
+      assert.deepEqual(result.candidate.evidence.observation_blob.evidence_refs, {
+        capture_artifact: captureArtifact,
+        capture_contract_artifact: captureContractArtifact,
+        recognition_artifact: recognitionArtifact,
+      })
+    }
+  })
+
+  it('promotes text input candidates when cross-source audit is malformed', () => {
+    const best = makeItem({ item_id: 'search', kind: 'ax_textfield', text: 'Search' })
+    const recognition = makeRecognition({
+      best,
+      all: [best],
+      filtered: [best],
+      found: true,
+      detail: { cross_source_audit: 'malformed-audit' },
+    })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'text_input',
+    })
+
+    assert.equal(result.status, 'promoted')
+  })
+
+  it('refuses text input candidates without projected bounds', () => {
+    const best = makeItem({
+      item_id: 'search',
+      kind: 'dom_searchbox',
+      text: 'Search',
+      detail: {
+        actionable: true,
+        bounds: {
+          source_global_logical: { x: 140, y: 200, width: 120, height: 40 },
+        },
+      },
+    })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true, detail: {} })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'text_input',
+    })
+
+    assert.equal(result.status, 'refused')
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('projection_unavailable'))
+  })
+
+  it('promotes text input candidates with conflicting audit as known-limit evidence', () => {
+    const best = makeItem({ item_id: 'search', kind: 'ax_textfield', text: 'Search' })
+    const audit = auditFor(best, {
+      status: 'conflict',
+      itemStatus: 'conflict',
+      reasons: ['AX label and OCR text differ for an empty input'],
+    })
+    const recognition = makeRecognition({
+      best,
+      all: [best],
+      filtered: [best],
+      found: true,
+      detail: { cross_source_audit: audit },
+    })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'text_input',
+    })
+
+    assert.equal(result.status, 'promoted')
+    assert.ok(result.residual_known_limits.includes('cross_source_audit_conflict_observed'))
+    assert.ok(result.residual_known_limits.some(limit => limit.includes('AX label and OCR text differ')))
+  })
+
+  it('does not let a text_input target hint promote OCR evidence as an input control', () => {
+    const best = makeOcrItem({ item_id: 'ocr-search', text: 'Search' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'text_input',
+    })
+
+    assert.equal(result.status, 'refused')
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('item_not_actionable'))
+  })
+
+  it('does not promote text input evidence for non-text-input recognition targets', () => {
+    const best = makeItem({ item_id: 'search', kind: 'dom_searchbox', text: 'Search' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'visible_text',
+    })
+
+    assert.equal(result.status, 'refused')
+    if (result.status === 'refused')
+      assert.ok(result.reasons.includes('item_not_actionable'))
+  })
+
   it('refuses DOM and AX non-text actionable evidence as promoted click candidates', () => {
     const unsupportedKinds = [
       'dom_button',
@@ -400,8 +564,8 @@ describe('promoteCandidate', () => {
     }
   })
 
-  it('refuses when cross-source audit reports conflict', () => {
-    const best = makeItem({ item_id: '0' })
+  it('promotes when cross-source audit reports conflict and records it as known-limit evidence', () => {
+    const best = makeOcrItem({ item_id: '0' })
     const recognition = makeRecognition({
       best,
       all: [best],
@@ -428,12 +592,9 @@ describe('promoteCandidate', () => {
       recognition_artifact: recognitionArtifact,
     })
 
-    assert.equal(result.status, 'refused')
-    if (result.status === 'refused') {
-      assert.ok(result.reasons.includes('cross_source_conflict'))
-      assert.ok(Array.isArray(result.residual_known_limits))
-      assert.ok(result.residual_known_limits.some(limit => limit.includes('conflicting cross-source evidence')))
-    }
+    assert.equal(result.status, 'promoted')
+    assert.ok(result.residual_known_limits.includes('cross_source_audit_conflict_observed'))
+    assert.ok(result.residual_known_limits.some(limit => limit.includes('conflicting cross-source evidence')))
   })
 
   it('promotes unknown audit caused only by no comparable source evidence and carries known limits', () => {
@@ -550,7 +711,7 @@ describe('promoteCandidate', () => {
     }
   })
 
-  it('refuses OCR candidate when cross-source evidence names a different target', () => {
+  it('promotes OCR candidate when cross-source evidence names a different target but records the conflict', () => {
     const box = { x: 100, y: 200, width: 120, height: 40 }
     const best = makeOcrItem({
       item_id: 'ocr_cancel',
@@ -595,9 +756,9 @@ describe('promoteCandidate', () => {
       recognition_artifact: recognitionArtifact,
     })
 
-    assert.equal(result.status, 'refused')
-    if (result.status === 'refused')
-      assert.ok(result.reasons.includes('cross_source_conflict'))
+    assert.equal(result.status, 'promoted')
+    assert.ok(result.residual_known_limits.includes('cross_source_audit_conflict_observed'))
+    assert.ok(result.residual_known_limits.some(limit => limit.includes('text differs')))
   })
 
   it('promotes OCR candidate when semantic evidence is a coarser nested button label', () => {
@@ -654,7 +815,7 @@ describe('promoteCandidate', () => {
   })
 
   it('refuses when cross-source audit is missing or malformed', () => {
-    const best = makeItem({ item_id: '0' })
+    const best = makeOcrItem({ item_id: '0' })
     const cases: RecognitionResult[] = [
       makeRecognition({ best, all: [best], filtered: [best], found: true, detail: {} }),
       makeRecognition({ best, all: [best], filtered: [best], found: true, detail: { cross_source_audit: 'not-an-audit' } }),
@@ -752,8 +913,8 @@ describe('promoteCandidate', () => {
     }
   })
 
-  it('refuses when source conflict is hidden behind agreement rollup', () => {
-    const best = makeItem({ item_id: '0' })
+  it('promotes when source conflict is hidden behind agreement rollup and records it', () => {
+    const best = makeOcrItem({ item_id: '0' })
     const audit = auditFor(best, { status: 'agreement', itemStatus: 'agreement' })
     const sources = audit.sources as Array<Record<string, unknown>>
     sources[0]!.status = 'conflict'
@@ -776,35 +937,34 @@ describe('promoteCandidate', () => {
       recognition_artifact: recognitionArtifact,
     })
 
-    assert.equal(result.status, 'refused')
-    if (result.status === 'refused')
-      assert.ok(result.reasons.includes('cross_source_conflict'))
+    assert.equal(result.status, 'promoted')
+    assert.ok(result.residual_known_limits.includes('cross_source_audit_conflict_observed'))
   })
 
-  it('refuses when compared item conflict is hidden behind agreement rollup', () => {
-    const best = makeItem({ item_id: '0' })
+  it('promotes when compared item conflict is hidden behind agreement rollup and records it', () => {
+    const best = makeOcrItem({ item_id: '0' })
     const audit = auditFor(best, {
       status: 'agreement',
       itemStatus: 'agreement',
-      comparedItemIds: ['ocr_conflict'],
+      comparedItemIds: ['dom_conflict'],
     })
     const item = (audit.items as Array<Record<string, unknown>>)[0]!
     item.compared_items = [
       {
-        item_id: 'ocr_conflict',
-        kind: 'ocr_text',
-        source_group: 'ocr_text',
+        item_id: 'dom_conflict',
+        kind: 'dom_button',
+        source_group: 'chrome_dom',
         status: 'conflict',
         reasons: ['overlapping bounds but text differs'],
         known_limits: ['recognition audit: text conflicts'],
       },
     ]
-    audit.source_groups = ['chrome_dom', 'ocr_text', 'capture_visibility']
+    audit.source_groups = ['ocr_text', 'chrome_dom', 'capture_visibility']
     const sources = audit.sources as Array<Record<string, unknown>>
     sources.push({
-      source: 'ocr_text',
+      source: 'chrome_dom',
       status: 'agreement',
-      item_ids: ['ocr_conflict'],
+      item_ids: ['dom_conflict'],
       artifact_ids: [captureArtifact.artifact_id, captureContractArtifact.artifact_id],
       known_limits: [],
     })
@@ -827,9 +987,9 @@ describe('promoteCandidate', () => {
       recognition_artifact: recognitionArtifact,
     })
 
-    assert.equal(result.status, 'refused')
-    if (result.status === 'refused')
-      assert.ok(result.reasons.includes('cross_source_conflict'))
+    assert.equal(result.status, 'promoted')
+    assert.ok(result.residual_known_limits.includes('cross_source_audit_conflict_observed'))
+    assert.ok(result.residual_known_limits.some(limit => limit.includes('overlapping bounds but text differs')))
   })
 
   it('refuses when compared item ids do not match compared item payloads', () => {

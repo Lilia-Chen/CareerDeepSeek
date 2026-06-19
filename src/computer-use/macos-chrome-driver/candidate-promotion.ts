@@ -3,6 +3,7 @@ import type {
   ArtifactRef,
   CandidateGrounding,
   ChromeCaptureContract,
+  ChromeRecognitionTarget,
   ChromeWindowRef,
   PromotedCandidate,
   PromotionRefusal,
@@ -20,6 +21,7 @@ export interface PromotionOptions {
   span_id: string
   capture_artifact?: ArtifactRef
   recognition_artifact?: ArtifactRef
+  target_kind?: ChromeRecognitionTarget['kind']
 }
 
 export function promoteCandidate(
@@ -33,6 +35,8 @@ export function promoteCandidate(
   const selectedAuditItem = recognition.best && crossSourceAudit
     ? crossSourceAudit.items.find(item => item.item_id === recognition.best?.item_id)
     : undefined
+  const effectiveTargetKind = effectiveTargetKindFor(options.target_kind, recognition.best)
+  const isTextInputPromotion = effectiveTargetKind === 'text_input'
 
   if (recognition.all.length === 0)
     reasons.push('empty_recognition')
@@ -49,17 +53,16 @@ export function promoteCandidate(
   if (!recognitionArtifact)
     reasons.push('no_runtime_evidence')
 
-  if (!crossSourceAudit) {
-    reasons.push('audit_unavailable')
-  }
-  else {
-    if (auditContainsConflict(crossSourceAudit))
-      reasons.push('cross_source_conflict')
-    if (recognition.best && !selectedAuditItem)
+  if (!isTextInputPromotion) {
+    if (!crossSourceAudit) {
       reasons.push('audit_unavailable')
+    }
+    else if (recognition.best && !selectedAuditItem) {
+      reasons.push('audit_unavailable')
+    }
   }
 
-  if (recognition.best && !isActionable(recognition.best))
+  if (recognition.best && !isActionableForPromotion(recognition.best, effectiveTargetKind))
     reasons.push('item_not_actionable')
   if (recognition.best && !hasTrustworthyProjection(recognition.best, recognition, crossSourceAudit, selectedAuditItem))
     reasons.push('projection_unavailable')
@@ -83,9 +86,9 @@ export function promoteCandidate(
     return { status: 'refused', reasons: uniquePromotionReasons(reasons), residual_known_limits: residualKnownLimits }
 
   const best = recognition.best!
-  const audit = crossSourceAudit!
-  const auditItem = selectedAuditItem!
-  const textResolution = textResolutionFor(best, auditItem)
+  const audit = crossSourceAudit
+  const auditItem = selectedAuditItem
+  const textResolution = auditItem ? textResolutionFor(best, auditItem) : null
   const anchorRecheckText = textResolution?.ocr_raw_text ?? best.text
   const candidate: PromotedCandidate = {
     candidate_local_id: `${recognition.recognition_id}:${best.item_id}`,
@@ -99,17 +102,21 @@ export function promoteCandidate(
         recognition_scope: recognition.scope,
         best_item: best,
         filtered_item_ids: recognition.filtered.map(item => item.item_id),
-        audit_rollup: {
-          status: audit.status,
-          known_limits: audit.known_limits,
-        },
-        selected_audit_item: auditItem.raw,
+        ...(audit
+          ? {
+              audit_rollup: {
+                status: audit.status,
+                known_limits: audit.known_limits,
+              },
+            }
+          : {}),
+        ...(auditItem ? { selected_audit_item: auditItem.raw } : {}),
         ...(textResolution ? { text_resolution: textResolution } : {}),
         grounding: groundingObservationFor(best),
         evidence_refs: {
           capture_artifact: captureArtifact!,
-          capture_contract_artifact: auditItem.artifact_refs.capture_contract_artifact
-            ?? audit.artifact_refs.capture_contract_artifact
+          capture_contract_artifact: auditItem?.artifact_refs.capture_contract_artifact
+            ?? audit?.artifact_refs.capture_contract_artifact
             ?? recognition.scope.capture_contract_artifact,
           recognition_artifact: recognitionArtifact!,
         },
@@ -157,6 +164,28 @@ const PROMOTABLE_TEXT_INPUT_KINDS = new Set([
   'ax_textarea',
   'ax_combobox',
 ])
+
+function effectiveTargetKindFor(
+  targetKind: ChromeRecognitionTarget['kind'] | undefined,
+  best: RecognizedItem | null,
+): ChromeRecognitionTarget['kind'] | undefined {
+  if (targetKind)
+    return targetKind
+  if (best && PROMOTABLE_TEXT_INPUT_KINDS.has(best.kind))
+    return 'text_input'
+  return undefined
+}
+
+function isActionableForPromotion(
+  item: { kind: string, detail: Record<string, unknown> },
+  targetKind: ChromeRecognitionTarget['kind'] | undefined,
+): boolean {
+  if (targetKind === 'text_input')
+    return PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind)
+  if (targetKind && PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind))
+    return false
+  return isActionable(item)
+}
 
 function isActionable(item: { kind: string, detail: Record<string, unknown> }): boolean {
   if (item.kind === 'ocr_row')
@@ -445,7 +474,35 @@ function residualKnownLimitsFor(
     ...recognition.known_limits,
     ...(audit?.known_limits ?? []),
     ...(selectedAuditItem?.known_limits ?? []),
+    ...auditConflictKnownLimits(audit),
   ])
+}
+
+function auditConflictKnownLimits(audit: ParsedCrossSourceAudit | null): string[] {
+  if (!audit || !auditContainsConflict(audit))
+    return []
+
+  const limits = ['cross_source_audit_conflict_observed']
+  for (const source of audit.sources) {
+    if (source.status === 'conflict')
+      limits.push(`cross-source audit conflict: source ${source.source} reported conflict`)
+    limits.push(...source.known_limits)
+  }
+  for (const item of audit.items) {
+    if (item.status === 'conflict') {
+      limits.push(`cross-source audit conflict: item ${item.item_id} reported conflict`)
+      limits.push(...item.reasons)
+    }
+    limits.push(...item.known_limits)
+    for (const compared of item.compared_items) {
+      if (compared.status === 'conflict') {
+        limits.push(`cross-source audit conflict: compared item ${compared.item_id} reported conflict`)
+        limits.push(...compared.reasons)
+      }
+      limits.push(...compared.known_limits)
+    }
+  }
+  return uniqueStrings(limits)
 }
 
 function textResolutionFor(

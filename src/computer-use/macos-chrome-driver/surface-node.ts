@@ -94,6 +94,11 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   if (input.axSnapshot) {
     const axSnapshot = input.axSnapshot
     walkAxTree(axSnapshot.root, (axNode) => {
+      // Skip structural browser chrome roles — these represent the
+      // application frame (menus, tabs, toolbars), not page content.
+      // AUV's analysis.rs applies the same heuristic via is_window_chrome_node.
+      if (isBrowserChromeRole(axNode.role))
+        return
       if (axNode.role === 'AXWindow')
         return
 
@@ -482,6 +487,27 @@ function walkAxTree(
   for (const child of node.children) {
     walkAxTree(child as typeof node, visitor)
   }
+}
+
+/**
+ * Browser chrome roles that represent application frame elements, not page
+ * content. Filtered at the surface-node level so they don't pollute
+ * observations or create spurious cross-source conflicts during promotion.
+ *
+ * Based on AUV's `is_window_chrome_node` heuristic in analysis.rs.
+ */
+function isBrowserChromeRole(role: string): boolean {
+  const chromeRoles = new Set([
+    'AXMenuBar',
+    'AXMenuBarItem',
+    'AXMenuItem',
+    'AXToolbar',
+    'AXTabGroup',
+    'AXRadioGroup', // Chrome tab strip renders as radio group
+    'AXSplitGroup',
+    'AXScrollArea', // empty scroll areas are browser viewport chrome
+  ])
+  return chromeRoles.has(role)
 }
 
 function axRoleToSurfaceNodeKind(role: string): string {

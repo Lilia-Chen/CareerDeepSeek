@@ -44,6 +44,7 @@ export interface MacOSChromeInvokeDriver {
   promoteCandidate: (
     recognition: RecognitionResult,
     capture: ChromeWindowCapture,
+    targetKind?: ChromeRecognitionTarget['kind'],
   ) => Promise<CandidatePromotion>
   click: (candidate: PromotedCandidate) => Promise<void>
   focusTextInput: (candidate: PromotedCandidate) => Promise<void>
@@ -368,7 +369,7 @@ async function invokePromote(
 
   let promotion: CandidatePromotion
   try {
-    promotion = await driver.promoteCandidate(latestRecognition, capture)
+    promotion = await driver.promoteCandidate(latestRecognition, capture, latestRecognitionTargetKind)
   }
   catch (error) {
     return failureResult({

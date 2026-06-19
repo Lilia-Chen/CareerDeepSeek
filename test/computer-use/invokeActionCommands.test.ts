@@ -36,7 +36,7 @@ describe('prepare and action Chrome invoke commands', () => {
 
     assert.equal(result.status, 'completed')
     assert.equal(result.commandId, 'chrome.promote')
-    assert.deepEqual(driver.promoteCalls, [{ recognition, capture }])
+    assert.deepEqual(driver.promoteCalls, [{ recognition, capture, targetKind: 'visible_text' }])
     assert.deepEqual(result.output, {
       candidateLocalId: candidate.candidate_local_id,
       candidateRef: promotedCandidateRef(candidate),
@@ -48,6 +48,30 @@ describe('prepare and action Chrome invoke commands', () => {
     assert.ok(result.artifacts.some(ref => sameArtifactRef(ref, candidate.evidence.capture_artifact)))
     assert.ok(result.artifacts.some(ref => sameArtifactRef(ref, candidate.evidence.recognition_artifact)))
     assert.ok(result.knownLimits.includes('same_session_candidate_only'))
+  })
+
+  it('passes the latest recognition target kind into driver promotion', async () => {
+    const capture = fakeCapture()
+    const recognition = fakeRecognitionResult()
+    const candidate = fakeCandidate({ recognition, kind: 'ax_textfield', label: 'Search' })
+    candidate.target_spec.grounding = 'ax_node'
+    const driver = fakeDriver({
+      lastCapture: capture,
+      recognizeResult: recognition,
+      promoteResult: { status: 'promoted', candidate, residual_known_limits: [] },
+    })
+    const handlers = createMacOSChromeInvokeHandlers(driver)
+
+    await invoke(
+      { commandId: 'chrome.recognize', inputs: { target: { kind: 'text_input', name: 'Search' } } },
+      { handlers },
+    )
+    await invoke(
+      { commandId: 'chrome.promote', inputs: { recognitionId: recognition.recognition_id } },
+      { handlers },
+    )
+
+    assert.deepEqual(driver.promoteCalls, [{ recognition, capture, targetKind: 'text_input' }])
   })
 
   it('refuses chrome.promote when no successful recognition exists in the handler sequence', async () => {
@@ -652,7 +676,7 @@ async function promotedTextInputRecognitionWithOcrCandidateSequence(): Promise<{
 interface FakeInvokeDriver extends MacOSChromeInvokeDriver {
   lastCaptureValue?: ChromeWindowCapture
   observeCalls: number
-  promoteCalls: Array<{ recognition: RecognitionResult, capture: ChromeWindowCapture }>
+  promoteCalls: Array<{ recognition: RecognitionResult, capture: ChromeWindowCapture, targetKind: string | undefined }>
   clickCalls: PromotedCandidate[]
   focusTextInputCalls: PromotedCandidate[]
   typeTextCalls: string[]
@@ -692,8 +716,8 @@ function fakeDriver(options: {
     },
     recognizeFromCapture: async () => options.recognizeResult ?? fakeRecognitionResult(),
     checkSafetyGate: async () => fakeSafetyCheckResult(),
-    promoteCandidate: async (recognition, capture) => {
-      driver.promoteCalls.push({ recognition, capture })
+    promoteCandidate: async (recognition, capture, targetKind) => {
+      driver.promoteCalls.push({ recognition, capture, targetKind })
       return options.promoteResult ?? {
         status: 'promoted',
         candidate: fakeCandidate({ recognition }),

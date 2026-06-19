@@ -1,5 +1,5 @@
 import { mkdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { resolve } from 'node:path'
 import process from 'node:process'
 
 import type { Buffer } from 'node:buffer'
@@ -38,7 +38,9 @@ export async function captureChromeWindow(input: {
   const { config, sessionId, snapshotId, window } = input
   await mkdir(config.screenshotsDir, { recursive: true })
   const fileName = `${Date.now()}-${sanitize(sessionId)}-${sanitize(snapshotId)}-chrome-window.png`
-  const outputPath = join(config.screenshotsDir, fileName)
+  // AUV-aligned: store absolute paths so artifact references resolve
+  // correctly regardless of the consumer's working directory.
+  const outputPath = resolve(config.screenshotsDir, fileName)
 
   await runProcess(
     config.binaries.screencapture,

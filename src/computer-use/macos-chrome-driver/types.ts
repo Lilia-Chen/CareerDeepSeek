@@ -296,7 +296,6 @@ export type PromotionRefusal
     | 'hard_stop_signal'
     | 'projection_unavailable'
     | 'audit_unavailable'
-    | 'cross_source_conflict'
     | 'ambiguous_recognition'
 
 export type CandidateGrounding = 'ocr_anchor' | 'visual_row' | 'ax_node' | 'coordinate'
