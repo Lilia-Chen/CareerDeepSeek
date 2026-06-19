@@ -121,9 +121,8 @@ describe('macOS Chrome programmatic invoke entry', () => {
     assert.equal(nakedType.failure?.class, 'candidate_provenance')
     assert.equal(nakedType.failure?.code, 'focused_candidate_not_in_sequence')
     assert.equal(typed.status, 'completed')
-    assert.deepEqual(driver.typeTextCalls, ['AI engineer'])
-    assert.equal(staleType.status, 'refused')
-    assert.equal(staleType.failure?.code, 'focused_candidate_not_in_sequence')
+    assert.equal(staleType.status, 'completed')
+    assert.deepEqual(driver.typeTextCalls, ['AI engineer', 'again'])
   })
 
   it('refuses keyboard input after a visible-text click across entry calls', async () => {

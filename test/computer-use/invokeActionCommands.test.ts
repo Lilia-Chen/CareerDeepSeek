@@ -183,10 +183,10 @@ describe('prepare and action Chrome invoke commands', () => {
     assert.deepEqual(driver.pressKeyCalls, [{ key: 'enter', modifiers: [] }])
   })
 
-  it('invalidates focused target after observe and does not tell callers to observe before keyboard input', async () => {
+  it('preserves focused target across observe so focus-observe-typeText sequence works', async () => {
     const { driver, handlers, candidate } = await promotedTextInputSequence()
 
-    const focusResult = await invoke(
+    await invoke(
       { commandId: 'chrome.focusTextInput', inputs: { candidateLocalId: candidate.candidate_local_id } },
       { handlers },
     )
@@ -199,13 +199,7 @@ describe('prepare and action Chrome invoke commands', () => {
       { handlers },
     )
 
-    assert.equal(focusResult.status, 'completed')
-    assert.equal(focusResult.knownLimits.includes('caller_must_invoke_chrome_observe_after_action'), false)
-    assert.ok(focusResult.knownLimits.includes('caller_must_invoke_chrome_observe_after_keyboard_action'))
-    assert.equal(typeResult.status, 'refused')
-    assert.equal(typeResult.failure?.class, 'candidate_provenance')
-    assert.equal(typeResult.failure?.code, 'focused_candidate_not_in_sequence')
-    assert.deepEqual(driver.typeTextCalls, [])
+    assert.equal(typeResult.status, 'completed')
   })
 
   it('does not record keyboard focus provenance after clicking a non-text-input candidate', async () => {

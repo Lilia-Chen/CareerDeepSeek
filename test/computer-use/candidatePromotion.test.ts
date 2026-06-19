@@ -1115,15 +1115,14 @@ describe('promoteCandidate', () => {
       assert.ok(result.reasons.includes('audit_unavailable'))
   })
 
-  it('refuses when multiple filtered candidates remain', () => {
-    const best = makeItem({ item_id: '0' })
-    const other = makeItem({ item_id: '1', text: 'Accept cookies' })
+  it('promotes when multiple filtered candidates remain (best wins by priority)', () => {
+    const best = makeOcrItem({ item_id: '0', kind: 'ocr_text', text: 'Accept cookies' })
+    const other = makeOcrItem({ item_id: '1', kind: 'ocr_text', text: 'Accept cookies' })
     const recognition = makeRecognition({
       best,
       all: [best, other],
       filtered: [best, other],
       found: true,
-      known_limits: ['recognition: multiple filtered candidates (2) remain ambiguous'],
     })
 
     const result = promoteCandidate(recognition, capture, window, {
@@ -1137,9 +1136,7 @@ describe('promoteCandidate', () => {
       recognition_artifact: recognitionArtifact,
     })
 
-    assert.equal(result.status, 'refused')
-    if (result.status === 'refused')
-      assert.ok(result.reasons.includes('ambiguous_recognition'))
+    assert.equal(result.status, 'promoted')
   })
 
   it('refuses visual_row as non-actionable promotion input', () => {

@@ -42,8 +42,11 @@ export function promoteCandidate(
     reasons.push('empty_recognition')
   if (recognition.best === null)
     reasons.push('no_unambiguous_target')
-  if (recognition.filtered.length !== 1)
-    reasons.push('ambiguous_recognition')
+  // AUV has no ambiguous_recognition refusal. Multiple filtered items from
+  // different sources (OCR/AX/DOM) matching the same visual element is normal.
+  // compareForBest already selects the highest-priority source.  Genuine
+  // ambiguity (multiple distinct elements) is a research-controller concern,
+  // not a hard promotion gate.
   if (recognition.evidence.length === 0)
     reasons.push('no_runtime_evidence')
   const captureArtifact = options.capture_artifact ?? recognition.scope.capture_artifact

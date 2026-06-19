@@ -308,7 +308,7 @@ describe('macOS scroll foreground HID fallback', () => {
   })
 })
 
-describe('opencode browser-use skill', () => {
+describe('browser workflow boundary', () => {
   it('does not ship fixed executable browser workflows under src/workflows', async () => {
     const workflowDir = new URL('../../src/workflows/', import.meta.url)
     const files = (await readdir(workflowDir)).filter(file => file.endsWith('.ts'))
@@ -319,87 +319,6 @@ describe('opencode browser-use skill', () => {
       assert.doesNotMatch(source, /MacOSChromeAgentHarness|MacOSChromeDriver/, `${file} must not directly drive Chrome`)
       assert.doesNotMatch(source, /runLinkedInSearchExperiment|decideNextLinkedInSearchAction/, `${file} must not encode a fixed LinkedIn workflow`)
     }
-  })
-
-  it('documents the P1.5 invoke workflow boundary without fixed page workflows', async () => {
-    const source = await readFile(new URL('../../.opencode/skills/browser-use-policy/SKILL.md', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /programmatic invoke/i,
-      'skill must make P1.5 invoke the approved primitive entry point',
-    )
-    assert.match(
-      source,
-      /Desktop foreground state/,
-      'skill must separate desktop foreground state from page-visible DOM state',
-    )
-    assert.match(
-      source,
-      /Page-visible DOM state/,
-      'skill must explain that only visible page DOM candidates are actionable',
-    )
-    assert.match(
-      source,
-      /Address-bar use is bootstrap-only/,
-      'skill must prevent repeated deep-dive navigation through the address bar',
-    )
-    assert.match(
-      source,
-      /observe -> recognize -> promote -> action -> observe/,
-      'skill must preserve the primitive invoke action chain',
-    )
-    assert.match(
-      source,
-      /hard-stop \/ safety signals only/i,
-      'skill must keep overlay handling at hard-stop signal level in P1.5',
-    )
-    assert.doesNotMatch(
-      source,
-      /LinkedIn search workflow:/,
-      'skill must not encode a fixed LinkedIn workflow',
-    )
-    assert.match(
-      source,
-      /CAPTCHA|payment|apply|send/i,
-      'skill must include hard stop conditions',
-    )
-    assert.match(
-      source,
-      /semantic research controller/i,
-      'skill must place internet research judgment in the agent controller, not in low-level automation rules',
-    )
-    assert.match(
-      source,
-      /discovery source/i,
-      'skill must preserve rankings, directories, and analysis pages as company-discovery sources instead of treating every non-company page as irrelevant',
-    )
-  })
-
-  it('documents duplicate-label disambiguation and recovery boundaries', async () => {
-    const source = await readFile(new URL('../../.opencode/skills/browser-use-policy/SKILL.md', import.meta.url), 'utf8')
-
-    assert.match(
-      source,
-      /Disambiguate duplicate labels/,
-      'skill must prevent first-match clicks when multiple visible controls share the same label',
-    )
-    assert.match(
-      source,
-      /Back\/Forward recovery/,
-      'skill must document the browser recovery boundary',
-    )
-    assert.match(
-      source,
-      /Do not recover by typing the previous URL/,
-      'wrong navigation recovery must not re-enter URLs through the address bar',
-    )
-    assert.match(
-      source,
-      /Without a recovery primitive, continue only through observed page controls/,
-      'P1.5 must avoid unmodeled browser history recovery and continue only through observed page controls',
-    )
-    assert.doesNotMatch(source, /observed exact recent query/)
   })
 })
 

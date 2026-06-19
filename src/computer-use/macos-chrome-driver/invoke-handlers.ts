@@ -67,7 +67,9 @@ export function createMacOSChromeInvokeHandlers(driver: MacOSChromeInvokeDriver)
   const resetActionSequence = (): void => {
     latestRecognition = undefined
     latestRecognitionTargetKind = undefined
-    latestFocusedTarget = undefined
+    // Focus lease survives observe — keyboard focus is input device state,
+    // not page content state. Clearing it here breaks focusTextInput -> observe -> typeText.
+    // latestFocusedTarget = undefined  (intentionally preserved)
     latestNonTextInputClickedTarget = undefined
     promotedCandidates.clear()
   }
