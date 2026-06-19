@@ -698,12 +698,12 @@ export class MacOSChromeDriver {
             scrollRegion: serializeScrollRegionActionDetail(resolved, {
               selectedPath: 'foreground_hid_scroll',
               attemptedPaths: ['window_targeted_scroll', 'foreground_hid_scroll'],
-              fallbackReason: errorMessage(error),
+              fallbackReason: stringifyThrownValue(error),
             }),
             knownLimits: uniqueStrings([
               ...baseKnownLimits,
               'window_targeted_scroll_unavailable_fell_back_to_foreground_hid',
-              `window_targeted_scroll_error: ${errorMessage(error)}`,
+              `window_targeted_scroll_error: ${stringifyThrownValue(error)}`,
             ]),
           }
         }
@@ -934,13 +934,13 @@ export class MacOSChromeDriver {
         freshRecognitionRef: undefined,
         status: 'refused',
         refusalReason: code,
-        knownLimits: [`fresh observe failed: ${errorMessage(err)}`],
+        knownLimits: [`fresh observe failed: ${stringifyThrownValue(err)}`],
       })
       throw new ActionRefusalError({
         code,
         message: `Refusing click: ${code} during candidate liveness recheck.`,
         detail,
-        knownLimits: ['action refused before macOS event delivery', `fresh observe failed: ${errorMessage(err)}`],
+        knownLimits: ['action refused before macOS event delivery', `fresh observe failed: ${stringifyThrownValue(err)}`],
       })
     }
     const freshCapture = this.#lastCapture
@@ -1641,8 +1641,8 @@ function detailWithCurrentCaptureProjection(
   box: RecognizedItem['box'],
   contract: ChromeWindowCapture['contract'],
 ): Record<string, unknown> {
-  const bounds = isRecord(detail.bounds) ? detail.bounds : undefined
-  if (!bounds || isRecord(bounds.capture_pixel) || !validRecognitionBox(bounds.source_global_logical))
+  const bounds = isObjectLikeRecord(detail.bounds) ? detail.bounds : undefined
+  if (!bounds || isObjectLikeRecord(bounds.capture_pixel) || !validRecognitionBox(bounds.source_global_logical))
     return detail
   return {
     ...detail,
@@ -1654,20 +1654,20 @@ function detailWithCurrentCaptureProjection(
 }
 
 function hasCaptureProjectedBounds(value: unknown, expectedBox: RecognizedItem['box']): boolean {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && validRecognitionBox(value.capture_pixel)
     && validRecognitionBox(value.source_global_logical)
     && boxesMatch(value.source_global_logical, expectedBox)
 }
 
 function hasProjectedLogicalBounds(value: unknown, expectedBox: RecognizedItem['box']): boolean {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && validRecognitionBox(value.source_global_logical)
     && boxesMatch(value.source_global_logical, expectedBox)
 }
 
 function validRecognitionBox(value: unknown): value is RecognizedItem['box'] {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && typeof value.x === 'number'
     && typeof value.y === 'number'
     && typeof value.width === 'number'
@@ -2195,7 +2195,7 @@ function areaOfBounds(bounds: Bounds): number {
 function emptyOcrTextSnapshot(capture: ChromeWindowCapture, error?: unknown): OcrTextSnapshot {
   const knownLimits = error === undefined
     ? []
-    : ['raw OCR failed', `raw OCR failed: ${errorMessage(error)}`]
+    : ['raw OCR failed', `raw OCR failed: ${stringifyThrownValue(error)}`]
   return {
     recognizedAt: new Date().toISOString(),
     imagePath: capture.screenshot.path,
@@ -2232,7 +2232,7 @@ function emptyOcrRowSnapshot(
     },
     knownLimits: uniqueStrings([
       'ocr row production failed',
-      `ocr row production failed: ${errorMessage(error)}`,
+      `ocr row production failed: ${stringifyThrownValue(error)}`,
     ]),
   }
 }
@@ -2258,7 +2258,7 @@ function surfaceNodeToRecognizedItem(node: SurfaceNode): RecognizedItem {
   }
 }
 
-function errorMessage(error: unknown): string {
+function stringifyThrownValue(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
@@ -2286,7 +2286,7 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 function freshObserveFailureCode(error: unknown): 'fresh_window_mismatch' | 'fresh_observe_failed' {
-  const message = errorMessage(error).toLowerCase()
+  const message = stringifyThrownValue(error).toLowerCase()
   if (message.includes('lease is no longer valid')
     || message.includes('window changed')
     || message.includes('leased chrome window')
@@ -2301,7 +2301,7 @@ function immutableJsonSnapshot<T>(value: T): T {
 }
 
 function deepFreeze<T>(value: T): T {
-  if (!isRecord(value) && !Array.isArray(value))
+  if (!isObjectLikeRecord(value) && !Array.isArray(value))
     return value
   Object.freeze(value)
   for (const child of Object.values(value))
@@ -2309,7 +2309,7 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
@@ -2324,9 +2324,9 @@ function rejectCallerSuppliedScrollCoordinates(options: MacOSChromeScrollOptions
 }
 
 function rejectLegacyScrollCandidateInput(deltaY: unknown): void {
-  if (isRecord(deltaY)
+  if (isObjectLikeRecord(deltaY)
     && typeof deltaY.candidate_local_id === 'string'
-    && isRecord(deltaY.target_spec)) {
+    && isObjectLikeRecord(deltaY.target_spec)) {
     throw new Error('MacOSChromeDriver.scroll does not accept promoted candidates; run observe() first and call scroll(deltaY, deltaX, options).')
   }
 }

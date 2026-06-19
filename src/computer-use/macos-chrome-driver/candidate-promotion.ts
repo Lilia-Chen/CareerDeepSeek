@@ -226,7 +226,7 @@ function groundingObservationFor(item: RecognizedItem): Record<string, unknown> 
 
 function hasOcrRowEvidence(item: { detail: Record<string, unknown> }): boolean {
   return numberDetail(item.detail, 'row_index') !== undefined
-    && isRecord(item.detail.row_bounds)
+    && isObjectLikeRecord(item.detail.row_bounds)
 }
 
 function pointInsideWindow(
@@ -286,7 +286,7 @@ interface ParsedComparedAuditItem {
 }
 
 function parseCrossSourceAudit(value: unknown): ParsedCrossSourceAudit | null {
-  if (!isRecord(value))
+  if (!isObjectLikeRecord(value))
     return null
   if (!isAuditStatus(value.status))
     return null
@@ -308,8 +308,8 @@ function parseCrossSourceAudit(value: unknown): ParsedCrossSourceAudit | null {
   if (!knownLimits)
     return null
 
-  const artifactRefs = isRecord(value.artifact_refs) ? value.artifact_refs : {}
-  if (!isRecord(value.artifact_refs))
+  const artifactRefs = isObjectLikeRecord(value.artifact_refs) ? value.artifact_refs : {}
+  if (!isObjectLikeRecord(value.artifact_refs))
     return null
   const items: ParsedAuditItem[] = []
   for (const item of value.items) {
@@ -335,7 +335,7 @@ function parseCrossSourceAudit(value: unknown): ParsedCrossSourceAudit | null {
 }
 
 function parseAuditSource(value: unknown): ParsedAuditSource | null {
-  if (!isRecord(value) || typeof value.source !== 'string' || !isAuditStatus(value.status))
+  if (!isObjectLikeRecord(value) || typeof value.source !== 'string' || !isAuditStatus(value.status))
     return null
   const itemIds = parseStringArray(value.item_ids)
   const artifactIds = parseStringArray(value.artifact_ids)
@@ -352,12 +352,12 @@ function parseAuditSource(value: unknown): ParsedAuditSource | null {
 }
 
 function parseAuditItem(value: unknown): ParsedAuditItem | null {
-  if (!isRecord(value)
+  if (!isObjectLikeRecord(value)
     || typeof value.item_id !== 'string'
     || typeof value.kind !== 'string'
     || typeof value.source_group !== 'string'
     || !isAuditStatus(value.status)
-    || !isRecord(value.artifact_refs)) {
+    || !isObjectLikeRecord(value.artifact_refs)) {
     return null
   }
   const comparedItemIds = parseStringArray(value.compared_item_ids)
@@ -394,7 +394,7 @@ function parseComparedAuditItems(value: unknown): ParsedComparedAuditItem[] | nu
     return null
   const comparedItems: ParsedComparedAuditItem[] = []
   for (const item of value) {
-    if (!isRecord(item)
+    if (!isObjectLikeRecord(item)
       || typeof item.item_id !== 'string'
       || typeof item.kind !== 'string'
       || typeof item.source_group !== 'string'
@@ -522,20 +522,20 @@ function hasProjectedCoordinateEvidence(item: RecognizedItem): boolean {
 }
 
 function hasCaptureAndProjectedBounds(value: unknown, expectedBox: RecognitionBox): boolean {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && hasValidBox(value.capture_pixel)
     && hasValidBox(value.source_global_logical)
     && boxesMatch(value.source_global_logical, expectedBox)
 }
 
 function hasProjectedLogicalBounds(value: unknown, expectedBox: RecognitionBox): boolean {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && hasValidBox(value.source_global_logical)
     && boxesMatch(value.source_global_logical, expectedBox)
 }
 
 function hasValidBox(value: unknown): value is RecognitionBox {
-  if (!isRecord(value))
+  if (!isObjectLikeRecord(value))
     return false
   const { x, y, width, height } = value
   return Number.isFinite(x)
@@ -580,7 +580,7 @@ function sameStringSet(a: string[], b: string[]): boolean {
 }
 
 function isArtifactRef(value: unknown): value is ArtifactRef {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && typeof value.run_id === 'string'
     && typeof value.artifact_id === 'string'
     && typeof value.span_id === 'string'
@@ -590,7 +590,7 @@ function isAuditStatus(value: unknown): value is AuditStatus {
   return value === 'agreement' || value === 'conflict' || value === 'unknown'
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 

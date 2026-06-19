@@ -165,7 +165,7 @@ async function invokeObserve(
       summary: 'Chrome observe failed.',
       failureClass: 'observe',
       code: 'observe_failed',
-      message: errorMessage(error),
+      message: safeErrorMessage(error),
       signals: ['observe_failed'],
       knownLimits: ['read_only_observation_only'],
     })
@@ -246,7 +246,7 @@ async function invokeRecognize(
       summary: 'Chrome recognition failed.',
       failureClass: 'recognition',
       code: 'recognition_failed',
-      message: errorMessage(error),
+      message: safeErrorMessage(error),
       signals: ['recognition_failed'],
       knownLimits: ['read_only_recognition_only'],
     })
@@ -301,7 +301,7 @@ async function invokeCheckSafetyGate(
       summary: 'Chrome safety gate check failed.',
       failureClass: 'safety_gate',
       code: 'check_safety_gate_failed',
-      message: errorMessage(error),
+      message: safeErrorMessage(error),
       signals: ['safety_gate_check_failed'],
       knownLimits: ['read_only_safety_check_only'],
     })
@@ -316,7 +316,7 @@ async function invokePromote(
   latestRecognitionTargetKind: ChromeRecognitionTarget['kind'] | undefined,
   promotedCandidates: Map<string, RegisteredPromotedCandidate>,
 ): Promise<ComputerUseInvokeResult> {
-  if (isRecord(request.inputs) && Object.hasOwn(request.inputs, 'recognition')) {
+  if (isObjectLikeRecord(request.inputs) && Object.hasOwn(request.inputs, 'recognition')) {
     return failureResult({
       commandId: spec.id,
       summary: 'Raw recognition JSON is not accepted by chrome.promote.',
@@ -387,7 +387,7 @@ async function invokePromote(
       summary: 'Chrome candidate promotion failed.',
       failureClass: 'candidate_promotion',
       code: 'promotion_failed',
-      message: errorMessage(error),
+      message: safeErrorMessage(error),
       signals: ['candidate_promotion_failed'],
       knownLimits: ['same_sequence_recognition_required'],
     })
@@ -782,14 +782,14 @@ async function invokeScroll(
 }
 
 function isRecognitionResult(value: unknown): value is RecognitionResult {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && typeof value.recognition_id === 'string'
     && typeof value.found === 'boolean'
     && Array.isArray(value.evidence)
 }
 
 function isObservationSnapshot(value: unknown): value is ObservationSnapshot {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && value.api_version === 'careerdeepseek.observation_snapshot.v1alpha1'
     && typeof value.snapshot_id === 'string'
     && Array.isArray(value.evidence)
@@ -849,7 +849,7 @@ type RecognitionTargetParseResult
     | { ok: false, code: string, message: string }
 
 function parseRecognitionTarget(value: unknown): RecognitionTargetParseResult {
-  if (!isRecord(value)) {
+  if (!isObjectLikeRecord(value)) {
     return {
       ok: false,
       code: 'missing_recognition_target',
@@ -879,7 +879,7 @@ function parseRecognitionTarget(value: unknown): RecognitionTargetParseResult {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
@@ -905,7 +905,7 @@ function parseCandidateLocalIdInput(
     rawCandidateCode: string
   },
 ): CandidateLocalIdParseResult {
-  if (isRecord(inputs) && Object.hasOwn(inputs, 'candidate')) {
+  if (isObjectLikeRecord(inputs) && Object.hasOwn(inputs, 'candidate')) {
     return {
       ok: false,
       result: commandId => failureResult({
@@ -1069,7 +1069,7 @@ function driverActionFailureResult(
     summary: `${actionType} action failed: ${mapped.code}.`,
     failureClass: mapped.failureClass,
     code: mapped.code,
-    message: errorMessage(error),
+    message: safeErrorMessage(error),
     signals: uniqueStrings([`${actionType}_failed`, mapped.code]),
     artifacts,
     knownLimits: ['driver_action_failure_mapped_without_browser_recovery'],
@@ -1109,7 +1109,7 @@ function mapDriverActionError(error: unknown): {
   code: string
 } {
   const code = errorCode(error)
-  const message = errorMessage(error)
+  const message = safeErrorMessage(error)
   const searchable = `${code ?? ''}\n${message}`.toLowerCase()
 
   if (searchable.includes('missing_promoted_candidate_artifact')) {
@@ -1140,7 +1140,7 @@ function mapDriverActionError(error: unknown): {
 }
 
 function isArtifactRef(value: unknown): value is ArtifactRef {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && typeof value.run_id === 'string'
     && typeof value.artifact_id === 'string'
     && typeof value.span_id === 'string'
@@ -1158,7 +1158,7 @@ function sameArtifactRef(a: ArtifactRef, b: ArtifactRef): boolean {
 }
 
 function observationHardStopSignals(snapshot: ObservationSnapshot): string[] {
-  const signals = isRecord(snapshot.detail) ? snapshot.detail.signals : undefined
+  const signals = isObjectLikeRecord(snapshot.detail) ? snapshot.detail.signals : undefined
   if (!Array.isArray(signals))
     return []
   return signals.filter((item): item is string => typeof item === 'string')
@@ -1205,7 +1205,7 @@ function uniqueArtifactRefs(refs: ArtifactRef[]): ArtifactRef[] {
   return unique
 }
 
-function errorMessage(error: unknown): string {
+function safeErrorMessage(error: unknown): string {
   if (error instanceof Error)
     return error.message
   if (typeof error === 'string')
@@ -1214,13 +1214,13 @@ function errorMessage(error: unknown): string {
 }
 
 function errorCode(error: unknown): string | undefined {
-  if (!isRecord(error))
+  if (!isObjectLikeRecord(error))
     return undefined
   return typeof error.code === 'string' ? error.code : undefined
 }
 
 function errorName(error: unknown): string | undefined {
-  if (!isRecord(error))
+  if (!isObjectLikeRecord(error))
     return undefined
   return typeof error.name === 'string' ? error.name : undefined
 }

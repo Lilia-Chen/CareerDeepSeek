@@ -472,7 +472,7 @@ function itemArtifactRefs(
   captureArtifact?: ArtifactRef,
   captureContractArtifact?: ArtifactRef,
 ): Record<string, ArtifactRef | undefined> {
-  const refs = isRecord(item.detail?.source_artifacts) ? item.detail.source_artifacts : {}
+  const refs = isObjectLikeRecord(item.detail?.source_artifacts) ? item.detail.source_artifacts : {}
   const itemCaptureArtifact = isArtifactRef(refs.capture_artifact) ? refs.capture_artifact : captureArtifact
   const itemCaptureContractArtifact = isArtifactRef(refs.capture_contract_artifact) ? refs.capture_contract_artifact : captureContractArtifact
   return {
@@ -636,7 +636,7 @@ function pushUnique(values: string[], value: string): void {
 }
 
 function isArtifactRef(value: unknown): value is ArtifactRef {
-  return isRecord(value)
+  return isObjectLikeRecord(value)
     && typeof value.run_id === 'string'
     && typeof value.artifact_id === 'string'
     && typeof value.span_id === 'string'
@@ -798,9 +798,9 @@ function hasProjectedEvidence(item: RecognizedItem): boolean {
 }
 
 function hasCaptureAndProjectedBounds(value: unknown): boolean {
-  return isRecord(value) && isRecord(value.capture_pixel) && isRecord(value.source_global_logical)
+  return isObjectLikeRecord(value) && isObjectLikeRecord(value.capture_pixel) && isObjectLikeRecord(value.source_global_logical)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }

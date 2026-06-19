@@ -59,7 +59,7 @@ function createLiveDriver(driverOptions: MacOSChromeDriverOptions | undefined): 
 }
 
 function parseInvokeRequest(request: unknown): RequestParseResult {
-  if (!isRecord(request)) {
+  if (!isNonArrayRecord(request)) {
     return invalidRequestFailure({
       commandId: 'invalid_request',
       code: 'request_must_be_object',
@@ -76,7 +76,7 @@ function parseInvokeRequest(request: unknown): RequestParseResult {
     })
   }
 
-  if (request.inputs !== undefined && !isRecord(request.inputs)) {
+  if (request.inputs !== undefined && !isNonArrayRecord(request.inputs)) {
     return invalidRequestFailure({
       commandId,
       code: 'inputs_must_be_object',
@@ -84,7 +84,7 @@ function parseInvokeRequest(request: unknown): RequestParseResult {
     })
   }
 
-  if (request.target !== undefined && !isRecord(request.target)) {
+  if (request.target !== undefined && !isNonArrayRecord(request.target)) {
     return invalidRequestFailure({
       commandId,
       code: 'target_must_be_object',
@@ -126,6 +126,6 @@ function invalidRequestFailure(input: {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isNonArrayRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

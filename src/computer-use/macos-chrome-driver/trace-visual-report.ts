@@ -290,7 +290,7 @@ function readOptionalJson<T>(path: string, state: TraceReadState): T | null {
     return JSON.parse(readFileSync(path, 'utf-8')) as T
   }
   catch (error) {
-    state.parseErrors.push({ path, message: errorMessage(error) })
+    state.parseErrors.push({ path, message: safeErrorMessage(error) })
     return null
   }
 }
@@ -309,7 +309,7 @@ function readOptionalJsonl<T>(path: string, state: TraceReadState): T[] {
       records.push(JSON.parse(line) as T)
     }
     catch (error) {
-      state.parseErrors.push({ path, line: index + 1, message: errorMessage(error) })
+      state.parseErrors.push({ path, line: index + 1, message: safeErrorMessage(error) })
     }
   })
   return records
@@ -326,7 +326,7 @@ function loadArtifact(traceDir: string, record: ArtifactRecord, state: TraceRead
       return { record, path: artifactPath, payload: JSON.parse(readFileSync(artifactPath, 'utf-8')) }
     }
     catch (error) {
-      state.parseErrors.push({ path: artifactPath, message: errorMessage(error) })
+      state.parseErrors.push({ path: artifactPath, message: safeErrorMessage(error) })
     }
   }
   return { record, path: artifactPath }
@@ -908,7 +908,7 @@ function escapeHtml(value: string): string {
     .replaceAll('\'', '&#39;')
 }
 
-function errorMessage(error: unknown): string {
+function safeErrorMessage(error: unknown): string {
   if (error instanceof Error)
     return error.message
   if (typeof error === 'string')

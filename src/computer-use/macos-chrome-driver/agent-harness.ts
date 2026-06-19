@@ -108,7 +108,7 @@ export class MacOSChromeAgentHarness {
       )
     }
     catch (error) {
-      throw new Error(`text_input recognition failed before typing: ${errorMessage(error)}`)
+      throw new Error(`text_input recognition failed before typing: ${stringifyThrownValue(error)}`)
     }
 
     await this.#driver.focusTextInput(candidate)
@@ -254,7 +254,7 @@ function inferSourceType(url: string | null): SourceType {
 
 function readChromeContextString(snapshot: ObservationSnapshot, key: string): string | null {
   const context = snapshot.detail.chrome_context
-  if (!isRecord(context))
+  if (!isNonArrayRecord(context))
     return null
   const value = context[key]
   return typeof value === 'string' && value.trim().length > 0 ? value : null
@@ -267,10 +267,10 @@ function readSignals(snapshot: ObservationSnapshot): string[] {
     : []
 }
 
-function errorMessage(error: unknown): string {
+function stringifyThrownValue(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isNonArrayRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
