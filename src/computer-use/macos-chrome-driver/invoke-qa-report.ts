@@ -4,7 +4,7 @@ import type {
   ComputerUseInvokeStatus,
 } from './invoke-types.js'
 import type { ArtifactRef } from './types.js'
-import { uniqueStrings } from './shared.js'
+import { uniqueArtifactRefs, uniqueStrings } from './shared.js'
 
 export interface ComputerUseQaReport {
   case_id: string
@@ -154,24 +154,4 @@ function isComputerUseFailureClass(value: unknown): value is ComputerUseFailureC
     || value === 'hard_stop'
     || value === 'trace_artifact'
     || value === 'runtime_unknown'
-}
-
-function uniqueArtifactRefs(values: readonly ArtifactRef[]): ArtifactRef[] {
-  const seen = new Set<string>()
-  const unique: ArtifactRef[] = []
-
-  for (const value of values) {
-    const key = [
-      value.run_id,
-      value.artifact_id,
-      value.span_id,
-      value.captured_event_id ?? '',
-    ].join('\0')
-    if (seen.has(key))
-      continue
-    seen.add(key)
-    unique.push(value)
-  }
-
-  return unique
 }

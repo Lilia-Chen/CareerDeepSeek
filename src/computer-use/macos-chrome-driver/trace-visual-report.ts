@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { ArtifactRecord, EventRecord, RunRecord, SpanRecord } from './types.js'
-import { uniqueStrings } from './shared.js'
+import { centerOf, isCoreArtifactRef, safeErrorMessage, uniqueArtifactRefs, uniqueStrings } from './shared.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -428,7 +428,7 @@ function candidateBoxSummary(
     bounds,
     anchorText: stringField(targetSpec, 'anchor_text'),
     screenshotPath: screenshotPathForRefs(artifactRefsIn(evidence), artifactById),
-    recognitionArtifactId: isArtifactRef(evidence.recognition_artifact)
+    recognitionArtifactId: isCoreArtifactRef(evidence.recognition_artifact)
       ? evidence.recognition_artifact.artifact_id
       : undefined,
     knownLimits: knownLimitsFromObject(payload),
@@ -442,7 +442,7 @@ function actionSummary(
 ): VisualActionSummary {
   const payload = asObject(artifact.payload)
   const liveness = asObject(payload.liveness_recheck)
-  const candidateRef = isArtifactRef(payload.candidate_ref) ? payload.candidate_ref : undefined
+  const candidateRef = isCoreArtifactRef(payload.candidate_ref) ? payload.candidate_ref : undefined
   const candidateBox = candidateRef ? candidateByArtifactId.get(candidateRef.artifact_id)?.bounds : undefined
   const freshBox = recognitionBox(liveness.fresh_box)
   const originalBox = recognitionBox(liveness.original_box)
@@ -572,7 +572,7 @@ function collectArtifactRefs(value: unknown, refs: VisualArtifactRef[], seen: Se
   if (seen.has(value))
     return
   seen.add(value)
-  if (isArtifactRef(value)) {
+  if (isCoreArtifactRef(value)) {
     refs.push(value)
     return
   }
@@ -640,13 +640,6 @@ function clickPointForAction(
   return undefined
 }
 
-function centerOf(box: RecognitionBoxLike): { x: number, y: number } {
-  return {
-    x: box.x + box.width / 2,
-    y: box.y + box.height / 2,
-  }
-}
-
 function recognitionBox(value: unknown): RecognitionBoxLike | undefined {
   const box = asObject(value)
   const x = numberField(box, 'x')
@@ -656,15 +649,6 @@ function recognitionBox(value: unknown): RecognitionBoxLike | undefined {
   if (x === undefined || y === undefined || width === undefined || height === undefined)
     return undefined
   return { x, y, width, height }
-}
-
-function isArtifactRef(value: unknown): value is VisualArtifactRef {
-  if (!value || typeof value !== 'object')
-    return false
-  const record = value as JsonObject
-  return typeof record.run_id === 'string'
-    && typeof record.artifact_id === 'string'
-    && typeof record.span_id === 'string'
 }
 
 function asObject(value: unknown): JsonObject {
@@ -707,19 +691,6 @@ function numericAttribute(attributes: Record<string, unknown>, field: string): n
 
 function knownLimitsFromObject(record: JsonObject): string[] {
   return stringArrayField(record, 'known_limits')
-}
-
-function uniqueArtifactRefs(refs: VisualArtifactRef[]): VisualArtifactRef[] {
-  const seen = new Set<string>()
-  const unique: VisualArtifactRef[] = []
-  for (const ref of refs) {
-    const key = `${ref.run_id}\0${ref.artifact_id}\0${ref.span_id}\0${ref.captured_event_id ?? ''}`
-    if (seen.has(key))
-      continue
-    seen.add(key)
-    unique.push(ref)
-  }
-  return unique
 }
 
 function uniqueFailures(failures: VisualFailureSummary[]): VisualFailureSummary[] {
@@ -906,12 +877,4 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll('\'', '&#39;')
-}
-
-function safeErrorMessage(error: unknown): string {
-  if (error instanceof Error)
-    return error.message
-  if (typeof error === 'string')
-    return error
-  return 'unknown error'
 }

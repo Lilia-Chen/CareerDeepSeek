@@ -65,7 +65,7 @@ export async function invoke(
     spec = resolveComputerUseCommandSpec(request.commandId)
   }
   catch (error) {
-    const result = commandResolutionFailure(request.commandId, error)
+    const result = runtimeCommandResolutionFailure(request.commandId, error)
     recordEvent('command_resolution_failed', {
       command_id: request.commandId,
       failure_class: result.failure?.class,
@@ -134,9 +134,9 @@ export async function invoke(
   }
 }
 
-function commandResolutionFailure(commandId: string, error: unknown): ComputerUseInvokeResult {
+function runtimeCommandResolutionFailure(commandId: string, error: unknown): ComputerUseInvokeResult {
   if (error instanceof ComputerUseCommandResolutionError) {
-    return failureResult({
+    return runtimeFailureResult({
       commandId,
       summary: error.message,
       failureClass: error.failureClass,
@@ -148,7 +148,7 @@ function commandResolutionFailure(commandId: string, error: unknown): ComputerUs
   }
 
   const message = unknownErrorMessage(error)
-  return failureResult({
+  return runtimeFailureResult({
     commandId,
     summary: `Command resolution failed unexpectedly: ${message}`,
     failureClass: 'runtime_unknown',
@@ -160,7 +160,7 @@ function commandResolutionFailure(commandId: string, error: unknown): ComputerUs
 }
 
 function noHandlerFailure(spec: Readonly<ComputerUseCommandSpec>): ComputerUseInvokeResult {
-  return failureResult({
+  return runtimeFailureResult({
     commandId: spec.id,
     summary: `No invoke handler registered for ${spec.id}.`,
     failureClass: 'runtime_unknown',
@@ -176,7 +176,7 @@ function unhandledHandlerExceptionFailure(
   error: unknown,
 ): ComputerUseInvokeResult {
   const message = unknownErrorMessage(error)
-  return failureResult({
+  return runtimeFailureResult({
     commandId: spec.id,
     summary: `Unhandled handler exception: ${message}`,
     failureClass: 'runtime_unknown',
@@ -187,7 +187,7 @@ function unhandledHandlerExceptionFailure(
   })
 }
 
-function failureResult(input: {
+function runtimeFailureResult(input: {
   commandId: string
   summary: string
   failureClass: ComputerUseFailureClass

@@ -40,7 +40,16 @@ import { observeWindows } from '../window-observation.js'
 import { buildPointerTrace } from '../pointer-trace.js'
 import { captureChromeWindow } from './capture.js'
 import { produceOcrRows, recognizeTextInImage } from './ocr.js'
-import { uniqueStrings } from './shared.js'
+import {
+  centerOf,
+  hasCaptureAndProjectedBoundsMatchingBox,
+  hasProjectedLogicalBoundsMatchingBox,
+  isObjectLikeRecord,
+  pointInsideBounds,
+  sanitizeArtifactId,
+  stringifyThrownValue,
+  uniqueStrings,
+} from './shared.js'
 import { BUTTON_KINDS, COORDINATE_CLICK_KINDS, LINK_KINDS, TEXT_INPUT_KINDS, requireWindowNumber } from './types.js'
 import { buildScrollBoundaryObservation } from './scroll-boundary.js'
 
@@ -140,7 +149,7 @@ const WINDOW_MATCH_TOLERANCE = 8
 const SCROLL_REGION_LEASE_TTL_MS = 15_000
 const MIN_SCROLL_REGION_WIDTH = 100
 const MIN_SCROLL_REGION_HEIGHT = 100
-const BROWSER_CHROME_FALLBACK_TOP_INSET = 96
+const NAMED_BROWSER_CHROME_TOP_INSET_ESTIMATE = 96
 const SCROLL_REGION_ANCHOR_Y_RATIO = 0.55
 
 export class MacOSChromeDriver {
@@ -321,6 +330,7 @@ export class MacOSChromeDriver {
       profile: chromeContext.profile,
       observationRef,
       viewportCandidate: axViewportBounds,
+      surfaceNodes: nodes,
     })
     this.#scrollRegionLease = scrollRegionLease
 
@@ -1627,13 +1637,13 @@ function hasTrustworthyCurrentProjection(item: RecognizedItem): boolean {
   if (!validRecognitionBox(item.box))
     return false
   if (item.kind === 'ocr_text')
-    return hasCaptureProjectedBounds(item.detail.bounds, item.box)
+    return hasCaptureAndProjectedBoundsMatchingBox(item.detail.bounds, item.box)
   if (item.kind === 'ocr_row')
-    return hasCaptureProjectedBounds(item.detail.row_bounds, item.box)
-  return hasProjectedLogicalBounds(item.detail.bounds, item.box)
-    || hasProjectedLogicalBounds(item.detail.row_bounds, item.box)
-    || hasCaptureProjectedBounds(item.detail.bounds, item.box)
-    || hasCaptureProjectedBounds(item.detail.row_bounds, item.box)
+    return hasCaptureAndProjectedBoundsMatchingBox(item.detail.row_bounds, item.box)
+  return hasProjectedLogicalBoundsMatchingBox(item.detail.bounds, item.box)
+    || hasProjectedLogicalBoundsMatchingBox(item.detail.row_bounds, item.box)
+    || hasCaptureAndProjectedBoundsMatchingBox(item.detail.bounds, item.box)
+    || hasCaptureAndProjectedBoundsMatchingBox(item.detail.row_bounds, item.box)
 }
 
 function detailWithCurrentCaptureProjection(
@@ -1653,19 +1663,6 @@ function detailWithCurrentCaptureProjection(
   }
 }
 
-function hasCaptureProjectedBounds(value: unknown, expectedBox: RecognizedItem['box']): boolean {
-  return isObjectLikeRecord(value)
-    && validRecognitionBox(value.capture_pixel)
-    && validRecognitionBox(value.source_global_logical)
-    && boxesMatch(value.source_global_logical, expectedBox)
-}
-
-function hasProjectedLogicalBounds(value: unknown, expectedBox: RecognizedItem['box']): boolean {
-  return isObjectLikeRecord(value)
-    && validRecognitionBox(value.source_global_logical)
-    && boxesMatch(value.source_global_logical, expectedBox)
-}
-
 function validRecognitionBox(value: unknown): value is RecognizedItem['box'] {
   return isObjectLikeRecord(value)
     && typeof value.x === 'number'
@@ -1678,14 +1675,6 @@ function validRecognitionBox(value: unknown): value is RecognizedItem['box'] {
     && Number.isFinite(value.height)
     && value.width > 0
     && value.height > 0
-}
-
-function boxesMatch(a: RecognizedItem['box'], b: RecognizedItem['box']): boolean {
-  const tolerance = 0.5
-  return Math.abs(a.x - b.x) <= tolerance
-    && Math.abs(a.y - b.y) <= tolerance
-    && Math.abs(a.width - b.width) <= tolerance
-    && Math.abs(a.height - b.height) <= tolerance
 }
 
 function projectLogicalToPixel(
@@ -1929,20 +1918,20 @@ function buildChromeScrollRegionLease(input: {
   profile: ChromeContextSnapshot['profile']
   observationRef: ArtifactRef
   viewportCandidate?: ChromeViewportBoundsCandidate
+  surfaceNodes?: SurfaceNode[]
 }): ChromeScrollRegionLease {
   const source = input.viewportCandidate?.source ?? 'window_content_fallback'
+  const fallbackCandidate = input.viewportCandidate
+    ? undefined
+    : windowContentFallbackCandidate(input.window.bounds, input.surfaceNodes ?? [])
   const regionScreenBounds = input.viewportCandidate?.bounds
-    ?? windowContentFallbackBounds(input.window.bounds)
-  const basis = input.viewportCandidate?.basis ?? [
-    'chrome_window_bounds',
-    'browser_chrome_height_estimate',
-    'conservative_content_region',
-  ]
+    ?? fallbackCandidate!.bounds
+  const basis = input.viewportCandidate?.basis ?? fallbackCandidate!.basis
   const knownLimits = uniqueStrings([
     ...(input.viewportCandidate?.knownLimits ?? []),
     ...(input.viewportCandidate
       ? []
-      : ['scroll_region_uses_window_bounds_fallback', 'browser_chrome_height_estimated']),
+      : fallbackCandidate!.knownLimits),
   ])
   const anchorScreenPoint = scrollRegionAnchorScreenPoint(regionScreenBounds, input.window.bounds, source)
 
@@ -1968,17 +1957,55 @@ function buildChromeScrollRegionLease(input: {
   }
 }
 
-function windowContentFallbackBounds(windowBounds: Bounds): Bounds {
+function windowContentFallbackCandidate(windowBounds: Bounds, surfaceNodes: SurfaceNode[]): {
+  bounds: Bounds
+  basis: string[]
+  knownLimits: string[]
+} {
+  const observedInset = observedBrowserChromeTopInset(windowBounds, surfaceNodes)
+  const unclampedTopInset = observedInset ?? NAMED_BROWSER_CHROME_TOP_INSET_ESTIMATE
   const topInset = Math.min(
-    BROWSER_CHROME_FALLBACK_TOP_INSET,
+    unclampedTopInset,
     Math.max(0, windowBounds.height - MIN_SCROLL_REGION_HEIGHT),
   )
+  const basis = observedInset !== undefined
+    ? ['chrome_window_bounds', 'browser_chrome_bounds_evidence', 'browser_chrome_role', 'conservative_content_region']
+    : ['chrome_window_bounds', 'browser_chrome_top_inset_named_estimate', 'conservative_content_region']
+  const knownLimits = [
+    'scroll_region_uses_window_bounds_fallback',
+    ...(observedInset !== undefined ? [] : ['browser_chrome_top_inset_estimate_used']),
+    ...(topInset < unclampedTopInset ? ['browser_chrome_top_inset_estimate_clamped_to_min_scroll_region_height'] : []),
+  ]
+
   return {
-    x: windowBounds.x,
-    y: windowBounds.y + topInset,
-    width: windowBounds.width,
-    height: windowBounds.height - topInset,
+    bounds: {
+      x: windowBounds.x,
+      y: windowBounds.y + topInset,
+      width: windowBounds.width,
+      height: windowBounds.height - topInset,
+    },
+    basis,
+    knownLimits,
   }
+}
+
+function observedBrowserChromeTopInset(windowBounds: Bounds, surfaceNodes: SurfaceNode[]): number | undefined {
+  const bottoms = surfaceNodes
+    .filter(isBrowserChromeSurfaceEvidence)
+    .map(node => intersectBounds(node.box, windowBounds))
+    .filter((bounds): bounds is Bounds => bounds !== undefined && bounds.y < windowBounds.y + windowBounds.height / 2)
+    .map(bounds => bounds.y + bounds.height - windowBounds.y)
+    .filter(value => Number.isFinite(value) && value > 0)
+
+  if (bottoms.length === 0)
+    return undefined
+
+  return Math.max(...bottoms)
+}
+
+function isBrowserChromeSurfaceEvidence(node: SurfaceNode): boolean {
+  return node.kind === 'ax_evidence'
+    && node.detail?.evidence_role === 'browser_chrome_observation'
 }
 
 function scrollRegionAnchorScreenPoint(
@@ -2258,17 +2285,6 @@ function surfaceNodeToRecognizedItem(node: SurfaceNode): RecognizedItem {
   }
 }
 
-function stringifyThrownValue(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function centerOf(bounds: Bounds): { x: number, y: number } {
-  return {
-    x: bounds.x + bounds.width / 2,
-    y: bounds.y + bounds.height / 2,
-  }
-}
-
 function distanceBetween(a: { x: number, y: number }, b: { x: number, y: number }): number {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
@@ -2309,10 +2325,6 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
 function rejectCallerSuppliedScrollCoordinates(options: MacOSChromeScrollOptions): void {
   const rawOptions = options as Record<string, unknown>
   if (Object.hasOwn(rawOptions, 'screenPoint')) {
@@ -2329,13 +2341,6 @@ function rejectLegacyScrollCandidateInput(deltaY: unknown): void {
     && isObjectLikeRecord(deltaY.target_spec)) {
     throw new Error('MacOSChromeDriver.scroll does not accept promoted candidates; run observe() first and call scroll(deltaY, deltaX, options).')
   }
-}
-
-function pointInsideBounds(point: { x: number, y: number }, bounds: Bounds): boolean {
-  return point.x >= bounds.x
-    && point.y >= bounds.y
-    && point.x <= bounds.x + bounds.width
-    && point.y <= bounds.y + bounds.height
 }
 
 function isChromeApp(appName: string | undefined): boolean {
@@ -2379,10 +2384,6 @@ function actionRefusalMessage(actionType: ActionType, reasons: string[]): string
     return 'Chrome context lease is no longer valid. Run observe() in a new driver session to bootstrap the managed Chrome context again.'
   }
   return `Safety gate refused ${actionType}: ${reasons.join(', ')}`
-}
-
-function sanitizeArtifactId(value: string): string {
-  return value.replace(/[^\w.-]/g, '_').slice(0, 120)
 }
 
 function sleep(ms: number): Promise<void> {

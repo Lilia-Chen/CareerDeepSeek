@@ -150,7 +150,7 @@ export function resolveComputerUseCommandSpec(commandId: string): Readonly<Compu
 export function dryRunComputerUseCommand(request: ComputerUseInvokeRequest): ComputerUseInvokeResult {
   const spec = getComputerUseCommandSpec(request.commandId)
   if (!spec)
-    return commandResolutionFailure(request.commandId)
+    return catalogCommandResolutionFailure(request.commandId)
 
   return {
     commandId: spec.id,
@@ -173,7 +173,7 @@ function freezeCommandSpec(spec: ComputerUseCommandSpec): Readonly<ComputerUseCo
   })
 }
 
-function commandResolutionFailure(commandId: string): ComputerUseInvokeResult {
+function catalogCommandResolutionFailure(commandId: string): ComputerUseInvokeResult {
   return {
     commandId,
     status: 'failed',

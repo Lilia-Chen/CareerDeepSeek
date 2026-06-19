@@ -8,7 +8,7 @@ import type {
   RecognitionBox,
   SurfaceNode,
 } from './types.js'
-import { uniqueStrings } from './shared.js'
+import { pointInsideBounds, uniqueStrings, validConfidence } from './shared.js'
 
 export interface NormalizeInput {
   ocrMatches: OcrTextMatch[]
@@ -94,12 +94,52 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   // AX nodes → SurfaceNode (AUXILIARY)
   if (input.axSnapshot) {
     const axSnapshot = input.axSnapshot
+    const axWebAreaBounds = collectAxWebAreaBounds(axSnapshot.root)
     walkAxTree(axSnapshot.root, (axNode) => {
-      // Skip structural browser chrome roles — these represent the
-      // application frame (menus, tabs, toolbars), not page content.
-      // AUV's analysis.rs applies the same heuristic via is_window_chrome_node.
-      if (isBrowserChromeRole(axNode.role))
+      const browserChromeReason = browserChromeEvidenceReason(axNode, axWebAreaBounds)
+      if (browserChromeReason) {
+        const text = axNode.title || axNode.description || axNode.value || axNode.role
+        if (!validBounds(axNode.bounds))
+          return
+        const axBox = axNode.bounds
+        const knownLimits = uniqueStrings([
+          ...axEvidenceKnownLimits(axSnapshot),
+          browserChromeReason === 'browser_chrome_role'
+            ? 'browser chrome AX role retained as evidence only'
+            : 'AX node outside AXWebArea retained as browser chrome evidence only',
+        ])
+        nodes.push({
+          node_ref: {
+            run_id: input.runId,
+            span_id: input.spanId,
+            node_id: `ax_${axNode.uid}`,
+          },
+          kind: 'ax_evidence',
+          label: text,
+          box: axBox,
+          source_artifacts: sourceArtifacts,
+          recognition_source: 'custom',
+          recognition_surface: 'window',
+          provider_score: 0.75,
+          detail: {
+            evidence_role: 'browser_chrome_observation',
+            skip_reason: browserChromeReason,
+            ax_role: axNode.role,
+            ax_title: axNode.title,
+            ax_value: axNode.value,
+            ax_description: axNode.description,
+            focused: axNode.focused,
+            enabled: axNode.enabled,
+            coordinate_spaces: axCoordinateSpaces(),
+            bounds: axBounds(axBox),
+            ax_snapshot: axSnapshotDetail(axSnapshot),
+            source_artifacts: sourceArtifactDetail(input),
+            known_limits: knownLimits,
+          },
+          recognized_item_kind: axNode.role,
+        })
         return
+      }
       if (axNode.role === 'AXWindow')
         return
 
@@ -400,10 +440,6 @@ function axActionabilityBlockingLimits(
   return uniqueStrings(limits)
 }
 
-function validConfidence(confidence: number | undefined): boolean {
-  return Number.isFinite(confidence) && confidence! >= 0 && confidence! <= 1
-}
-
 function validPoint(point: { x: number, y: number } | null | undefined): point is { x: number, y: number } {
   return typeof point === 'object'
     && point !== null
@@ -427,13 +463,6 @@ function boundsIntersect(a: Bounds, b: Bounds): boolean {
     && a.x + a.width > b.x
     && a.y < b.y + b.height
     && a.y + a.height > b.y
-}
-
-function pointInsideBounds(point: { x: number, y: number }, bounds: Bounds): boolean {
-  return point.x >= bounds.x
-    && point.x <= bounds.x + bounds.width
-    && point.y >= bounds.y
-    && point.y <= bounds.y + bounds.height
 }
 
 function truthyState(value: unknown): boolean {
@@ -486,10 +515,34 @@ function walkAxTree(
   }
 }
 
+function collectAxWebAreaBounds(root: { role: string, bounds?: Bounds, children: unknown[] }): Bounds[] {
+  const bounds: Bounds[] = []
+  walkAxTree(root as Parameters<typeof walkAxTree>[0], (node) => {
+    if (node.role === 'AXWebArea' && validBounds(node.bounds))
+      bounds.push(node.bounds)
+  })
+  return bounds
+}
+
+function browserChromeEvidenceReason(
+  node: { role: string, bounds?: Bounds },
+  axWebAreaBounds: Bounds[],
+): 'browser_chrome_role' | 'outside_ax_web_area' | undefined {
+  if (isBrowserChromeRole(node.role))
+    return 'browser_chrome_role'
+  if (node.role === 'AXWindow' || node.role === 'AXWebArea')
+    return undefined
+  if (axWebAreaBounds.length === 0 || !validBounds(node.bounds))
+    return undefined
+  return axWebAreaBounds.some(webArea => boundsIntersect(node.bounds!, webArea))
+    ? undefined
+    : 'outside_ax_web_area'
+}
+
 /**
  * Browser chrome roles that represent application frame elements, not page
- * content. Filtered at the surface-node level so they don't pollute
- * observations or create spurious cross-source conflicts during promotion.
+ * content. Retained as tagged evidence so traces keep browser-context signals
+ * without allowing these nodes to become page targets.
  *
  * Based on AUV's `is_window_chrome_node` heuristic in analysis.rs.
  */
@@ -499,6 +552,7 @@ function isBrowserChromeRole(role: string): boolean {
     'AXMenuBarItem',
     'AXMenuItem',
     'AXToolbar',
+    'AXTab',
     'AXTabGroup',
     'AXRadioGroup', // Chrome tab strip renders as radio group
     'AXSplitGroup',
@@ -515,7 +569,6 @@ function axRoleToSurfaceNodeKind(role: string): string {
     AXTextArea: 'ax_textarea',
     AXComboBox: 'ax_combobox',
     AXMenuItem: 'ax_menu_item',
-    AXTab: 'ax_tab',
     AXStaticText: 'ax_static_text',
     AXGroup: 'ax_group',
     AXList: 'ax_list',

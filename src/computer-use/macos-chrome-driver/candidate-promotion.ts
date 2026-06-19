@@ -11,7 +11,13 @@ import type {
   RecognitionResult,
   RecognizedItem,
 } from './types.js'
-import { uniqueStrings } from './shared.js'
+import {
+  hasCaptureAndProjectedBoundsMatchingBox,
+  hasProjectedLogicalBoundsMatchingBox,
+  isCoreArtifactRef,
+  isObjectLikeRecord,
+  uniqueStrings,
+} from './shared.js'
 import { BUTTON_KINDS, LINK_KINDS, TEXT_INPUT_KINDS } from './types.js'
 
 export interface PromotionOptions {
@@ -324,8 +330,8 @@ function parseCrossSourceAudit(value: unknown): ParsedCrossSourceAudit | null {
   return {
     status: value.status,
     artifact_refs: {
-      capture_artifact: isArtifactRef(artifactRefs.capture_artifact) ? artifactRefs.capture_artifact : undefined,
-      capture_contract_artifact: isArtifactRef(artifactRefs.capture_contract_artifact) ? artifactRefs.capture_contract_artifact : undefined,
+      capture_artifact: isCoreArtifactRef(artifactRefs.capture_artifact) ? artifactRefs.capture_artifact : undefined,
+      capture_contract_artifact: isCoreArtifactRef(artifactRefs.capture_contract_artifact) ? artifactRefs.capture_contract_artifact : undefined,
     },
     source_groups: sourceGroups,
     sources,
@@ -379,8 +385,8 @@ function parseAuditItem(value: unknown): ParsedAuditItem | null {
     compared_items: comparedItems,
     reasons,
     artifact_refs: {
-      capture_artifact: isArtifactRef(value.artifact_refs.capture_artifact) ? value.artifact_refs.capture_artifact : undefined,
-      capture_contract_artifact: isArtifactRef(value.artifact_refs.capture_contract_artifact) ? value.artifact_refs.capture_contract_artifact : undefined,
+      capture_artifact: isCoreArtifactRef(value.artifact_refs.capture_artifact) ? value.artifact_refs.capture_artifact : undefined,
+      capture_contract_artifact: isCoreArtifactRef(value.artifact_refs.capture_contract_artifact) ? value.artifact_refs.capture_contract_artifact : undefined,
     },
     known_limits: knownLimits,
     raw: value,
@@ -515,23 +521,10 @@ function hasTrustworthyProjection(
 
 function hasProjectedCoordinateEvidence(item: RecognizedItem): boolean {
   if (item.kind === 'ocr_text')
-    return hasCaptureAndProjectedBounds(item.detail.bounds, item.box)
+    return hasCaptureAndProjectedBoundsMatchingBox(item.detail.bounds, item.box)
   if (item.kind === 'ocr_row')
-    return hasCaptureAndProjectedBounds(item.detail.row_bounds, item.box)
-  return hasProjectedLogicalBounds(item.detail.bounds, item.box) || hasProjectedLogicalBounds(item.detail.row_bounds, item.box)
-}
-
-function hasCaptureAndProjectedBounds(value: unknown, expectedBox: RecognitionBox): boolean {
-  return isObjectLikeRecord(value)
-    && hasValidBox(value.capture_pixel)
-    && hasValidBox(value.source_global_logical)
-    && boxesMatch(value.source_global_logical, expectedBox)
-}
-
-function hasProjectedLogicalBounds(value: unknown, expectedBox: RecognitionBox): boolean {
-  return isObjectLikeRecord(value)
-    && hasValidBox(value.source_global_logical)
-    && boxesMatch(value.source_global_logical, expectedBox)
+    return hasCaptureAndProjectedBoundsMatchingBox(item.detail.row_bounds, item.box)
+  return hasProjectedLogicalBoundsMatchingBox(item.detail.bounds, item.box) || hasProjectedLogicalBoundsMatchingBox(item.detail.row_bounds, item.box)
 }
 
 function hasValidBox(value: unknown): value is RecognitionBox {
@@ -546,14 +539,6 @@ function hasValidBox(value: unknown): value is RecognitionBox {
     && typeof height === 'number'
     && width > 0
     && height > 0
-}
-
-function boxesMatch(a: RecognitionBox, b: RecognitionBox): boolean {
-  const tolerance = 0.5
-  return Math.abs(a.x - b.x) <= tolerance
-    && Math.abs(a.y - b.y) <= tolerance
-    && Math.abs(a.width - b.width) <= tolerance
-    && Math.abs(a.height - b.height) <= tolerance
 }
 
 function parseStringArray(value: unknown): string[] | null {
@@ -579,19 +564,8 @@ function sameStringSet(a: string[], b: string[]): boolean {
   return true
 }
 
-function isArtifactRef(value: unknown): value is ArtifactRef {
-  return isObjectLikeRecord(value)
-    && typeof value.run_id === 'string'
-    && typeof value.artifact_id === 'string'
-    && typeof value.span_id === 'string'
-}
-
 function isAuditStatus(value: unknown): value is AuditStatus {
   return value === 'agreement' || value === 'conflict' || value === 'unknown'
-}
-
-function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }
 
 function uniquePromotionReasons(values: PromotionRefusal[]): PromotionRefusal[] {

@@ -1,4 +1,5 @@
 import type { ArtifactRef, ChromeCaptureContract, ChromeRecognitionTarget, RecognitionResult, RecognitionScope, RecognizedItem } from './types.js'
+import { hasProjectedBoundsShape, isCoreArtifactRef, isObjectLikeRecord, validConfidence } from './shared.js'
 import { BUTTON_KINDS, LINK_KINDS, TEXT_INPUT_KINDS } from './types.js'
 
 const AUDIT_SOURCE_GROUPS = ['ocr_text', 'ocr_row', 'chrome_dom', 'ax', 'capture_visibility', 'custom'] as const
@@ -473,8 +474,8 @@ function itemArtifactRefs(
   captureContractArtifact?: ArtifactRef,
 ): Record<string, ArtifactRef | undefined> {
   const refs = isObjectLikeRecord(item.detail?.source_artifacts) ? item.detail.source_artifacts : {}
-  const itemCaptureArtifact = isArtifactRef(refs.capture_artifact) ? refs.capture_artifact : captureArtifact
-  const itemCaptureContractArtifact = isArtifactRef(refs.capture_contract_artifact) ? refs.capture_contract_artifact : captureContractArtifact
+  const itemCaptureArtifact = isCoreArtifactRef(refs.capture_artifact) ? refs.capture_artifact : captureArtifact
+  const itemCaptureContractArtifact = isCoreArtifactRef(refs.capture_contract_artifact) ? refs.capture_contract_artifact : captureContractArtifact
   return {
     capture_artifact: itemCaptureArtifact,
     capture_contract_artifact: itemCaptureContractArtifact,
@@ -635,14 +636,10 @@ function pushUnique(values: string[], value: string): void {
     values.push(value)
 }
 
-function isArtifactRef(value: unknown): value is ArtifactRef {
-  return isObjectLikeRecord(value)
-    && typeof value.run_id === 'string'
-    && typeof value.artifact_id === 'string'
-    && typeof value.span_id === 'string'
-}
-
 function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): boolean {
+  if (isBrowserChromeEvidence(item))
+    return false
+
   const itemTexts = matchingTextsForItem(item)
   function textMatches(expected: string | RegExp): boolean {
     if (expected instanceof RegExp)
@@ -657,6 +654,11 @@ function matchesTarget(item: RecognizedItem, target: ChromeRecognitionTarget): b
     case 'ocr_text': return item.kind === 'ocr_text' && textMatches(target.text)
     case 'ocr_row': return item.kind === 'ocr_row' && textMatches(target.text)
   }
+}
+
+function isBrowserChromeEvidence(item: RecognizedItem): boolean {
+  return item.kind === 'ax_evidence'
+    && item.detail?.evidence_role === 'browser_chrome_observation'
 }
 
 function matchingTextsForItem(item: RecognizedItem): string[] {
@@ -776,10 +778,6 @@ function isRowEvidenceItem(item: RecognizedItem): boolean {
   return item.kind === 'ocr_row'
 }
 
-function validConfidence(confidence: number | undefined): boolean {
-  return Number.isFinite(confidence) && confidence! >= 0 && confidence! <= 1
-}
-
 function validBox(box: RecognizedItem['box']): boolean {
   return Number.isFinite(box.x)
     && Number.isFinite(box.y)
@@ -790,17 +788,9 @@ function validBox(box: RecognizedItem['box']): boolean {
 }
 
 function hasProjectedEvidence(item: RecognizedItem): boolean {
-  if (hasCaptureAndProjectedBounds(item.detail?.bounds))
+  if (hasProjectedBoundsShape(item.detail?.bounds))
     return true
-  if (hasCaptureAndProjectedBounds(item.detail?.row_bounds))
+  if (hasProjectedBoundsShape(item.detail?.row_bounds))
     return true
   return false
-}
-
-function hasCaptureAndProjectedBounds(value: unknown): boolean {
-  return isObjectLikeRecord(value) && isObjectLikeRecord(value.capture_pixel) && isObjectLikeRecord(value.source_global_logical)
-}
-
-function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }

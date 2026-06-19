@@ -315,11 +315,11 @@ function ocrMatchPassesFilters(
     return true
   }
 
-  const anchorNormalizedQuery = normalizeAnchorForMatch(input.query, input.caseSensitive)
-  const anchorNormalizedText = normalizeAnchorForMatch(match.text, input.caseSensitive)
+  const ocrAnchorFallbackQuery = normalizeOcrAnchorFallbackForMatch(input.query, input.caseSensitive)
+  const ocrAnchorFallbackText = normalizeOcrAnchorFallbackForMatch(match.text, input.caseSensitive)
   return input.exact
-    ? anchorNormalizedText === anchorNormalizedQuery
-    : anchorNormalizedText.includes(anchorNormalizedQuery)
+    ? ocrAnchorFallbackText === ocrAnchorFallbackQuery
+    : ocrAnchorFallbackText.includes(ocrAnchorFallbackQuery)
 }
 
 function boundsCenterInside(bounds: Bounds, cropRect: OcrCropRect): boolean {
@@ -353,7 +353,8 @@ function normalizeForMatch(value: string, caseSensitive: boolean): string {
   return caseSensitive ? sanitized : sanitized.toLocaleLowerCase()
 }
 
-function normalizeAnchorForMatch(value: string, caseSensitive: boolean): string {
+// OCR anchor fallback only: this is not general-purpose text correction.
+function normalizeOcrAnchorFallbackForMatch(value: string, caseSensitive: boolean): string {
   const sanitized = sanitizeText(value)
   const cased = caseSensitive ? sanitized : sanitized.toLocaleLowerCase()
   let normalized = ''
@@ -428,7 +429,8 @@ func normalizeForMatch(_ value: String, caseSensitive: Bool) -> String {
   return caseSensitive ? sanitized : sanitized.lowercased()
 }
 
-func normalizeAnchorForMatch(_ value: String, caseSensitive: Bool) -> String {
+// OCR anchor fallback only: this is not general-purpose text correction.
+func normalizeOcrAnchorFallbackForMatch(_ value: String, caseSensitive: Bool) -> String {
   let sanitized = sanitize(value)
   let cased = caseSensitive ? sanitized : sanitized.lowercased()
   var output = ""
@@ -451,7 +453,7 @@ func normalizeAnchorForMatch(_ value: String, caseSensitive: Bool) -> String {
   return output
 }
 
-func matchesQuery(_ text: String, normalizedQuery: String, anchorNormalizedQuery: String, exact: Bool, caseSensitive: Bool) -> Bool {
+func matchesQuery(_ text: String, normalizedQuery: String, ocrAnchorFallbackQuery: String, exact: Bool, caseSensitive: Bool) -> Bool {
   if normalizedQuery.isEmpty {
     return !sanitize(text).isEmpty
   }
@@ -460,15 +462,15 @@ func matchesQuery(_ text: String, normalizedQuery: String, anchorNormalizedQuery
     if normalizedText == normalizedQuery {
       return true
     }
-    let anchorNormalizedText = normalizeAnchorForMatch(text, caseSensitive: caseSensitive)
-    return anchorNormalizedText == anchorNormalizedQuery
+    let ocrAnchorFallbackText = normalizeOcrAnchorFallbackForMatch(text, caseSensitive: caseSensitive)
+    return ocrAnchorFallbackText == ocrAnchorFallbackQuery
   }
 
   if normalizedText.contains(normalizedQuery) {
     return true
   }
-  let anchorNormalizedText = normalizeAnchorForMatch(text, caseSensitive: caseSensitive)
-  return anchorNormalizedText.contains(anchorNormalizedQuery)
+  let ocrAnchorFallbackText = normalizeOcrAnchorFallbackForMatch(text, caseSensitive: caseSensitive)
+  return ocrAnchorFallbackText.contains(ocrAnchorFallbackQuery)
 }
 
 func validatedCropRect(_ region: RegionJSON, imageWidth: Int, imageHeight: Int) throws -> CGRect {
@@ -582,7 +584,7 @@ let maxObservations = min(max(input.maxObservations ?? 64, 1), 256)
 let exact = input.exact ?? false
 let caseSensitive = input.caseSensitive ?? false
 let normalizedQuery = input.normalizedQuery ?? normalizeForMatch(input.query ?? "", caseSensitive: caseSensitive)
-let anchorNormalizedQuery = normalizeAnchorForMatch(input.query ?? "", caseSensitive: caseSensitive)
+let ocrAnchorFallbackQuery = normalizeOcrAnchorFallbackForMatch(input.query ?? "", caseSensitive: caseSensitive)
 var matches: [MatchJSON] = []
 
 for observation in observations.prefix(maxObservations) {
@@ -594,7 +596,7 @@ for observation in observations.prefix(maxObservations) {
     if text.isEmpty {
       continue
     }
-    if matchesQuery(text, normalizedQuery: normalizedQuery, anchorNormalizedQuery: anchorNormalizedQuery, exact: exact, caseSensitive: caseSensitive) {
+    if matchesQuery(text, normalizedQuery: normalizedQuery, ocrAnchorFallbackQuery: ocrAnchorFallbackQuery, exact: exact, caseSensitive: caseSensitive) {
       selectedText = text
       selectedConfidence = candidate.confidence
       break

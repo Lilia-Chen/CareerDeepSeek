@@ -15,7 +15,14 @@ import type {
   RecognitionResult,
   SafetyCheckResult,
 } from './types.js'
-import { uniqueStrings } from './shared.js'
+import {
+  isCapturedEventArtifactRef,
+  isObjectLikeRecord,
+  safeErrorMessage,
+  sanitizeArtifactId,
+  uniqueArtifactRefs,
+  uniqueStrings,
+} from './shared.js'
 
 export interface ComputerUseCommandHandlerContext {
   request: ComputerUseInvokeRequest
@@ -160,7 +167,7 @@ async function invokeObserve(
     }
   }
   catch (error) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Chrome observe failed.',
       failureClass: 'observe',
@@ -179,7 +186,7 @@ async function invokeRecognize(
 ): Promise<ComputerUseInvokeResult> {
   const targetResult = parseRecognitionTarget(request.inputs?.target)
   if (!targetResult.ok) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Recognition target input is invalid.',
       failureClass: 'invalid_input',
@@ -192,7 +199,7 @@ async function invokeRecognize(
 
   const capture = driver.lastCapture
   if (!capture) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Recognition requires a previous Chrome capture.',
       failureClass: 'recognition',
@@ -241,7 +248,7 @@ async function invokeRecognize(
     }
   }
   catch (error) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Chrome recognition failed.',
       failureClass: 'recognition',
@@ -296,7 +303,7 @@ async function invokeCheckSafetyGate(
     }
   }
   catch (error) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Chrome safety gate check failed.',
       failureClass: 'safety_gate',
@@ -317,7 +324,7 @@ async function invokePromote(
   promotedCandidates: Map<string, RegisteredPromotedCandidate>,
 ): Promise<ComputerUseInvokeResult> {
   if (isObjectLikeRecord(request.inputs) && Object.hasOwn(request.inputs, 'recognition')) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Raw recognition JSON is not accepted by chrome.promote.',
       failureClass: 'invalid_input',
@@ -329,7 +336,7 @@ async function invokePromote(
   }
 
   if (!latestRecognition) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Promotion requires a successful same-sequence recognition.',
       failureClass: 'candidate_promotion',
@@ -342,7 +349,7 @@ async function invokePromote(
 
   const recognitionId = request.inputs?.recognitionId
   if (recognitionId !== undefined && typeof recognitionId !== 'string') {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Promotion recognitionId input is invalid.',
       failureClass: 'invalid_input',
@@ -353,7 +360,7 @@ async function invokePromote(
     })
   }
   if (typeof recognitionId === 'string' && recognitionId !== latestRecognition.recognition_id) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Promotion recognitionId does not match the latest recognition.',
       failureClass: 'candidate_promotion',
@@ -366,7 +373,7 @@ async function invokePromote(
 
   const capture = driver.lastCapture
   if (!capture) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Promotion requires the latest Chrome capture.',
       failureClass: 'candidate_promotion',
@@ -382,7 +389,7 @@ async function invokePromote(
     promotion = await driver.promoteCandidate(latestRecognition, capture, latestRecognitionTargetKind)
   }
   catch (error) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'Chrome candidate promotion failed.',
       failureClass: 'candidate_promotion',
@@ -395,7 +402,7 @@ async function invokePromote(
 
   if (promotion.status === 'refused') {
     const code = promotion.reasons[0] ?? 'candidate_promotion_refused'
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       status: 'refused',
       summary: `Chrome candidate promotion refused: ${code}.`,
@@ -601,7 +608,7 @@ async function invokeTypeText(
 ): Promise<ComputerUseInvokeResult> {
   const text = request.inputs?.text
   if (typeof text !== 'string') {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'typeText requires text input.',
       failureClass: 'invalid_input',
@@ -649,7 +656,7 @@ async function invokePressKey(
 ): Promise<ComputerUseInvokeResult> {
   const key = request.inputs?.key
   if (typeof key !== 'string') {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'pressKey requires key input.',
       failureClass: 'invalid_input',
@@ -662,7 +669,7 @@ async function invokePressKey(
 
   const modifiers = request.inputs?.modifiers
   if (modifiers !== undefined && (!Array.isArray(modifiers) || modifiers.some(item => typeof item !== 'string'))) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       summary: 'pressKey modifiers input is invalid.',
       failureClass: 'invalid_input',
@@ -711,7 +718,7 @@ async function invokeScroll(
 ): Promise<ComputerUseInvokeResult> {
   const forbiddenInput = firstForbiddenScrollInput(request.inputs)
   if (forbiddenInput) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       status: 'refused',
       summary: 'scroll rejected unsupported target input.',
@@ -734,7 +741,7 @@ async function invokeScroll(
     return settleMs.result(spec.id, 'settleMs')
 
   if (!latestObservation) {
-    return failureResult({
+    return handlerFailureResult({
       commandId: spec.id,
       status: 'refused',
       summary: 'scroll requires a prior observe command.',
@@ -840,10 +847,6 @@ function candidateEvidenceRefs(candidate: PromotedCandidate): ArtifactRef[] {
   ]
 }
 
-function sanitizeArtifactId(value: string): string {
-  return value.replace(/[^\w.-]/g, '_').slice(0, 120)
-}
-
 type RecognitionTargetParseResult
   = | { ok: true, target: ChromeRecognitionTarget }
     | { ok: false, code: string, message: string }
@@ -879,10 +882,6 @@ function parseRecognitionTarget(value: unknown): RecognitionTargetParseResult {
   }
 }
 
-function isObjectLikeRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
 function isStringOrRegExp(value: unknown): value is string | RegExp {
   return typeof value === 'string' || value instanceof RegExp
 }
@@ -908,7 +907,7 @@ function parseCandidateLocalIdInput(
   if (isObjectLikeRecord(inputs) && Object.hasOwn(inputs, 'candidate')) {
     return {
       ok: false,
-      result: commandId => failureResult({
+      result: commandId => handlerFailureResult({
         commandId,
         summary: 'Raw candidate JSON is not accepted as action input.',
         failureClass: 'invalid_input',
@@ -937,10 +936,10 @@ function parseCandidateLocalIdInput(
   if (candidateRefInput === undefined)
     return { ok: true, candidateLocalId }
 
-  if (!isArtifactRef(candidateRefInput)) {
+  if (!isCapturedEventArtifactRef(candidateRefInput)) {
     return {
       ok: false,
-      result: commandId => failureResult({
+      result: commandId => handlerFailureResult({
         commandId,
         summary: 'candidateRef input is invalid.',
         failureClass: 'invalid_input',
@@ -1012,7 +1011,7 @@ function candidateProvenanceRefusal(input: {
   signals: string[]
   artifacts?: ArtifactRef[]
 }): ComputerUseInvokeResult {
-  return failureResult({
+  return handlerFailureResult({
     commandId: input.commandId,
     status: 'refused',
     summary: `Candidate provenance refused: ${input.code}.`,
@@ -1045,7 +1044,7 @@ function optionalNumberInput(value: unknown): NumberInputResult {
     return { ok: true, value }
   return {
     ok: false,
-    result: (commandId, field) => failureResult({
+    result: (commandId, field) => handlerFailureResult({
       commandId,
       summary: `${field} input is invalid.`,
       failureClass: 'invalid_input',
@@ -1064,7 +1063,7 @@ function driverActionFailureResult(
   artifacts: ArtifactRef[],
 ): ComputerUseInvokeResult {
   const mapped = mapDriverActionError(error)
-  return failureResult({
+  return handlerFailureResult({
     commandId,
     summary: `${actionType} action failed: ${mapped.code}.`,
     failureClass: mapped.failureClass,
@@ -1139,17 +1138,6 @@ function mapDriverActionError(error: unknown): {
   return { failureClass: 'action_delivery', code: 'action_execution_error' }
 }
 
-function isArtifactRef(value: unknown): value is ArtifactRef {
-  return isObjectLikeRecord(value)
-    && typeof value.run_id === 'string'
-    && typeof value.artifact_id === 'string'
-    && typeof value.span_id === 'string'
-    && (
-      value.captured_event_id === undefined
-      || typeof value.captured_event_id === 'string'
-    )
-}
-
 function sameArtifactRef(a: ArtifactRef, b: ArtifactRef): boolean {
   return a.run_id === b.run_id
     && a.span_id === b.span_id
@@ -1164,7 +1152,7 @@ function observationHardStopSignals(snapshot: ObservationSnapshot): string[] {
   return signals.filter((item): item is string => typeof item === 'string')
 }
 
-function failureResult(input: {
+function handlerFailureResult(input: {
   commandId: string
   status?: ComputerUseInvokeStatus
   summary: string
@@ -1190,27 +1178,6 @@ function failureResult(input: {
     },
     knownLimits: input.knownLimits,
   }
-}
-
-function uniqueArtifactRefs(refs: ArtifactRef[]): ArtifactRef[] {
-  const seen = new Set<string>()
-  const unique: ArtifactRef[] = []
-  for (const ref of refs) {
-    const key = `${ref.run_id}:${ref.span_id}:${ref.artifact_id}:${ref.captured_event_id ?? ''}`
-    if (!seen.has(key)) {
-      seen.add(key)
-      unique.push(ref)
-    }
-  }
-  return unique
-}
-
-function safeErrorMessage(error: unknown): string {
-  if (error instanceof Error)
-    return error.message
-  if (typeof error === 'string')
-    return error
-  return 'unknown error'
 }
 
 function errorCode(error: unknown): string | undefined {
