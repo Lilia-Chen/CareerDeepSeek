@@ -10,6 +10,47 @@
 
 ---
 
+## Implementation Status
+
+Status: completed on 2026-06-19.
+
+Phase reviews:
+
+- Phase A: implemented, independent review initially failed on missing driver-level unsupported-coordinate coverage, fixed, re-reviewed and passed.
+- Phase B: implemented, independent review initially failed on scroll lease clearing inside the executor path, fixed, re-reviewed and passed.
+- Phase C: audit-only preservation phase completed; independent review passed.
+- Phase D: `uniqueStrings` exact-helper dedupe completed; independent review passed. Other helpers were intentionally left for separate equivalence review.
+- Phase E: static verification and real Chrome invoke QA completed.
+
+Verification evidence:
+
+- `pnpm run ci:public` passed: lint, typecheck, and Vitest completed with 28 test files and 367 tests passing.
+- Live Chrome invoke QA produced a private trace under the configured external `CareerDeepSeek-data` trace root.
+- Live QA trace id: `phase-e-live-1781894051803`.
+- Live visual trace report was generated inside the same private trace directory.
+- Live command sequence:
+
+```txt
+chrome.observe
+chrome.recognize
+chrome.promote
+chrome.focusTextInput
+chrome.pressKey
+chrome.typeText
+chrome.pressKey
+chrome.observe
+chrome.recognize
+chrome.promote
+chrome.clickCandidate
+chrome.observe
+chrome.scroll
+chrome.observe
+```
+
+The live QA also identified at least 3 candidate opportunities. Those records are intentionally kept out of the public repository.
+
+---
+
 ## Current Constraints
 
 - No fixed executable research workflow may be introduced.
@@ -45,7 +86,7 @@
 
 | File | Phase A | Phase B | Phase C | Phase D | Phase E |
 | --- | --- | --- | --- | --- | --- |
-| `types.ts` | Export shared target kind sets and audit type | - | - | Host only helpers/types proven equivalent by Phase D1 | - |
+| `types.ts` | Export shared target kind sets | - | - | Host only helpers/types proven equivalent by Phase D1 | - |
 | `recognition.ts` | Rename recognition-side action signal | - | - | Dedupe exact helpers only | - |
 | `candidate-promotion.ts` | Rename promotion predicate, support button/link promotion | - | - | Dedupe exact helpers only | - |
 | `driver.ts` | Accept coordinate click delivery and liveness for supported semantic targets | Fix scroll lease lifecycle | - | Dedupe exact helpers only | - |
@@ -75,34 +116,34 @@
 Add these exports near `ChromeRecognitionTarget` / `RecognizedItem` definitions:
 
 ```ts
-export const TEXT_INPUT_KINDS = new Set([
+export const TEXT_INPUT_KINDS: ReadonlySet<string> = new Set([
   'dom_textbox',
   'dom_searchbox',
   'dom_combobox',
   'ax_textfield',
   'ax_textarea',
   'ax_combobox',
-] as const)
+])
 
-export const BUTTON_KINDS = new Set([
+export const BUTTON_KINDS: ReadonlySet<string> = new Set([
   'dom_button',
   'ax_button',
-] as const)
+])
 
-export const LINK_KINDS = new Set([
+export const LINK_KINDS: ReadonlySet<string> = new Set([
   'dom_link',
   'ax_link',
-] as const)
+])
 
-export const COORDINATE_CLICK_KINDS = new Set([
+export const COORDINATE_CLICK_KINDS: ReadonlySet<string> = new Set([
   'dom_button',
   'ax_button',
   'dom_link',
   'ax_link',
-  'ax_menu_item',
-  'ax_tab',
-] as const)
+])
 ```
+
+Do not add `ax_menu_item` or `ax_tab` here in this phase. They are currently recognition-actionable only; promotion and driver click support for menu/tab targets is out of scope for this refactor unless a separate task adds full promotion, liveness, and action tests.
 
 - [ ] **Step 2: Replace local duplicate kind sets**
 
@@ -110,7 +151,7 @@ In `recognition.ts`, remove local `BUTTON_KINDS`, `TEXT_INPUT_KINDS`, and `LINK_
 
 In `candidate-promotion.ts`, remove local `PROMOTABLE_TEXT_INPUT_KINDS`; import `TEXT_INPUT_KINDS`, `BUTTON_KINDS`, `LINK_KINDS`.
 
-In `driver.ts`, replace `SUPPORTED_AX_NODE_CLICK_KINDS` with `TEXT_INPUT_KINDS`, and import `COORDINATE_CLICK_KINDS`.
+In `driver.ts`, replace `SUPPORTED_AX_NODE_CLICK_KINDS` with `TEXT_INPUT_KINDS`. Do not import `COORDINATE_CLICK_KINDS` until Task A4 uses it; `noUnusedLocals` is enabled.
 
 - [ ] **Step 3: Run targeted tests**
 
@@ -148,9 +189,16 @@ Update `compareForBest()` to call `hasStructuralInteractionSignal()`.
 
 Expected behavior remains unchanged: AX/DOM interactive elements outrank OCR when they represent the same visual target.
 
-- [ ] **Step 2: Rename promotion-side function**
+- [ ] **Step 2: Replace both promotion-side predicate functions**
 
-In `candidate-promotion.ts`, delete the standalone promotion-side `isActionable()` name and fold the logic into:
+In `candidate-promotion.ts`, replace both existing promotion-side predicate functions:
+
+```txt
+function isActionableForPromotion(...)
+function isActionable(...)
+```
+
+with:
 
 ```ts
 function isSupportedPromotionTarget(
@@ -165,6 +213,8 @@ Update the existing caller:
 if (recognition.best && !isSupportedPromotionTarget(recognition.best, effectiveTargetKind))
   reasons.push('item_not_actionable')
 ```
+
+There should be no remaining promotion-side function named `isActionable` or `isActionableForPromotion` after this task.
 
 - [ ] **Step 3: Run targeted tests**
 
@@ -255,12 +305,19 @@ Add regression tests covering:
 it('accepts coordinate-grounded DOM button candidates for click')
 it('accepts coordinate-grounded AX button candidates for click')
 it('accepts coordinate-grounded DOM link candidates for click')
+it('accepts coordinate-grounded AX link candidates for click')
 it('refuses unsupported coordinate candidate kinds')
+it('builds a button recognition target for coordinate-grounded button candidates')
+it('builds a link recognition target for coordinate-grounded link candidates')
+it('does not fail coordinate button/link liveness with anchor_recheck_unavailable')
+it('passes coordinate liveness only when the fresh item kind matches the candidate kind')
+it('refuses coordinate liveness when the fresh item kind differs from the candidate kind')
+it('forwards coordinate-grounded promoted button/link candidates through chrome.clickCandidate')
 ```
 
 The success tests must verify that the click precondition does not reject candidates with:
 
-```ts
+```txt
 target_spec: {
   grounding: 'coordinate',
   box: { x: 100, y: 100, width: 80, height: 30 },
@@ -271,7 +328,7 @@ kind: 'dom_button' // or ax_button/dom_link/ax_link
 
 - [ ] **Step 2: Update click grounding predicate**
 
-In `driver.ts`, replace `isSupportedClickCandidateGrounding()` with behavior equivalent to:
+In `driver.ts`, import `COORDINATE_CLICK_KINDS` and replace `isSupportedClickCandidateGrounding()` with behavior equivalent to:
 
 ```ts
 function isSupportedClickCandidateGrounding(candidate: PromotedCandidate): boolean {
@@ -294,7 +351,24 @@ to:
 ['ocr_anchor', 'visual_row', 'coordinate']
 ```
 
-- [ ] **Step 3: Update liveness compatibility**
+- [ ] **Step 3: Update liveness target construction**
+
+In `driver.ts`, update `recognitionTargetForCandidate()` so coordinate-grounded semantic candidates can produce a fresh recognition target before liveness filtering:
+
+```ts
+if (grounding === 'coordinate') {
+  if (BUTTON_KINDS.has(candidate.kind))
+    return { kind: 'button', text }
+  if (LINK_KINDS.has(candidate.kind))
+    return { kind: 'link', text }
+}
+```
+
+The function must continue returning `null` for unsupported coordinate candidate kinds.
+
+The A4 tests must assert coordinate-grounded `dom_button`/`ax_button` and `dom_link`/`ax_link` candidates do not fail with `anchor_recheck_unavailable` when anchor text is present.
+
+- [ ] **Step 4: Update liveness compatibility**
 
 In `driver.ts`, update `isFreshSourceCompatible()` so coordinate-grounded semantic candidates can pass liveness recheck:
 
@@ -305,7 +379,11 @@ if (grounding === 'coordinate')
 
 Keep existing OCR/text-input checks unchanged.
 
-- [ ] **Step 4: Run targeted tests**
+The coordinate liveness tests must exercise `isFreshSourceCompatible()` through the driver's liveness path. A coordinate candidate for `dom_button` must not pass liveness against a fresh `dom_link`, even when the boxes overlap.
+
+The invoke-level forwarding test must prove `chrome.clickCandidate` no longer rejects coordinate-grounded `dom_button`/`ax_button`/`dom_link`/`ax_link` candidates in `invoke-handlers.ts` before calling `driver.click()`. It should still reject `ax_node` text inputs and direct users to `chrome.focusTextInput`.
+
+- [ ] **Step 5: Run targeted tests**
 
 Run:
 
@@ -323,6 +401,7 @@ Expected: all pass.
 
 **Files:**
 - Modify: `src/computer-use/macos-chrome-driver/driver.ts`
+- Modify: `src/computer-use/macos-chrome-driver/invoke-handlers.ts`
 - Test: `test/computer-use/macosChromeDriver.test.ts`
 - Test: `test/computer-use/invokeActionCommands.test.ts`
 
@@ -339,6 +418,44 @@ await invoke('chrome.scroll', { deltaY: 600 })
 ```
 
 Expected: scroll must not fail with `scroll_region_not_observed` solely because a click happened after observe.
+
+Implementation note: `click()` and `focusTextInput()` run candidate liveness, and liveness performs a fresh observation. The test should verify the intended behavior at the command boundary: non-scroll actions must not invalidate the caller-visible ability to scroll after the initial observe.
+
+Add a second test covering keyboard/text-input actions:
+
+```ts
+await invoke('chrome.observe')
+await invoke('chrome.recognize', { target: { kind: 'text_input', name: /search/i } })
+await invoke('chrome.promote')
+await invoke('chrome.focusTextInput')
+await invoke('chrome.typeText', { text: 'agent infrastructure' })
+await invoke('chrome.pressKey', { key: 'enter' })
+await invoke('chrome.scroll', { deltaY: 600 })
+```
+
+Expected: scroll must not fail with `scroll_region_not_observed` solely because focus/type/pressKey happened after observe.
+
+Delete and replace the old regression test named like:
+
+```txt
+it('requires a new caller observe before scroll after an action reobserve', ...)
+```
+
+Do not merely invert the old assertions. The old test describes the old contract, so keeping the name or structure is misleading.
+
+Replace it with a new contract test named like:
+
+```txt
+it('scroll succeeds after click without a new caller observe because liveness reobserve refreshes the scroll region lease', ...)
+```
+
+The new test must assert:
+
+- `driver.click(candidate)` succeeds after the initial caller `observe()`,
+- caller does not run a second explicit `observe()` before scroll,
+- `driver.scroll(240)` succeeds,
+- `executeWindowTargetedScroll` is called,
+- the scroll target coordinates come from the click liveness reobserve lease, not the original caller observe lease.
 
 - [ ] **Step 2: Remove non-scroll lease clears**
 
@@ -357,11 +474,37 @@ from the `finally` blocks of:
 
 Do not change focus lease behavior in this task.
 
-- [ ] **Step 3: Make scroll consume its own lease in a single finally**
+- [ ] **Step 3: Preserve invoke-level latest observation across non-scroll actions**
 
-In `scroll()`, clear the scroll lease exactly once after the scroll action attempt finishes:
+In `invoke-handlers.ts`, do not clear `latestObservation` in the success callbacks for:
+
+- `chrome.clickCandidate`
+- `chrome.focusTextInput`
+- `chrome.typeText`
+- `chrome.pressKey`
+
+The handler currently uses `latestObservation` as the invoke-level scroll evidence lease. `chrome.scroll` refuses before reaching `driver.scroll()` when this value is missing, so preserving only `driver.#scrollRegionLease` is not sufficient.
+
+Keep action-specific state changes intact:
+
+- click may update `latestNonTextInputClickedTarget`,
+- focus may update `latestFocusedTarget`,
+- type/pressKey may keep focus state,
+- promoted candidate invalidation remains controlled by observe/recognize/promote boundaries.
+
+Update stale click wording in `invoke-handlers.ts` from "OCR click candidates only" to wording that reflects supported click candidates:
 
 ```ts
+message: 'chrome.clickCandidate cannot consume ax_node text inputs; use chrome.focusTextInput for text inputs.'
+```
+
+- [ ] **Step 4: Make scroll consume its own lease only after valid scroll input**
+
+In `scroll()`, run caller-input validation before the lease-consuming action attempt, then clear the scroll lease exactly once after the valid scroll delivery attempt finishes:
+
+```ts
+rejectCallerSuppliedScrollCoordinates(options)
+
 try {
   await this.#executeAction('scroll', null, 'observed_scroll_region', async (context) => {
     // existing scroll delivery body stays here
@@ -374,7 +517,9 @@ finally {
 
 Remove the branch-local clears inside the window-targeted path and HID fallback path.
 
-- [ ] **Step 4: Run targeted tests**
+Do not consume the scroll lease when `rejectCallerSuppliedScrollCoordinates()` rejects invalid legacy inputs such as `screenPoint` or `windowLocalPoint`. Keep or update the existing test that rejects caller-supplied `screenPoint` and then retries a valid `driver.scroll()` successfully.
+
+- [ ] **Step 5: Run targeted tests**
 
 Run:
 
@@ -428,7 +573,7 @@ Expected: all pass.
 Run:
 
 ```bash
-rg -n "MacOSChromeAgentHarness|invoke-qa-report|generateInvokeQaReport|agent-harness" src test docs scripts -S
+rg -n "MacOSChromeAgentHarness|invoke-qa-report|generateInvokeQaReport|agent-harness" src test docs -S
 ```
 
 Expected: produce a list of references. This task is audit-only.
@@ -474,6 +619,7 @@ Special rules:
 
 - Do not unify `isRecord` unless array handling is identical for every call site.
 - Do not unify `isArtifactRef` unless `captured_event_id` behavior is explicitly compatible.
+- Do not unify `errorMessage` unless non-`Error`/non-string behavior is identical. Current variants include `Error ? message : String(error)` and `Error -> string -> 'unknown error'`; replacing one with the other is a behavior change.
 - Do not unify sanitizers unless max length and ID/path use case are identical.
 
 ### Task D2: Extract only exact duplicates
@@ -490,15 +636,9 @@ Allowed initial exports:
 export function uniqueStrings(values: readonly string[]): string[] {
   return Array.from(new Set(values))
 }
-
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error)
-    return error.message
-  return String(error)
-}
 ```
 
-Do not add `isRecord`, `isArtifactRef`, bounds validators, or sanitizers until Task D1 proves exact equivalence.
+Do not add `errorMessage`, `isRecord`, `isArtifactRef`, bounds validators, or sanitizers until Task D1 proves exact equivalence for every call site.
 
 - [ ] **Step 2: Replace one duplicate group at a time**
 

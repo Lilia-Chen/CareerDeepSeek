@@ -4,6 +4,7 @@ import type {
   ComputerUseInvokeStatus,
 } from './invoke-types.js'
 import type { ArtifactRef } from './types.js'
+import { uniqueStrings } from './shared.js'
 
 export interface ComputerUseQaReport {
   case_id: string
@@ -173,8 +174,4 @@ function uniqueArtifactRefs(values: readonly ArtifactRef[]): ArtifactRef[] {
   }
 
   return unique
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return Array.from(new Set(values))
 }

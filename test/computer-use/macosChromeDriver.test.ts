@@ -863,33 +863,18 @@ describe('macOS Chrome driver', () => {
       foregroundPolicy: 'auto_focus_chrome',
     })
 
+    mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
+    mocks.captureChromeDom.mockResolvedValue(chromeDomObservation({
+      elements: [
+        textElement('Static label', { x: 120, y: 180, width: 160, height: 28 }),
+      ],
+    }))
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
     await driver.observe()
-    mocks.recognizeTextInImage.mockResolvedValueOnce(ocrSnapshot([
-      {
-        matchIndex: 0,
-        text: 'Reject all cookies',
-        confidence: 0.94,
-        bounds: { x: 520, y: 280, width: 280, height: 44 },
-      },
-    ]))
-    mocks.produceOcrRows.mockResolvedValueOnce({
-      strategy: 'ocr-text',
-      imagePath: screenshotPath,
-      imageWidth: 1000,
-      imageHeight: 800,
-      rawMatchCount: 1,
-      filteredMatchCount: 1,
-      rowCount: 0,
-      rows: [],
-      providerDetail: {
-        provider: 'careerdeepseek.macos_chrome_driver.ocr_rows',
-        originalStrategy: 'ocr-text',
-      },
-      knownLimits: [],
-    })
     const result = await driver.recognizeFromCapture(driver.lastCapture!, {
-      kind: 'button',
-      text: /accept all cookies/i,
+      kind: 'visible_text',
+      text: /static label/i,
     })
     const audit = result.detail.cross_source_audit as { status?: string }
     const recognitionPayload = readLastJsonArtifactByRole('recognition-result')
@@ -968,6 +953,265 @@ describe('macOS Chrome driver', () => {
     assert.equal(actionPayload.liveness_recheck.status, 'passed')
     assert.equal(actionPayload.liveness_recheck.original_candidate_ref.artifact_id, actionPayload.candidate_ref.artifact_id)
     assert.deepEqual(actionPayload.liveness_recheck.fresh_selected_item.box, { x: 550, y: 350, width: 280, height: 44 })
+  })
+
+  it('accepts coordinate-grounded DOM button candidates for click', async () => {
+    mockDomOnly([acceptCookiesElement({ bounds: { x: 100, y: 100, width: 80, height: 30 } })])
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'button', text: /accept all cookies/i })
+
+    assert.equal(promotion.candidate.kind, 'dom_button')
+    assert.equal(promotion.candidate.target_spec.grounding, 'coordinate')
+    await driver.click(promotion.candidate)
+    assert.equal(mocks.executeMoveAndClick.mock.calls.length, 1)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.executed, true)
+    assert.equal(actionPayload.liveness_recheck.status, 'passed')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'button')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'dom_button')
+    assert.equal(actionPayload.refusal_reasons.includes('anchor_recheck_unavailable'), false)
+  })
+
+  it('accepts coordinate-grounded AX button candidates for click', async () => {
+    mockAxOnly(axSnapshotWithAcceptCookies({ x: 100, y: 100, width: 80, height: 30 }))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'button', text: /accept all cookies/i })
+
+    assert.equal(promotion.candidate.kind, 'ax_button')
+    assert.equal(promotion.candidate.target_spec.grounding, 'coordinate')
+    await driver.click(promotion.candidate)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.executed, true)
+    assert.equal(actionPayload.liveness_recheck.status, 'passed')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'button')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'ax_button')
+  })
+
+  it('accepts coordinate-grounded DOM link candidates for click', async () => {
+    mockDomOnly([jobsLinkElement({ x: 100, y: 100, width: 80, height: 30 })])
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'link', text: /open jobs/i })
+
+    assert.equal(promotion.candidate.kind, 'dom_link')
+    assert.equal(promotion.candidate.target_spec.grounding, 'coordinate')
+    await driver.click(promotion.candidate)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.executed, true)
+    assert.equal(actionPayload.liveness_recheck.status, 'passed')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'link')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'dom_link')
+    assert.equal(actionPayload.refusal_reasons.includes('anchor_recheck_unavailable'), false)
+  })
+
+  it('accepts coordinate-grounded AX link candidates for click', async () => {
+    mockAxOnly(axSnapshotWithJobsLink({ x: 100, y: 100, width: 80, height: 30 }))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'link', text: /open jobs/i })
+
+    assert.equal(promotion.candidate.kind, 'ax_link')
+    assert.equal(promotion.candidate.target_spec.grounding, 'coordinate')
+    await driver.click(promotion.candidate)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.executed, true)
+    assert.equal(actionPayload.liveness_recheck.status, 'passed')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'link')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'ax_link')
+  })
+
+  it('refuses unsupported coordinate candidate kinds before OS click delivery', async () => {
+    const candidatePromotionModulePath = '../../src/computer-use/macos-chrome-driver/candidate-promotion.js'
+    const actualCandidatePromotion = await vi.importActual<typeof import('../../src/computer-use/macos-chrome-driver/candidate-promotion.js')>(
+      candidatePromotionModulePath,
+    )
+    vi.resetModules()
+    vi.doMock(candidatePromotionModulePath, () => ({
+      ...actualCandidatePromotion,
+      promoteCandidate: (...args: Parameters<typeof actualCandidatePromotion.promoteCandidate>) => {
+        const result = actualCandidatePromotion.promoteCandidate(...args)
+        if (result.status !== 'promoted')
+          return result
+        return {
+          ...result,
+          candidate: {
+            ...result.candidate,
+            kind: 'ax_menu_item',
+            label: 'File',
+            target_spec: {
+              ...result.candidate.target_spec,
+              grounding: 'coordinate' as const,
+              anchor_text: 'File',
+            },
+          },
+        }
+      },
+    }))
+
+    try {
+      const { MacOSChromeDriver: IsolatedMacOSChromeDriver } = await import('../../src/computer-use/macos-chrome-driver/index.js')
+      mockDomOnly([acceptCookiesElement({ bounds: { x: 100, y: 100, width: 80, height: 30 } })])
+      const driver = new IsolatedMacOSChromeDriver({
+        sessionId: 'driver-test',
+        config,
+        foregroundPolicy: 'auto_focus_chrome',
+      })
+
+      await driver.observe()
+      const result = await driver.recognizeFromCapture(driver.lastCapture!, { kind: 'button', text: /accept all cookies/i })
+      const promotion = await driver.promoteCandidate(result, driver.lastCapture!, 'button')
+      assert.equal(promotion.status, 'promoted')
+      if (promotion.status !== 'promoted')
+        return
+      assert.equal(promotion.candidate.kind, 'ax_menu_item')
+      assert.equal(promotion.candidate.target_spec.grounding, 'coordinate')
+
+      await assert.rejects(
+        () => driver.click(promotion.candidate),
+        (error: unknown) => {
+          assert.equal((error as { message?: string }).message?.includes('unsupported_click_candidate_kind'), true)
+          return true
+        },
+      )
+
+      assert.equal(mocks.executeMoveAndClick.mock.calls.length, 0)
+      const actionPayload = readLastJsonArtifactByRole('action-execution')
+      assert.equal(actionPayload.action_type, 'click')
+      assert.equal(actionPayload.executed, false)
+      assert.equal(actionPayload.refused, true)
+      assert.ok(actionPayload.refusal_reasons.includes('unsupported_click_candidate_kind'))
+      assert.equal(actionPayload.precondition_result.passed, false)
+      const failure = actionPayload.precondition_result.failures.find((item: { code?: string }) =>
+        item.code === 'unsupported_click_candidate_kind',
+      )
+      assert.ok(failure)
+      assert.equal(failure.detail, 'Candidate grounding is not supported for this macOS event delivery.')
+      assert.deepEqual(failure.observed, { kind: 'ax_menu_item', grounding: 'coordinate' })
+    }
+    finally {
+      vi.doUnmock(candidatePromotionModulePath)
+      vi.resetModules()
+    }
+  })
+
+  it('builds a button recognition target for coordinate-grounded button candidates', async () => {
+    mockDomOnly([acceptCookiesElement({ bounds: { x: 100, y: 100, width: 80, height: 30 } })])
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'button', text: /accept all cookies/i })
+
+    await driver.click(promotion.candidate)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'button')
+  })
+
+  it('builds a link recognition target for coordinate-grounded link candidates', async () => {
+    mockDomOnly([jobsLinkElement({ x: 100, y: 100, width: 80, height: 30 })])
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'link', text: /open jobs/i })
+
+    await driver.click(promotion.candidate)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.liveness_recheck.fresh_target.kind, 'link')
+  })
+
+  it('does not fail coordinate button/link liveness with anchor_recheck_unavailable', async () => {
+    mockDomOnly([
+      acceptCookiesElement({ bounds: { x: 100, y: 100, width: 80, height: 30 } }),
+      jobsLinkElement({ x: 240, y: 100, width: 80, height: 30 }),
+    ])
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const buttonPromotion = await recognizeAndPromote(driver, { kind: 'button', text: /accept all cookies/i })
+    await driver.click(buttonPromotion.candidate)
+    const buttonActionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(buttonActionPayload.liveness_recheck.refusal_reason, undefined)
+
+    const linkPromotion = await recognizeAndPromote(driver, { kind: 'link', text: /open jobs/i })
+    await driver.click(linkPromotion.candidate)
+    const linkActionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(linkActionPayload.liveness_recheck.refusal_reason, undefined)
+  })
+
+  it('passes coordinate liveness only when fresh item kind matches candidate kind', async () => {
+    mocks.captureChromeDom
+      .mockResolvedValueOnce(chromeDomObservation({
+        elements: [acceptCookiesElement({ bounds: { x: 100, y: 100, width: 80, height: 30 } })],
+      }))
+      .mockResolvedValue(chromeDomObservation({
+        elements: [acceptCookiesElement({ bounds: { x: 105, y: 105, width: 80, height: 30 } })],
+      }))
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithAcceptCookies({ x: 108, y: 108, width: 80, height: 30 }))
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'button', text: /accept all cookies/i })
+
+    await driver.click(promotion.candidate)
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.liveness_recheck.status, 'passed')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'dom_button')
+  })
+
+  it('refuses coordinate liveness when fresh item kind differs from candidate kind', async () => {
+    mockDomOnly([acceptCookiesElement({ bounds: { x: 100, y: 100, width: 80, height: 30 } })])
+    mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+    mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const promotion = await recognizeAndPromote(driver, { kind: 'button', text: /accept all cookies/i })
+    assert.equal(promotion.candidate.kind, 'dom_button')
+    mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithAcceptCookies({ x: 105, y: 105, width: 80, height: 30 }))
+
+    await assert.rejects(
+      () => driver.click(promotion.candidate),
+      /anchor_recheck_incompatible_source/i,
+    )
+    const actionPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(actionPayload.executed, false)
+    assert.equal(actionPayload.liveness_recheck.refusal_reason, 'anchor_recheck_incompatible_source')
+    assert.equal(actionPayload.liveness_recheck.fresh_selected_item.kind, 'ax_button')
   })
 
   it('refuses a mutated promoted candidate returned to the caller', async () => {
@@ -1746,8 +1990,12 @@ describe('macOS Chrome driver', () => {
     assert.ok(region.known_limits.includes('scroll_region_uses_window_bounds_fallback'))
   })
 
-  it('requires a new caller observe before scroll after an action reobserve', async () => {
+  it('scroll succeeds after click without a new caller observe because liveness reobserve refreshes the scroll region lease', async () => {
     useOcrTextOnly([acceptCookiesOcrMatch()])
+    mocks.captureAXTree
+      .mockResolvedValueOnce(axSnapshotWithWebArea({ x: 0, y: 96, width: 1000, height: 640 }))
+      .mockResolvedValueOnce(axSnapshotWithWebArea({ x: 0, y: 120, width: 1000, height: 720 }))
+      .mockResolvedValueOnce(axSnapshotWithWebArea({ x: 0, y: 200, width: 1000, height: 600 }))
     const driver = new MacOSChromeDriver({
       sessionId: 'driver-test',
       config,
@@ -1761,13 +2009,17 @@ describe('macOS Chrome driver', () => {
       return
 
     await driver.click(promotion.candidate)
+    assert.equal(mocks.executeMoveAndClick.mock.calls.length, 1)
+    const captureAxTreeCallsAfterClick = mocks.captureAXTree.mock.calls.length
     mocks.executeWindowTargetedScroll.mockClear()
 
-    await assert.rejects(
-      () => driver.scroll(240),
-      /scroll_region_not_observed/i,
-    )
-    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
+    await driver.scroll(240)
+
+    assert.equal(mocks.captureAXTree.mock.calls.length, captureAxTreeCallsAfterClick)
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
+    const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
+    assert.deepEqual(payload.screenPoint, { x: 500, y: 530 })
+    assert.deepEqual(payload.windowLocalPoint, { x: 500, y: 490 })
   })
 
   it('rejects caller-supplied screenPoint and derives scroll coordinates from the latest observed region', async () => {
@@ -1791,10 +2043,49 @@ describe('macOS Chrome driver', () => {
 
     await driver.scroll(240, 0)
 
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 1)
+    assert.equal(mocks.executeScroll.mock.calls.length, 0)
     const payload = mocks.executeWindowTargetedScroll.mock.calls[0]?.[1]
     assert.equal(payload.screenPoint.x, 500)
     assert.equal(payload.screenPoint.y, 516)
     assert.deepEqual(payload.windowLocalPoint, { x: 500, y: 476 })
+  })
+
+  it('consumes the observed scroll lease when action preconditions refuse before delivery', async () => {
+    mocks.captureAXTree.mockResolvedValue(axSnapshotWithWebArea({ x: 0, y: 120, width: 1000, height: 720 }))
+    const driver = new MacOSChromeDriver({
+      sessionId: 'driver-test',
+      config,
+      foregroundPolicy: 'auto_focus_chrome',
+    })
+
+    const snapshot = await driver.observe()
+    assert.equal(scrollRegion(snapshot).source, 'ax_web_area')
+    mocks.checkSafetyGate.mockReturnValueOnce({
+      passed: false,
+      checks: { profile_verified: true, chrome_foreground: true, no_hard_stop_signal: false },
+      failures: [{ code: 'hard_stop_signal', detail: 'Signals detected: captcha', observed: ['captcha'] }],
+    })
+
+    await assert.rejects(
+      () => driver.scroll(240),
+      /hard_stop_signal/i,
+    )
+
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
+    assert.equal(mocks.executeScroll.mock.calls.length, 0)
+    const refusedPayload = readLastJsonArtifactByRole('action-execution')
+    assert.equal(refusedPayload.action_type, 'scroll')
+    assert.equal(refusedPayload.executed, false)
+    assert.equal(refusedPayload.refused, true)
+    assert.deepEqual(refusedPayload.refusal_reasons, ['hard_stop_signal'])
+
+    await assert.rejects(
+      () => driver.scroll(240),
+      /scroll_region_not_observed/i,
+    )
+    assert.equal(mocks.executeWindowTargetedScroll.mock.calls.length, 0)
+    assert.equal(mocks.executeScroll.mock.calls.length, 0)
   })
 
   it('establishes a managed Chrome context lease on first observe without probing chrome://version', async () => {
@@ -2054,6 +2345,33 @@ function useOcrTextOnly(matches: ReturnType<typeof acceptCookiesOcrMatch>[]): vo
   mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
   mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot(matches))
   mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+}
+
+function mockDomOnly(elements: ChromeDomObservation['elements']): void {
+  mocks.captureAXTree.mockResolvedValue(emptyAxSnapshot())
+  mocks.captureChromeDom.mockResolvedValue(chromeDomObservation({ elements }))
+  mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+  mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+}
+
+function mockAxOnly(snapshot: AXSnapshot): void {
+  mocks.captureAXTree.mockResolvedValue(snapshot)
+  mocks.captureChromeDom.mockResolvedValue(emptyChromeDomObservation())
+  mocks.recognizeTextInImage.mockResolvedValue(ocrSnapshot([]))
+  mocks.produceOcrRows.mockImplementation(async ({ textSnapshot }) => emptyOcrRowsSnapshot(textSnapshot))
+}
+
+async function recognizeAndPromote(
+  driver: InstanceType<typeof MacOSChromeDriver>,
+  target: ChromeRecognitionTarget,
+) {
+  await driver.observe()
+  const result = await driver.recognizeFromCapture(driver.lastCapture!, target)
+  const promotion = await driver.promoteCandidate(result, driver.lastCapture!, target.kind)
+  assert.equal(promotion.status, 'promoted')
+  if (promotion.status !== 'promoted')
+    throw new Error('expected promoted candidate')
+  return promotion
 }
 
 function emptyOcrRowsSnapshot(textSnapshot: ReturnType<typeof ocrSnapshot>) {
@@ -2429,6 +2747,35 @@ function axSnapshotWithAcceptCookies(
   }
 }
 
+function axSnapshotWithJobsLink(
+  bounds: { x: number, y: number, width: number, height: number } = { x: 120, y: 120, width: 160, height: 32 },
+): AXSnapshot {
+  return {
+    snapshotId: 'ax-link',
+    pid: 123,
+    appName: 'Google Chrome',
+    capturedAt: '2026-06-14T00:00:00.000Z',
+    maxDepth: 15,
+    truncated: false,
+    root: {
+      uid: 'root',
+      role: 'AXApplication',
+      children: [
+        managedAxWindow([
+          {
+            uid: 'jobs-link-ax',
+            role: 'AXLink',
+            title: 'Open jobs',
+            enabled: true,
+            bounds,
+            children: [],
+          },
+        ]),
+      ],
+    },
+  }
+}
+
 function chromeDomObservation(overrides: {
   elements?: ChromeDomObservation['elements']
   visibleText?: string
@@ -2495,6 +2842,22 @@ function acceptCookiesElement(options: {
     name: 'Accept all cookies',
     text: 'Accept all cookies',
     href: null,
+    bounds,
+    center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+    confidence: 0.95,
+    actionable: true,
+    states: {},
+  }
+}
+
+function jobsLinkElement(bounds: { x: number, y: number, width: number, height: number }): ChromeDomObservation['elements'][number] {
+  return {
+    id: 'jobs-link',
+    tagName: 'a',
+    role: 'link',
+    name: 'Open jobs',
+    text: 'Open jobs',
+    href: 'https://www.linkedin.com/jobs/',
     bounds,
     center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
     confidence: 0.95,

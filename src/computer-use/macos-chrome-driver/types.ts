@@ -172,6 +172,32 @@ export type ChromeRecognitionTarget
     text: string | RegExp
   }
 
+export const TEXT_INPUT_KINDS: ReadonlySet<string> = new Set([
+  'dom_textbox',
+  'dom_searchbox',
+  'dom_combobox',
+  'ax_textfield',
+  'ax_textarea',
+  'ax_combobox',
+])
+
+export const BUTTON_KINDS: ReadonlySet<string> = new Set([
+  'dom_button',
+  'ax_button',
+])
+
+export const LINK_KINDS: ReadonlySet<string> = new Set([
+  'dom_link',
+  'ax_link',
+])
+
+export const COORDINATE_CLICK_KINDS: ReadonlySet<string> = new Set([
+  'dom_button',
+  'ax_button',
+  'dom_link',
+  'ax_link',
+])
+
 export function requireWindowNumber(window: WindowDescriptor): number {
   const windowNumber = window.windowNumber
   if (typeof windowNumber !== 'number' || !Number.isInteger(windowNumber) || windowNumber <= 0) {

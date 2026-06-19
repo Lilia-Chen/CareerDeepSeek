@@ -15,6 +15,7 @@ import type {
   RecognitionResult,
   SafetyCheckResult,
 } from './types.js'
+import { uniqueStrings } from './shared.js'
 
 export interface ComputerUseCommandHandlerContext {
   request: ComputerUseInvokeRequest
@@ -96,30 +97,18 @@ export function createMacOSChromeInvokeHandlers(driver: MacOSChromeInvokeDriver)
       invokePromote(request, spec, driver, latestRecognition, latestRecognitionTargetKind, promotedCandidates),
     'chrome.clickCandidate': async ({ request, spec }) =>
       invokeClickCandidate(request, spec, driver, promotedCandidates, (target) => {
-        latestObservation = undefined
         latestFocusedTarget = undefined
         latestNonTextInputClickedTarget = target
       }),
     'chrome.focusTextInput': async ({ request, spec }) =>
       invokeFocusTextInput(request, spec, driver, promotedCandidates, (target) => {
-        latestObservation = undefined
         latestFocusedTarget = target
         latestNonTextInputClickedTarget = undefined
       }),
     'chrome.typeText': async ({ request, spec }) =>
-      invokeTypeText(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget)
-        .then((result) => {
-          if (result.status === 'completed')
-            latestObservation = undefined
-          return result
-        }),
+      invokeTypeText(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget),
     'chrome.pressKey': async ({ request, spec }) =>
-      invokePressKey(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget)
-        .then((result) => {
-          if (result.status === 'completed')
-            latestObservation = undefined
-          return result
-        }),
+      invokePressKey(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget),
     'chrome.scroll': async ({ request, spec }) =>
       invokeScroll(request, spec, driver, latestObservation)
         .then((result) => {
@@ -491,7 +480,7 @@ async function invokeClickCandidate(
     return candidateProvenanceRefusal({
       commandId: spec.id,
       code: 'unsupported_click_candidate_grounding',
-      message: 'chrome.clickCandidate consumes OCR click candidates only; use chrome.focusTextInput for ax_node text inputs.',
+      message: 'chrome.clickCandidate cannot consume ax_node text inputs; use chrome.focusTextInput for text inputs.',
       signals: ['unsupported_click_candidate_grounding'],
       artifacts: [registered.candidateRef],
     })
@@ -1214,10 +1203,6 @@ function uniqueArtifactRefs(refs: ArtifactRef[]): ArtifactRef[] {
     }
   }
   return unique
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values)]
 }
 
 function errorMessage(error: unknown): string {

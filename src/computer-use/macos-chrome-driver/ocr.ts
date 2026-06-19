@@ -13,6 +13,7 @@ import type {
 } from './types.js'
 
 import { runSwiftScript } from '../swift-runner.js'
+import { uniqueStrings } from './shared.js'
 
 const DEFAULT_LANGUAGES = ['zh-Hans', 'zh-Hant', 'en-US']
 const DEFAULT_MAX_OBSERVATIONS = 64
@@ -269,10 +270,6 @@ function unionBounds(a: Bounds, b: Bounds): Bounds {
     width: right - x,
     height: bottom - y,
   }
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values))
 }
 
 function normalizeOcrScaleFactor(value: number | undefined): number {

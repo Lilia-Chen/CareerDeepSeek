@@ -156,6 +156,43 @@ describe('prepare and action Chrome invoke commands', () => {
     assert.deepEqual(driver.focusTextInputCalls, [])
   })
 
+  it('forwards coordinate-grounded promoted button/link candidates through chrome.clickCandidate', async () => {
+    const cases = [
+      { kind: 'dom_button', label: 'Apply' },
+      { kind: 'ax_button', label: 'Apply' },
+      { kind: 'dom_link', label: 'Open jobs' },
+      { kind: 'ax_link', label: 'Open jobs' },
+    ]
+
+    for (const testCase of cases) {
+      const { driver, handlers, candidate } = await promotedCoordinateSequence(testCase.kind, testCase.label)
+
+      const result = await invoke(
+        { commandId: 'chrome.clickCandidate', inputs: { candidateLocalId: candidate.candidate_local_id } },
+        { handlers },
+      )
+
+      assert.equal(result.status, 'completed')
+      assert.deepEqual(driver.clickCalls, [candidate])
+      assert.deepEqual(driver.focusTextInputCalls, [])
+    }
+  })
+
+  it('preserves driver refusal for unsupported coordinate candidate kinds', async () => {
+    const { driver, handlers, candidate } = await promotedCoordinateSequence('ax_menu_item', 'File')
+    driver.clickError = codedError('unsupported_click_candidate_kind', 'Candidate grounding is not supported.')
+
+    const result = await invoke(
+      { commandId: 'chrome.clickCandidate', inputs: { candidateLocalId: candidate.candidate_local_id } },
+      { handlers },
+    )
+
+    assert.equal(result.status, 'failed')
+    assert.equal(result.failure?.class, 'safety_gate')
+    assert.equal(result.failure?.code, 'unsupported_click_candidate_kind')
+    assert.deepEqual(driver.clickCalls, [])
+  })
+
   it('focuses a same-session ax_node text input candidate before keyboard input', async () => {
     const { driver, handlers, candidate } = await promotedTextInputSequence()
 
@@ -184,7 +221,7 @@ describe('prepare and action Chrome invoke commands', () => {
   })
 
   it('preserves focused target across observe so focus-observe-typeText sequence works', async () => {
-    const { driver, handlers, candidate } = await promotedTextInputSequence()
+    const { handlers, candidate } = await promotedTextInputSequence()
 
     await invoke(
       { commandId: 'chrome.focusTextInput', inputs: { candidateLocalId: candidate.candidate_local_id } },
@@ -477,6 +514,100 @@ describe('prepare and action Chrome invoke commands', () => {
     assert.equal(driver.scrollCalls.length, 1)
   })
 
+  it('allows scroll after clickCandidate without requiring a new observe', async () => {
+    const capture = fakeCapture()
+    const recognition = fakeRecognitionResult()
+    const candidate = fakeCandidate({ recognition, kind: 'ax_button', label: 'Apply' })
+    candidate.target_spec.grounding = 'coordinate'
+    candidate.target_spec.anchor_text = 'Apply'
+    candidate.liveness.preconditions.anchor_recheck!.text = 'Apply'
+    const driver = fakeDriver({
+      lastCapture: capture,
+      recognizeResult: recognition,
+      promoteResult: { status: 'promoted', candidate, residual_known_limits: [] },
+    })
+    const handlers = createMacOSChromeInvokeHandlers(driver)
+
+    await invoke(
+      { commandId: 'chrome.observe' },
+      { handlers },
+    )
+    await invoke(
+      { commandId: 'chrome.recognize', inputs: { target: { kind: 'button', text: 'Apply' } } },
+      { handlers },
+    )
+    await invoke(
+      { commandId: 'chrome.promote' },
+      { handlers },
+    )
+    const clickResult = await invoke(
+      { commandId: 'chrome.clickCandidate', inputs: { candidateLocalId: candidate.candidate_local_id } },
+      { handlers },
+    )
+    const scrollResult = await invoke(
+      { commandId: 'chrome.scroll', inputs: { deltaY: 600 } },
+      { handlers },
+    )
+
+    assert.equal(clickResult.status, 'completed')
+    assert.equal(scrollResult.status, 'completed')
+    assert.deepEqual(driver.clickCalls, [candidate])
+    assert.deepEqual(driver.scrollCalls, [{ deltaY: 600, deltaX: 0, options: {} }])
+  })
+
+  it('allows scroll after focusTextInput typeText and pressKey without requiring a new observe', async () => {
+    const capture = fakeCapture()
+    const recognition = fakeRecognitionResult()
+    const candidate = fakeCandidate({ recognition, kind: 'ax_textfield', label: 'Search' })
+    candidate.target_spec.grounding = 'ax_node'
+    candidate.target_spec.anchor_text = 'Search'
+    candidate.liveness.preconditions.anchor_recheck!.text = 'Search'
+    const driver = fakeDriver({
+      lastCapture: capture,
+      recognizeResult: recognition,
+      promoteResult: { status: 'promoted', candidate, residual_known_limits: [] },
+    })
+    const handlers = createMacOSChromeInvokeHandlers(driver)
+
+    await invoke(
+      { commandId: 'chrome.observe' },
+      { handlers },
+    )
+    await invoke(
+      { commandId: 'chrome.recognize', inputs: { target: { kind: 'text_input', name: 'Search' } } },
+      { handlers },
+    )
+    await invoke(
+      { commandId: 'chrome.promote' },
+      { handlers },
+    )
+    const focusResult = await invoke(
+      { commandId: 'chrome.focusTextInput', inputs: { candidateLocalId: candidate.candidate_local_id } },
+      { handlers },
+    )
+    const typeResult = await invoke(
+      { commandId: 'chrome.typeText', inputs: { text: 'AI engineer', focusedCandidateLocalId: candidate.candidate_local_id } },
+      { handlers },
+    )
+    const pressResult = await invoke(
+      { commandId: 'chrome.pressKey', inputs: { key: 'enter', focusedCandidateLocalId: candidate.candidate_local_id } },
+      { handlers },
+    )
+    const scrollResult = await invoke(
+      { commandId: 'chrome.scroll', inputs: { deltaY: 600 } },
+      { handlers },
+    )
+
+    assert.equal(focusResult.status, 'completed')
+    assert.equal(typeResult.status, 'completed')
+    assert.equal(pressResult.status, 'completed')
+    assert.equal(scrollResult.status, 'completed')
+    assert.deepEqual(driver.focusTextInputCalls, [candidate])
+    assert.deepEqual(driver.typeTextCalls, ['AI engineer'])
+    assert.deepEqual(driver.pressKeyCalls, [{ key: 'enter', modifiers: [] }])
+    assert.deepEqual(driver.scrollCalls, [{ deltaY: 600, deltaX: 0, options: {} }])
+  })
+
   it('invalidates latest recognition after a new observe boundary before promote', async () => {
     const recognition = fakeRecognitionResult()
     const driver = fakeDriver({
@@ -657,6 +788,35 @@ async function promotedTextInputSequence(): Promise<{
 
   await invoke(
     { commandId: 'chrome.recognize', inputs: { target: { kind: 'text_input', name: 'Search' } } },
+    { handlers },
+  )
+  await invoke(
+    { commandId: 'chrome.promote', inputs: { recognitionId: recognition.recognition_id } },
+    { handlers },
+  )
+
+  return { driver, handlers, candidate }
+}
+
+async function promotedCoordinateSequence(kind: string, label: string): Promise<{
+  driver: FakeInvokeDriver
+  handlers: ReturnType<typeof createMacOSChromeInvokeHandlers>
+  candidate: PromotedCandidate
+}> {
+  const recognition = fakeRecognitionResult()
+  const candidate = fakeCandidate({ recognition, kind, label })
+  candidate.target_spec.grounding = 'coordinate'
+  candidate.target_spec.anchor_text = label
+  candidate.liveness.preconditions.anchor_recheck!.text = label
+  const driver = fakeDriver({
+    lastCapture: fakeCapture(),
+    recognizeResult: recognition,
+    promoteResult: { status: 'promoted', candidate, residual_known_limits: [] },
+  })
+  const handlers = createMacOSChromeInvokeHandlers(driver)
+
+  await invoke(
+    { commandId: 'chrome.recognize', inputs: { target: { kind: kind.endsWith('_link') ? 'link' : 'button', text: label } } },
     { handlers },
   )
   await invoke(

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { ArtifactRecord, EventRecord, RunRecord, SpanRecord } from './types.js'
+import { uniqueStrings } from './shared.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -706,10 +707,6 @@ function numericAttribute(attributes: Record<string, unknown>, field: string): n
 
 function knownLimitsFromObject(record: JsonObject): string[] {
   return stringArrayField(record, 'known_limits')
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values)]
 }
 
 function uniqueArtifactRefs(refs: VisualArtifactRef[]): VisualArtifactRef[] {

@@ -1,8 +1,6 @@
 import type { ArtifactRef, ChromeCaptureContract, ChromeRecognitionTarget, RecognitionResult, RecognitionScope, RecognizedItem } from './types.js'
+import { BUTTON_KINDS, LINK_KINDS, TEXT_INPUT_KINDS } from './types.js'
 
-const BUTTON_KINDS = new Set(['dom_button', 'ax_button'])
-const TEXT_INPUT_KINDS = new Set(['dom_textbox', 'dom_searchbox', 'dom_combobox', 'ax_textfield', 'ax_textarea', 'ax_combobox'])
-const LINK_KINDS = new Set(['dom_link', 'ax_link'])
 const AUDIT_SOURCE_GROUPS = ['ocr_text', 'ocr_row', 'chrome_dom', 'ax', 'capture_visibility', 'custom'] as const
 type AuditStatus = 'agreement' | 'conflict' | 'unknown'
 type AuditSourceGroup = typeof AUDIT_SOURCE_GROUPS[number]
@@ -669,8 +667,8 @@ function matchingTextsForItem(item: RecognizedItem): string[] {
 }
 
 function compareForBest(a: RecognizedItem, b: RecognizedItem): number {
-  const aActionable = isActionable(a)
-  const bActionable = isActionable(b)
+  const aActionable = hasStructuralInteractionSignal(a)
+  const bActionable = hasStructuralInteractionSignal(b)
   if (aActionable !== bActionable)
     return Number(bActionable) - Number(aActionable)
   if (geometryRelationFor(a.box, b.box) === 'same_object') {
@@ -705,7 +703,7 @@ const ACTIONABLE_KINDS = new Set([
   'ax_tab',
 ])
 
-function isActionable(item: RecognizedItem): boolean {
+function hasStructuralInteractionSignal(item: RecognizedItem): boolean {
   if (isOcrAuditSource(auditSourceGroup(item)))
     return false
   if (ACTIONABLE_KINDS.has(item.kind))

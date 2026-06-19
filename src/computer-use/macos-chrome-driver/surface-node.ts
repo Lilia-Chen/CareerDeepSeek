@@ -8,6 +8,7 @@ import type {
   RecognitionBox,
   SurfaceNode,
 } from './types.js'
+import { uniqueStrings } from './shared.js'
 
 export interface NormalizeInput {
   ocrMatches: OcrTextMatch[]
@@ -437,10 +438,6 @@ function pointInsideBounds(point: { x: number, y: number }, bounds: Bounds): boo
 
 function truthyState(value: unknown): boolean {
   return value === true || value === 'true'
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values))
 }
 
 function projectPixelToLogical(

@@ -11,6 +11,8 @@ import type {
   RecognitionResult,
   RecognizedItem,
 } from './types.js'
+import { uniqueStrings } from './shared.js'
+import { BUTTON_KINDS, LINK_KINDS, TEXT_INPUT_KINDS } from './types.js'
 
 export interface PromotionOptions {
   profile_verified: boolean
@@ -65,7 +67,7 @@ export function promoteCandidate(
     }
   }
 
-  if (recognition.best && !isActionableForPromotion(recognition.best, effectiveTargetKind))
+  if (recognition.best && !isSupportedPromotionTarget(recognition.best, effectiveTargetKind))
     reasons.push('item_not_actionable')
   if (recognition.best && !hasTrustworthyProjection(recognition.best, recognition, crossSourceAudit, selectedAuditItem))
     reasons.push('projection_unavailable')
@@ -157,41 +159,30 @@ const PROMOTABLE_OCR_KINDS = new Set([
   'ocr_row',
 ])
 
-const PROMOTABLE_TEXT_INPUT_KINDS = new Set([
-  'dom_textbox',
-  'dom_searchbox',
-  'dom_combobox',
-  'ax_textfield',
-  'ax_textarea',
-  'ax_combobox',
-])
-
 function effectiveTargetKindFor(
   targetKind: ChromeRecognitionTarget['kind'] | undefined,
   best: RecognizedItem | null,
 ): ChromeRecognitionTarget['kind'] | undefined {
   if (targetKind)
     return targetKind
-  if (best && PROMOTABLE_TEXT_INPUT_KINDS.has(best.kind))
+  if (best && TEXT_INPUT_KINDS.has(best.kind))
     return 'text_input'
   return undefined
 }
 
-function isActionableForPromotion(
+function isSupportedPromotionTarget(
   item: { kind: string, detail: Record<string, unknown> },
   targetKind: ChromeRecognitionTarget['kind'] | undefined,
 ): boolean {
   if (targetKind === 'text_input')
-    return PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind)
-  if (targetKind && PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind))
+    return TEXT_INPUT_KINDS.has(item.kind)
+  if (targetKind && TEXT_INPUT_KINDS.has(item.kind))
     return false
-  return isActionable(item)
-}
-
-function isActionable(item: { kind: string, detail: Record<string, unknown> }): boolean {
+  if (BUTTON_KINDS.has(item.kind) || LINK_KINDS.has(item.kind))
+    return true
   if (item.kind === 'ocr_row')
     return hasOcrRowEvidence(item)
-  return PROMOTABLE_OCR_KINDS.has(item.kind) || PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind)
+  return PROMOTABLE_OCR_KINDS.has(item.kind)
 }
 
 function groundingFor(item: RecognizedItem): CandidateGrounding {
@@ -199,7 +190,7 @@ function groundingFor(item: RecognizedItem): CandidateGrounding {
     return 'ocr_anchor'
   if (item.kind === 'ocr_row')
     return 'visual_row'
-  if (PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind))
+  if (TEXT_INPUT_KINDS.has(item.kind))
     return 'ax_node'
   return 'coordinate'
 }
@@ -222,7 +213,7 @@ function groundingObservationFor(item: RecognizedItem): Record<string, unknown> 
       confidence: item.provider_score,
     }
   }
-  if (PROMOTABLE_TEXT_INPUT_KINDS.has(item.kind)) {
+  if (TEXT_INPUT_KINDS.has(item.kind)) {
     return {
       item_id: item.item_id,
       source: item.kind.startsWith('dom_') ? 'chrome_dom' : 'ax',
@@ -601,10 +592,6 @@ function isAuditStatus(value: unknown): value is AuditStatus {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values)]
 }
 
 function uniquePromotionReasons(values: PromotionRefusal[]): PromotionRefusal[] {

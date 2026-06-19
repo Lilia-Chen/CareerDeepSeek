@@ -40,7 +40,8 @@ import { observeWindows } from '../window-observation.js'
 import { buildPointerTrace } from '../pointer-trace.js'
 import { captureChromeWindow } from './capture.js'
 import { produceOcrRows, recognizeTextInImage } from './ocr.js'
-import { requireWindowNumber } from './types.js'
+import { uniqueStrings } from './shared.js'
+import { BUTTON_KINDS, COORDINATE_CLICK_KINDS, LINK_KINDS, TEXT_INPUT_KINDS, requireWindowNumber } from './types.js'
 import { buildScrollBoundaryObservation } from './scroll-boundary.js'
 
 // AUV-aligned observation / recognition imports
@@ -542,46 +543,41 @@ export class MacOSChromeDriver {
       candidate,
       storedCandidate,
       isSupportedClickCandidateGrounding,
-      ['ocr_anchor', 'visual_row'],
+      ['ocr_anchor', 'visual_row', 'coordinate'],
     )
-    try {
-      await this.#executeAction('click', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
-        const candidateFromArtifact = storedCandidate!.candidate
-        const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
-        if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
-          throw new Error('Refusing click: Chrome window changed after candidate promotion.')
-        }
+    await this.#executeAction('click', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
+      const candidateFromArtifact = storedCandidate!.candidate
+      const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
+      if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
+        throw new Error('Refusing click: Chrome window changed after candidate promotion.')
+      }
 
-        const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
-        const box = liveness.item.box
-        const center = centerOf(box)
+      const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
+      const box = liveness.item.box
+      const center = centerOf(box)
 
-        if (!pointInsideBounds(center, liveness.context.window.bounds)) {
-          throw new Error('Refusing click: candidate point is outside the active Chrome window.')
-        }
+      if (!pointInsideBounds(center, liveness.context.window.bounds)) {
+        throw new Error('Refusing click: candidate point is outside the active Chrome window.')
+      }
 
-        const pointerTrace = buildPointerTrace({
-          from: this.#lastCursorPosition,
-          to: center,
-          bounds: this.#config.allowedBounds,
+      const pointerTrace = buildPointerTrace({
+        from: this.#lastCursorPosition,
+        to: center,
+        bounds: this.#config.allowedBounds,
+      })
+      try {
+        await executeMoveAndClick(this.#config, {
+          pointerTrace,
+          button: 0,
+          clickCount: 1,
         })
-        try {
-          await executeMoveAndClick(this.#config, {
-            pointerTrace,
-            button: 0,
-            clickCount: 1,
-          })
-        }
-        catch (err) {
-          throw new ActionExecutionError((err as Error).message, liveness.detail)
-        }
-        this.#lastCursorPosition = center
-        return { livenessRecheck: liveness.detail }
-      }, callerPreconditionFailure)
-    }
-    finally {
-      this.#scrollRegionLease = undefined
-    }
+      }
+      catch (err) {
+        throw new ActionExecutionError((err as Error).message, liveness.detail)
+      }
+      this.#lastCursorPosition = center
+      return { livenessRecheck: liveness.detail }
+    }, callerPreconditionFailure)
   }
 
   async focusTextInput(candidate: PromotedCandidate): Promise<void> {
@@ -593,44 +589,39 @@ export class MacOSChromeDriver {
       isSupportedFocusTextInputCandidateGrounding,
       ['ax_node text_input'],
     )
-    try {
-      await this.#executeAction('focusTextInput', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
-        const candidateFromArtifact = storedCandidate!.candidate
-        const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
-        if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
-          throw new Error('Refusing focusTextInput: Chrome window changed after candidate promotion.')
-        }
+    await this.#executeAction('focusTextInput', candidateArtifactRef, candidate.target_spec.grounding, async (context) => {
+      const candidateFromArtifact = storedCandidate!.candidate
+      const winNumber = candidateFromArtifact.liveness.preconditions.window_ref.window_number
+      if (winNumber !== undefined && context.window.windowNumber !== winNumber) {
+        throw new Error('Refusing focusTextInput: Chrome window changed after candidate promotion.')
+      }
 
-        const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
-        const box = liveness.item.box
-        const center = centerOf(box)
+      const liveness = await this.#recheckCandidateLiveness(candidateFromArtifact, candidateArtifactRef!)
+      const box = liveness.item.box
+      const center = centerOf(box)
 
-        if (!pointInsideBounds(center, liveness.context.window.bounds)) {
-          throw new Error('Refusing focusTextInput: candidate point is outside the active Chrome window.')
-        }
+      if (!pointInsideBounds(center, liveness.context.window.bounds)) {
+        throw new Error('Refusing focusTextInput: candidate point is outside the active Chrome window.')
+      }
 
-        const pointerTrace = buildPointerTrace({
-          from: this.#lastCursorPosition,
-          to: center,
-          bounds: this.#config.allowedBounds,
+      const pointerTrace = buildPointerTrace({
+        from: this.#lastCursorPosition,
+        to: center,
+        bounds: this.#config.allowedBounds,
+      })
+      try {
+        await executeMoveAndClick(this.#config, {
+          pointerTrace,
+          button: 0,
+          clickCount: 1,
         })
-        try {
-          await executeMoveAndClick(this.#config, {
-            pointerTrace,
-            button: 0,
-            clickCount: 1,
-          })
-        }
-        catch (err) {
-          throw new ActionExecutionError((err as Error).message, liveness.detail)
-        }
-        this.#lastCursorPosition = center
-        return { livenessRecheck: liveness.detail }
-      }, callerPreconditionFailure)
-    }
-    finally {
-      this.#scrollRegionLease = undefined
-    }
+      }
+      catch (err) {
+        throw new ActionExecutionError((err as Error).message, liveness.detail)
+      }
+      this.#lastCursorPosition = center
+      return { livenessRecheck: liveness.detail }
+    }, callerPreconditionFailure)
 
     if (storedCandidate && candidateArtifactRef) {
       this.#focusedTextInputLease = {
@@ -644,90 +635,83 @@ export class MacOSChromeDriver {
 
   async typeText(text: string): Promise<void> {
     const focusLease = this.#focusedTextInputLease
-    try {
-      await this.#executeAction('typeText', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executeTypeText(this.#config, {
-        pointerTrace: [],
-        text,
-      }), focusedTextInputPreconditionFailure(focusLease))
-    }
-    finally {
-      this.#scrollRegionLease = undefined
-    }
+    await this.#executeAction('typeText', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executeTypeText(this.#config, {
+      pointerTrace: [],
+      text,
+    }), focusedTextInputPreconditionFailure(focusLease))
   }
 
   async pressKey(key: string, modifiers: string[] = []): Promise<void> {
     const focusLease = this.#focusedTextInputLease
-    try {
-      await this.#executeAction('pressKey', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executePressKeys(this.#config, { keys: [key], modifiers }), focusedTextInputPreconditionFailure(focusLease))
-    }
-    finally {
-      this.#scrollRegionLease = undefined
-    }
+    await this.#executeAction('pressKey', focusLease?.candidateRef ?? null, focusLease?.grounding, async () => executePressKeys(this.#config, { keys: [key], modifiers }), focusedTextInputPreconditionFailure(focusLease))
   }
 
   async scroll(deltaY = 600, deltaX = 0, options: MacOSChromeScrollOptions = {}): Promise<void> {
     rejectLegacyScrollCandidateInput(deltaY)
+    rejectCallerSuppliedScrollCoordinates(options)
     const lease = this.#scrollRegionLease
     const callerPreconditionFailure = scrollRegionPreconditionFailure(lease)
 
-    await this.#executeAction('scroll', null, 'observed_scroll_region', async (context) => {
-      rejectCallerSuppliedScrollCoordinates(options)
-      const resolved = resolveScrollRegionForAction(lease!, context)
-      const baseKnownLimits = [
-        ...resolved.lease.knownLimits,
-        'caller_must_post_scroll_observe',
-        'scroll_result_does_not_claim_page_boundary',
-      ]
+    try {
+      await this.#executeAction('scroll', null, 'observed_scroll_region', async (context) => {
+        const resolved = resolveScrollRegionForAction(lease!, context)
+        const baseKnownLimits = [
+          ...resolved.lease.knownLimits,
+          'caller_must_post_scroll_observe',
+          'scroll_result_does_not_claim_page_boundary',
+        ]
 
-      try {
-        await executeWindowTargetedScroll(this.#config, {
-          pid: context.window.ownerPid,
-          windowNumber: context.window.windowNumber,
-          screenPoint: resolved.anchor.screenPoint,
-          windowLocalPoint: resolved.anchor.windowLocalPoint,
-          deltaX,
-          deltaY,
-          settleMs: options.settleMs,
-        })
-        this.#scrollRegionLease = undefined
-        return {
-          scrollRegion: serializeScrollRegionActionDetail(resolved, {
-            selectedPath: 'window_targeted_scroll',
-            attemptedPaths: ['window_targeted_scroll'],
-          }),
-          knownLimits: baseKnownLimits,
+        try {
+          await executeWindowTargetedScroll(this.#config, {
+            pid: context.window.ownerPid,
+            windowNumber: context.window.windowNumber,
+            screenPoint: resolved.anchor.screenPoint,
+            windowLocalPoint: resolved.anchor.windowLocalPoint,
+            deltaX,
+            deltaY,
+            settleMs: options.settleMs,
+          })
+          return {
+            scrollRegion: serializeScrollRegionActionDetail(resolved, {
+              selectedPath: 'window_targeted_scroll',
+              attemptedPaths: ['window_targeted_scroll'],
+            }),
+            knownLimits: baseKnownLimits,
+          }
         }
-      }
-      catch (error) {
-        // Fall back to foreground HID delivery when the private window-targeted
-        // route is unavailable. The Swift fallback restores the real cursor.
-        const pointerTrace = buildPointerTrace({
-          from: this.#lastCursorPosition,
-          to: resolved.anchor.screenPoint,
-          bounds: this.#config.allowedBounds,
-        })
-        await executeScroll(this.#config, {
-          pointerTrace,
-          deltaX,
-          deltaY,
-          settleMs: options.settleMs,
-        })
-        this.#lastCursorPosition = resolved.anchor.screenPoint
-        this.#scrollRegionLease = undefined
-        return {
-          scrollRegion: serializeScrollRegionActionDetail(resolved, {
-            selectedPath: 'foreground_hid_scroll',
-            attemptedPaths: ['window_targeted_scroll', 'foreground_hid_scroll'],
-            fallbackReason: errorMessage(error),
-          }),
-          knownLimits: uniqueStrings([
-            ...baseKnownLimits,
-            'window_targeted_scroll_unavailable_fell_back_to_foreground_hid',
-            `window_targeted_scroll_error: ${errorMessage(error)}`,
-          ]),
+        catch (error) {
+          // Fall back to foreground HID delivery when the private window-targeted
+          // route is unavailable. The Swift fallback restores the real cursor.
+          const pointerTrace = buildPointerTrace({
+            from: this.#lastCursorPosition,
+            to: resolved.anchor.screenPoint,
+            bounds: this.#config.allowedBounds,
+          })
+          await executeScroll(this.#config, {
+            pointerTrace,
+            deltaX,
+            deltaY,
+            settleMs: options.settleMs,
+          })
+          this.#lastCursorPosition = resolved.anchor.screenPoint
+          return {
+            scrollRegion: serializeScrollRegionActionDetail(resolved, {
+              selectedPath: 'foreground_hid_scroll',
+              attemptedPaths: ['window_targeted_scroll', 'foreground_hid_scroll'],
+              fallbackReason: errorMessage(error),
+            }),
+            knownLimits: uniqueStrings([
+              ...baseKnownLimits,
+              'window_targeted_scroll_unavailable_fell_back_to_foreground_hid',
+              `window_targeted_scroll_error: ${errorMessage(error)}`,
+            ]),
+          }
         }
-      }
-    }, callerPreconditionFailure)
+      }, callerPreconditionFailure)
+    }
+    finally {
+      this.#scrollRegionLease = undefined
+    }
   }
 
   async #executeAction(
@@ -1395,15 +1379,6 @@ export class MacOSChromeDriver {
   }
 }
 
-const SUPPORTED_AX_NODE_CLICK_KINDS = new Set([
-  'dom_textbox',
-  'dom_searchbox',
-  'dom_combobox',
-  'ax_textfield',
-  'ax_textarea',
-  'ax_combobox',
-])
-
 class ActionRefusalError extends Error {
   readonly code: string
   readonly failure: SafetyFailure
@@ -1515,6 +1490,12 @@ function recognitionTargetForCandidate(candidate: PromotedCandidate): ChromeReco
     return { kind: 'ocr_row', text }
   if (grounding === 'ax_node')
     return { kind: 'text_input', name: text }
+  if (grounding === 'coordinate') {
+    if (BUTTON_KINDS.has(candidate.kind))
+      return { kind: 'button', text }
+    if (LINK_KINDS.has(candidate.kind))
+      return { kind: 'link', text }
+  }
   return null
 }
 
@@ -1528,6 +1509,8 @@ function isFreshSourceCompatible(candidate: PromotedCandidate, selected: Recogni
     return selected.kind === 'ocr_row'
   if (grounding === 'ax_node')
     return selected.kind === candidate.kind
+  if (grounding === 'coordinate')
+    return selected.kind === candidate.kind && COORDINATE_CLICK_KINDS.has(candidate.kind)
   return false
 }
 
@@ -1535,11 +1518,12 @@ function isSupportedClickCandidateGrounding(candidate: PromotedCandidate): boole
   const grounding = candidate.target_spec.grounding
   return (grounding === 'ocr_anchor' && candidate.kind === 'ocr_text')
     || (grounding === 'visual_row' && candidate.kind === 'ocr_row')
+    || (grounding === 'coordinate' && COORDINATE_CLICK_KINDS.has(candidate.kind))
 }
 
 function isSupportedFocusTextInputCandidateGrounding(candidate: PromotedCandidate): boolean {
   return candidate.target_spec.grounding === 'ax_node'
-    && SUPPORTED_AX_NODE_CLICK_KINDS.has(candidate.kind)
+    && TEXT_INPUT_KINDS.has(candidate.kind)
 }
 
 function isSupportedLivenessCandidateGrounding(candidate: PromotedCandidate): boolean {
@@ -2276,10 +2260,6 @@ function surfaceNodeToRecognizedItem(node: SurfaceNode): RecognizedItem {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values))
 }
 
 function centerOf(bounds: Bounds): { x: number, y: number } {

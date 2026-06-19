@@ -334,6 +334,98 @@ describe('promoteCandidate', () => {
     assert.equal(result.status, 'promoted')
   })
 
+  it('promotes DOM button recognition with coordinate grounding', () => {
+    const best = makeItem({ item_id: 'dom-button', kind: 'dom_button', text: 'Apply' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'button',
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.kind, 'dom_button')
+      assert.equal(result.candidate.target_spec.grounding, 'coordinate')
+    }
+  })
+
+  it('promotes AX button recognition with coordinate grounding', () => {
+    const best = makeItem({ item_id: 'ax-button', kind: 'ax_button', text: 'Apply' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'button',
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.kind, 'ax_button')
+      assert.equal(result.candidate.target_spec.grounding, 'coordinate')
+    }
+  })
+
+  it('promotes DOM link recognition with coordinate grounding', () => {
+    const best = makeItem({ item_id: 'dom-link', kind: 'dom_link', text: 'Open jobs' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'link',
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.kind, 'dom_link')
+      assert.equal(result.candidate.target_spec.grounding, 'coordinate')
+    }
+  })
+
+  it('promotes AX link recognition with coordinate grounding', () => {
+    const best = makeItem({ item_id: 'ax-link', kind: 'ax_link', text: 'Open jobs' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'link',
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted') {
+      assert.equal(result.candidate.kind, 'ax_link')
+      assert.equal(result.candidate.target_spec.grounding, 'coordinate')
+    }
+  })
+
   it('refuses text input candidates without projected bounds', () => {
     const best = makeItem({
       item_id: 'search',
@@ -439,12 +531,69 @@ describe('promoteCandidate', () => {
       assert.ok(result.reasons.includes('item_not_actionable'))
   })
 
-  it('refuses DOM and AX non-text actionable evidence as promoted click candidates', () => {
+  it('keeps text input promotion on ax_node grounding', () => {
+    const best = makeItem({ item_id: 'search', kind: 'ax_textfield', text: 'Search' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+      target_kind: 'text_input',
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted')
+      assert.equal(result.candidate.target_spec.grounding, 'ax_node')
+  })
+
+  it('keeps OCR text promotion on ocr_anchor grounding', () => {
+    const best = makeOcrItem({ item_id: 'ocr-text' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted')
+      assert.equal(result.candidate.target_spec.grounding, 'ocr_anchor')
+  })
+
+  it('keeps OCR row promotion on visual_row grounding', () => {
+    const best = makeOcrRowItem({ item_id: 'ocr-row' })
+    const recognition = makeRecognition({ best, all: [best], filtered: [best], found: true })
+
+    const result = promoteCandidate(recognition, capture, window, {
+      profile_verified: true,
+      chrome_foreground: true,
+      hard_stop_signals: [],
+      ttl_ms: 5000,
+      run_id: 'r1',
+      span_id: 's1',
+      capture_artifact: captureArtifact,
+      recognition_artifact: recognitionArtifact,
+    })
+
+    assert.equal(result.status, 'promoted')
+    if (result.status === 'promoted')
+      assert.equal(result.candidate.target_spec.grounding, 'visual_row')
+  })
+
+  it('refuses menu and tab evidence as promoted click candidates', () => {
     const unsupportedKinds = [
-      'dom_button',
-      'dom_link',
-      'ax_button',
-      'ax_link',
       'ax_menu_item',
       'ax_tab',
     ]
