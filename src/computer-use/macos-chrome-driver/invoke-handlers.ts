@@ -1,4 +1,16 @@
 import type {
+  MacOSChromeOperationCall,
+  MacOSChromeOperationResponse,
+} from './atomic-commands.js'
+import type {
+  AtomicClickResult,
+  AtomicFindResult,
+  AtomicKeyResult,
+  AtomicRowsResult,
+  AtomicScrollRegionResult,
+  AtomicTypeTextResult,
+} from './atomic-types.js'
+import type {
   ComputerUseCommandSpec,
   ComputerUseFailureClass,
   ComputerUseInvokeRequest,
@@ -7,19 +19,12 @@ import type {
 } from './invoke-types.js'
 import type {
   ArtifactRef,
-  CandidatePromotion,
-  ChromeRecognitionTarget,
-  ChromeWindowCapture,
   ObservationSnapshot,
-  PromotedCandidate,
-  RecognitionResult,
   SafetyCheckResult,
 } from './types.js'
 import {
-  isCapturedEventArtifactRef,
   isObjectLikeRecord,
   safeErrorMessage,
-  sanitizeArtifactId,
   uniqueArtifactRefs,
   uniqueStrings,
 } from './shared.js'
@@ -37,104 +42,346 @@ export type ComputerUseCommandHandlerRegistry = Readonly<Partial<Record<string, 
 
 export const EMPTY_COMPUTER_USE_COMMAND_HANDLERS: ComputerUseCommandHandlerRegistry = Object.freeze({})
 
-export interface MacOSChromeInvokeScrollOptions {
-  settleMs?: number
-}
-
 export interface MacOSChromeInvokeDriver {
-  readonly lastCapture?: ChromeWindowCapture
   observe: () => Promise<ObservationSnapshot>
-  recognizeFromCapture: (
-    capture: ChromeWindowCapture,
-    target: ChromeRecognitionTarget,
-  ) => Promise<RecognitionResult>
   checkSafetyGate: () => Promise<SafetyCheckResult>
-  promoteCandidate: (
-    recognition: RecognitionResult,
-    capture: ChromeWindowCapture,
-    targetKind?: ChromeRecognitionTarget['kind'],
-  ) => Promise<CandidatePromotion>
-  click: (candidate: PromotedCandidate) => Promise<void>
-  focusTextInput: (candidate: PromotedCandidate) => Promise<void>
-  typeText: (text: string) => Promise<void>
-  pressKey: (key: string, modifiers?: string[]) => Promise<void>
-  scroll: (
-    deltaY?: number,
-    deltaX?: number,
-    options?: MacOSChromeInvokeScrollOptions,
-  ) => Promise<void>
+  invokeOperation: (call: MacOSChromeOperationCall) => Promise<MacOSChromeOperationResponse>
 }
 
-export function createMacOSChromeInvokeHandlers(driver: MacOSChromeInvokeDriver): ComputerUseCommandHandlerRegistry {
-  let latestRecognition: RecognitionResult | undefined
-  let latestRecognitionTargetKind: ChromeRecognitionTarget['kind'] | undefined
-  let latestFocusedTarget: RegisteredFocusedTarget | undefined
-  let latestNonTextInputClickedTarget: RegisteredFocusedTarget | undefined
-  let latestObservation: ObservationSnapshot | undefined
-  const promotedCandidates = new Map<string, RegisteredPromotedCandidate>()
-  const resetActionSequence = (): void => {
-    latestRecognition = undefined
-    latestRecognitionTargetKind = undefined
-    // Focus lease survives observe — keyboard focus is input device state,
-    // not page content state. Clearing it here breaks focusTextInput -> observe -> typeText.
-    // latestFocusedTarget = undefined  (intentionally preserved)
-    latestNonTextInputClickedTarget = undefined
-    promotedCandidates.clear()
-  }
-
+export function createMacOSChromeHandlers(driver: MacOSChromeInvokeDriver): ComputerUseCommandHandlerRegistry {
   return Object.freeze({
-    'chrome.observe': async ({ spec }) => {
-      resetActionSequence()
-      const result = await invokeObserve(spec, driver)
-      latestObservation = isObservationSnapshot(result.output) ? result.output : undefined
-      return result
-    },
-    'chrome.recognize': async ({ request, spec }) => {
-      resetActionSequence()
-      const result = await invokeRecognize(request, spec, driver)
-      if (result.status === 'completed' && isRecognitionResult(result.output)) {
-        latestRecognition = result.output
-        const targetResult = parseRecognitionTarget(request.inputs?.target)
-        latestRecognitionTargetKind = targetResult.ok ? targetResult.target.kind : undefined
-      }
-      return result
-    },
+    'chrome.observe': async ({ spec }) => invokeObserve(spec, driver),
     'chrome.checkSafetyGate': async ({ spec }) => invokeCheckSafetyGate(spec, driver),
-    'chrome.promote': async ({ request, spec }) =>
-      invokePromote(request, spec, driver, latestRecognition, latestRecognitionTargetKind, promotedCandidates),
-    'chrome.clickCandidate': async ({ request, spec }) =>
-      invokeClickCandidate(request, spec, driver, promotedCandidates, (target) => {
-        latestFocusedTarget = undefined
-        latestNonTextInputClickedTarget = target
-      }),
-    'chrome.focusTextInput': async ({ request, spec }) =>
-      invokeFocusTextInput(request, spec, driver, promotedCandidates, (target) => {
-        latestFocusedTarget = target
-        latestNonTextInputClickedTarget = undefined
-      }),
-    'chrome.typeText': async ({ request, spec }) =>
-      invokeTypeText(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget),
-    'chrome.pressKey': async ({ request, spec }) =>
-      invokePressKey(request, spec, driver, latestFocusedTarget, latestNonTextInputClickedTarget),
-    'chrome.scroll': async ({ request, spec }) =>
-      invokeScroll(request, spec, driver, latestObservation)
-        .then((result) => {
-          if (result.status === 'completed')
-            latestObservation = undefined
-          return result
-        }),
+    'chrome.findText': async ({ request, spec }) => invokeAtomicFindText(request, spec, driver),
+    'chrome.clickText': async ({ request, spec }) => invokeAtomicClickText(request, spec, driver),
+    'chrome.findRows': async ({ request, spec }) => invokeAtomicFindRows(request, spec, driver),
+    'chrome.clickRow': async ({ request, spec }) => invokeAtomicClickRow(request, spec, driver),
+    'chrome.focusText': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
+      actionName: 'focusText',
+      completedSignal: 'text_input_focused',
+      missingCode: 'missing_query',
+    }),
+    'chrome.axFocusText': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
+      actionName: 'axFocusText',
+      completedSignal: 'text_input_ax_focused',
+      missingCode: 'missing_query',
+    }),
+    'chrome.pressButton': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
+      actionName: 'pressButton',
+      completedSignal: 'button_pressed',
+      missingCode: 'missing_query',
+    }),
+    'chrome.axPressButton': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
+      actionName: 'axPressButton',
+      completedSignal: 'button_ax_pressed',
+      missingCode: 'missing_query',
+    }),
+    'chrome.typeText': async ({ request, spec }) => invokeAtomicTypeText(request, spec, driver),
+    'chrome.key': async ({ request, spec }) => invokeAtomicKey(request, spec, driver),
+    'chrome.scrollRegion': async ({ request, spec }) => invokeAtomicScrollRegion(request, spec, driver),
   })
 }
 
-interface RegisteredPromotedCandidate {
-  candidate: PromotedCandidate
-  candidateRef: ArtifactRef
-  recognitionTargetKind: ChromeRecognitionTarget['kind'] | undefined
+async function invokeAtomicFindText(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const query = requiredString(request.inputs, 'query', spec.id)
+  if (!query.ok)
+    return query.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicFindResult>(driver, spec, { query: query.value })
+    return {
+      commandId: spec.id,
+      status: 'completed',
+      summary: result.found
+        ? `Found ${result.matchCount} OCR text match(es) for ${query.value}.`
+        : `Found 0 OCR text matches for ${query.value}.`,
+      output: result,
+      signals: [result.found ? 'text_found' : 'text_not_found'],
+      artifacts: result.evidence,
+      knownLimits: result.knownLimits,
+    }
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'findText', 'recognition', error)
+  }
 }
 
-interface RegisteredFocusedTarget {
-  candidateLocalId: string
-  candidateRef: ArtifactRef
+async function invokeAtomicClickText(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const query = requiredString(request.inputs, 'query', spec.id)
+  if (!query.ok)
+    return query.result
+  const matchIndex = optionalInteger(request.inputs, 'match_index', 0, spec.id)
+  if (!matchIndex.ok)
+    return matchIndex.result
+  if (matchIndex.value < 0) {
+    return handlerFailureResult({
+      commandId: spec.id,
+      summary: 'match_index input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_match_index',
+      message: 'chrome.clickText requires match_index to be 0 or greater.',
+      signals: ['invalid_match_index'],
+      knownLimits: ['match_index_is_zero_based'],
+    })
+  }
+  const anchorOffsetX = optionalNumber(request.inputs, 'anchor_offset_x', 0, spec.id)
+  if (!anchorOffsetX.ok)
+    return anchorOffsetX.result
+  const anchorOffsetY = optionalNumber(request.inputs, 'anchor_offset_y', 0, spec.id)
+  if (!anchorOffsetY.ok)
+    return anchorOffsetY.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicClickResult>(driver, spec, {
+      query: query.value,
+      matchIndex: matchIndex.value,
+      anchorOffsetX: anchorOffsetX.value,
+      anchorOffsetY: anchorOffsetY.value,
+    })
+    return completedAtomicActionResult(spec.id, 'Clicked OCR text match.', 'text_clicked', result)
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'clickText', 'action_delivery', error)
+  }
+}
+
+async function invokeAtomicFindRows(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const query = optionalString(request.inputs, 'query', spec.id)
+  if (!query.ok)
+    return query.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicRowsResult>(
+      driver,
+      spec,
+      query.value === undefined ? {} : { query: query.value },
+    )
+    return {
+      commandId: spec.id,
+      status: 'completed',
+      summary: `Detected ${result.rowCount} OCR row(s).`,
+      output: result,
+      signals: [result.found ? 'rows_found' : 'rows_not_found'],
+      artifacts: result.evidence,
+      knownLimits: result.knownLimits,
+    }
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'findRows', 'recognition', error)
+  }
+}
+
+async function invokeAtomicClickRow(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const query = optionalString(request.inputs, 'query', spec.id)
+  if (!query.ok)
+    return query.result
+  const rowIndex = optionalInteger(request.inputs, 'row_index', 1, spec.id)
+  if (!rowIndex.ok)
+    return rowIndex.result
+  if (rowIndex.value < 1) {
+    return handlerFailureResult({
+      commandId: spec.id,
+      summary: 'row_index input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_row_index',
+      message: 'chrome.clickRow requires row_index to be 1 or greater.',
+      signals: ['invalid_row_index'],
+      knownLimits: ['row_index_is_one_based'],
+    })
+  }
+
+  try {
+    const result = await invokeDriverOperation<AtomicClickResult>(driver, spec, {
+      ...(query.value === undefined ? {} : { query: query.value }),
+      rowIndex: rowIndex.value,
+    })
+    return completedAtomicActionResult(spec.id, 'Clicked OCR row.', 'row_clicked', result)
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'clickRow', 'action_delivery', error)
+  }
+}
+
+async function invokeAtomicQueryAction(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+  options: {
+    actionName: string
+    completedSignal: string
+    missingCode: string
+  },
+): Promise<ComputerUseInvokeResult> {
+  const query = requiredString(request.inputs, 'query', spec.id, options.missingCode)
+  if (!query.ok)
+    return query.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicClickResult>(driver, spec, { query: query.value })
+    return completedAtomicActionResult(spec.id, `${options.actionName} completed.`, options.completedSignal, result)
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, options.actionName, 'action_delivery', error)
+  }
+}
+
+async function invokeAtomicTypeText(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  if (request.inputs && Object.hasOwn(request.inputs, 'query')) {
+    return handlerFailureResult({
+      commandId: spec.id,
+      summary: 'typeText does not accept query input.',
+      failureClass: 'invalid_input',
+      code: 'type_text_query_not_accepted',
+      message: 'chrome.typeText types into the active control. Use chrome.focusText or chrome.axFocusText before typing when focus is needed.',
+      signals: ['type_text_query_not_accepted'],
+      knownLimits: ['type_text_active_control_only'],
+    })
+  }
+  const text = requiredString(request.inputs, 'text', spec.id, 'missing_text')
+  if (!text.ok)
+    return text.result
+  const submitKey = optionalString(request.inputs, 'submit_key', spec.id)
+  if (!submitKey.ok)
+    return submitKey.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicTypeTextResult>(driver, spec, {
+      text: text.value,
+      ...(submitKey.value === undefined ? {} : { submitKey: submitKey.value }),
+    })
+    return {
+      commandId: spec.id,
+      status: 'completed',
+      summary: 'Typed text into active control.',
+      output: result,
+      signals: ['text_typed'],
+      artifacts: result.evidence,
+      knownLimits: uniqueStrings(['type_text_active_control_only', ...result.knownLimits]),
+    }
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'typeText', 'action_delivery', error)
+  }
+}
+
+async function invokeAtomicKey(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const key = requiredString(request.inputs, 'key', spec.id, 'missing_key')
+  if (!key.ok)
+    return key.result
+  const modifiers = optionalModifiers(request.inputs, spec.id)
+  if (!modifiers.ok)
+    return modifiers.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicKeyResult>(driver, spec, { key: key.value, modifiers: modifiers.value })
+    return {
+      commandId: spec.id,
+      status: 'completed',
+      summary: 'Pressed key in active Chrome app.',
+      output: result,
+      signals: ['key_pressed'],
+      artifacts: result.evidence,
+      knownLimits: result.knownLimits,
+    }
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'key', 'action_delivery', error)
+  }
+}
+
+async function invokeAtomicScrollRegion(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const direction = optionalString(request.inputs, 'direction', spec.id, 'down')
+  if (!direction.ok)
+    return direction.result
+  const directionValue = direction.value ?? 'down'
+  if (!['up', 'down', 'left', 'right'].includes(directionValue)) {
+    return handlerFailureResult({
+      commandId: spec.id,
+      summary: 'direction input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_direction',
+      message: 'chrome.scrollRegion direction must be one of up, down, left, right.',
+      signals: ['invalid_direction'],
+      knownLimits: ['scroll_region_self_contained'],
+    })
+  }
+  const amount = optionalNumber(request.inputs, 'amount', 6, spec.id)
+  if (!amount.ok)
+    return amount.result
+  if (amount.value <= 0) {
+    return handlerFailureResult({
+      commandId: spec.id,
+      summary: 'amount input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_amount',
+      message: 'chrome.scrollRegion amount must be greater than 0.',
+      signals: ['invalid_amount'],
+      knownLimits: ['scroll_region_self_contained'],
+    })
+  }
+  const region = optionalRegion(request.inputs, spec.id)
+  if (!region.ok)
+    return region.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicScrollRegionResult>(driver, spec, {
+      direction: directionValue,
+      amount: amount.value,
+      region: region.value,
+    })
+    return {
+      commandId: spec.id,
+      status: 'completed',
+      summary: 'Scrolled managed Chrome region.',
+      output: result,
+      signals: ['region_scrolled'],
+      artifacts: result.evidence,
+      knownLimits: uniqueStrings(['scroll_region_self_contained', ...result.knownLimits]),
+    }
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'scrollRegion', 'action_delivery', error)
+  }
+}
+
+async function invokeDriverOperation<T extends MacOSChromeOperationResponse>(
+  driver: MacOSChromeInvokeDriver,
+  spec: Readonly<ComputerUseCommandSpec>,
+  inputs: Record<string, unknown>,
+): Promise<T> {
+  return await driver.invokeOperation({
+    commandId: spec.id,
+    operation: spec.operation,
+    inputs,
+  }) as T
 }
 
 async function invokeObserve(
@@ -175,87 +422,6 @@ async function invokeObserve(
       message: safeErrorMessage(error),
       signals: ['observe_failed'],
       knownLimits: ['read_only_observation_only'],
-    })
-  }
-}
-
-async function invokeRecognize(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-): Promise<ComputerUseInvokeResult> {
-  const targetResult = parseRecognitionTarget(request.inputs?.target)
-  if (!targetResult.ok) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Recognition target input is invalid.',
-      failureClass: 'invalid_input',
-      code: targetResult.code,
-      message: targetResult.message,
-      signals: ['invalid_recognition_target'],
-      knownLimits: ['read_only_recognition_requires_explicit_target'],
-    })
-  }
-
-  const capture = driver.lastCapture
-  if (!capture) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Recognition requires a previous Chrome capture.',
-      failureClass: 'recognition',
-      code: 'last_capture_missing',
-      message: 'chrome.recognize requires driver.lastCapture from a prior chrome.observe call.',
-      signals: ['last_capture_missing'],
-      knownLimits: ['caller_must_invoke_chrome_observe_before_chrome_recognize'],
-    })
-  }
-
-  try {
-    const recognition = await driver.recognizeFromCapture(capture, targetResult.target)
-    const recognitionRef = recognitionArtifactRef(recognition)
-    const artifacts = uniqueArtifactRefs([recognitionRef, ...recognition.evidence])
-    if (!recognition.found) {
-      return {
-        commandId: spec.id,
-        status: 'failed',
-        summary: `Recognition ${recognition.recognition_id} found no matching target.`,
-        output: recognition,
-        signals: ['recognition_not_found'],
-        artifacts,
-        failure: {
-          class: 'recognition',
-          code: 'recognition_not_found',
-          message: 'No matching recognition target was found in the latest capture.',
-        },
-        knownLimits: uniqueStrings([
-          'read_only_recognition_only',
-          ...recognition.known_limits,
-        ]),
-      }
-    }
-
-    return {
-      commandId: spec.id,
-      status: 'completed',
-      summary: `Recognition ${recognition.recognition_id} found a target.`,
-      output: recognition,
-      signals: ['recognition_found'],
-      artifacts,
-      knownLimits: uniqueStrings([
-        'read_only_recognition_only',
-        ...recognition.known_limits,
-      ]),
-    }
-  }
-  catch (error) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Chrome recognition failed.',
-      failureClass: 'recognition',
-      code: 'recognition_failed',
-      message: safeErrorMessage(error),
-      signals: ['recognition_failed'],
-      knownLimits: ['read_only_recognition_only'],
     })
   }
 }
@@ -315,503 +481,6 @@ async function invokeCheckSafetyGate(
   }
 }
 
-async function invokePromote(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  latestRecognition: RecognitionResult | undefined,
-  latestRecognitionTargetKind: ChromeRecognitionTarget['kind'] | undefined,
-  promotedCandidates: Map<string, RegisteredPromotedCandidate>,
-): Promise<ComputerUseInvokeResult> {
-  if (isObjectLikeRecord(request.inputs) && Object.hasOwn(request.inputs, 'recognition')) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Raw recognition JSON is not accepted by chrome.promote.',
-      failureClass: 'invalid_input',
-      code: 'raw_recognition_not_accepted',
-      message: 'chrome.promote consumes the latest same-sequence recognition result, not raw recognition JSON.',
-      signals: ['raw_recognition_not_accepted'],
-      knownLimits: ['same_sequence_recognition_required'],
-    })
-  }
-
-  if (!latestRecognition) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Promotion requires a successful same-sequence recognition.',
-      failureClass: 'candidate_promotion',
-      code: 'recognition_not_in_sequence',
-      message: 'Run chrome.recognize successfully before chrome.promote with the same handler registry.',
-      signals: ['recognition_not_in_sequence'],
-      knownLimits: ['caller_must_invoke_chrome_recognize_before_chrome_promote'],
-    })
-  }
-
-  const recognitionId = request.inputs?.recognitionId
-  if (recognitionId !== undefined && typeof recognitionId !== 'string') {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Promotion recognitionId input is invalid.',
-      failureClass: 'invalid_input',
-      code: 'invalid_recognition_id',
-      message: 'chrome.promote inputs.recognitionId must be a string when provided.',
-      signals: ['invalid_recognition_id'],
-      knownLimits: ['same_sequence_recognition_required'],
-    })
-  }
-  if (typeof recognitionId === 'string' && recognitionId !== latestRecognition.recognition_id) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Promotion recognitionId does not match the latest recognition.',
-      failureClass: 'candidate_promotion',
-      code: 'recognition_id_mismatch',
-      message: `Latest recognition is ${latestRecognition.recognition_id}, not ${recognitionId}.`,
-      signals: ['recognition_id_mismatch'],
-      knownLimits: ['same_sequence_recognition_required'],
-    })
-  }
-
-  const capture = driver.lastCapture
-  if (!capture) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Promotion requires the latest Chrome capture.',
-      failureClass: 'candidate_promotion',
-      code: 'last_capture_missing',
-      message: 'chrome.promote requires driver.lastCapture from a prior chrome.observe/chrome.recognize sequence.',
-      signals: ['last_capture_missing'],
-      knownLimits: ['caller_must_keep_latest_capture_available_for_promotion'],
-    })
-  }
-
-  let promotion: CandidatePromotion
-  try {
-    promotion = await driver.promoteCandidate(latestRecognition, capture, latestRecognitionTargetKind)
-  }
-  catch (error) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Chrome candidate promotion failed.',
-      failureClass: 'candidate_promotion',
-      code: 'promotion_failed',
-      message: safeErrorMessage(error),
-      signals: ['candidate_promotion_failed'],
-      knownLimits: ['same_sequence_recognition_required'],
-    })
-  }
-
-  if (promotion.status === 'refused') {
-    const code = promotion.reasons[0] ?? 'candidate_promotion_refused'
-    return handlerFailureResult({
-      commandId: spec.id,
-      status: 'refused',
-      summary: `Chrome candidate promotion refused: ${code}.`,
-      output: promotion,
-      failureClass: 'candidate_promotion',
-      code,
-      message: `Candidate promotion refused: ${promotion.reasons.join(', ') || code}.`,
-      signals: uniqueStrings(['candidate_promotion_refused', ...promotion.reasons]),
-      knownLimits: uniqueStrings([
-        'same_sequence_recognition_required',
-        ...promotion.residual_known_limits,
-      ]),
-    })
-  }
-
-  const { candidate } = promotion
-  const candidateRef = promotedCandidateArtifactRef(candidate)
-  promotedCandidates.set(candidate.candidate_local_id, {
-    candidate,
-    candidateRef,
-    recognitionTargetKind: latestRecognitionTargetKind,
-  })
-
-  return {
-    commandId: spec.id,
-    status: 'completed',
-    summary: `Promoted candidate ${candidate.candidate_local_id}.`,
-    output: {
-      candidateLocalId: candidate.candidate_local_id,
-      candidateRef,
-      kind: candidate.kind,
-      label: candidate.label,
-    },
-    signals: ['candidate_promoted'],
-    artifacts: uniqueArtifactRefs([
-      candidateRef,
-      ...candidateEvidenceRefs(candidate),
-    ]),
-    knownLimits: uniqueStrings([
-      'same_session_candidate_only',
-      ...candidate.known_limits,
-      ...promotion.residual_known_limits,
-    ]),
-  }
-}
-
-async function invokeClickCandidate(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  promotedCandidates: Map<string, RegisteredPromotedCandidate>,
-  setNonTextInputClickedTarget: (target: RegisteredFocusedTarget) => void,
-): Promise<ComputerUseInvokeResult> {
-  const parsed = parseCandidateLocalIdInput(request.inputs, {
-    missingCode: 'missing_candidate_local_id',
-    rawCandidateCode: 'raw_candidate_not_accepted',
-  })
-  if (!parsed.ok)
-    return parsed.result(spec.id)
-
-  const registered = promotedCandidates.get(parsed.candidateLocalId)
-  if (!registered) {
-    return candidateProvenanceRefusal({
-      commandId: spec.id,
-      code: 'candidate_not_in_sequence',
-      message: 'candidateLocalId was not produced by chrome.promote in this handler sequence.',
-      signals: ['candidate_not_in_sequence'],
-    })
-  }
-
-  if (parsed.candidateRef && !sameArtifactRef(parsed.candidateRef, registered.candidateRef)) {
-    return candidateProvenanceRefusal({
-      commandId: spec.id,
-      code: 'candidate_ref_mismatch',
-      message: 'candidateRef does not match the registered same-session promoted candidate.',
-      signals: ['candidate_ref_mismatch'],
-      artifacts: [registered.candidateRef],
-    })
-  }
-
-  if (registered.candidate.target_spec.grounding === 'ax_node') {
-    return candidateProvenanceRefusal({
-      commandId: spec.id,
-      code: 'unsupported_click_candidate_grounding',
-      message: 'chrome.clickCandidate cannot consume ax_node text inputs; use chrome.focusTextInput for text inputs.',
-      signals: ['unsupported_click_candidate_grounding'],
-      artifacts: [registered.candidateRef],
-    })
-  }
-
-  const artifacts = uniqueArtifactRefs([registered.candidateRef, ...candidateEvidenceRefs(registered.candidate)])
-  try {
-    await driver.click(registered.candidate)
-  }
-  catch (error) {
-    return driverActionFailureResult(spec.id, 'click', error, artifacts)
-  }
-
-  const clickedTarget = {
-    candidateLocalId: registered.candidate.candidate_local_id,
-    candidateRef: registered.candidateRef,
-  }
-  setNonTextInputClickedTarget(clickedTarget)
-
-  return {
-    commandId: spec.id,
-    status: 'completed',
-    summary: `Clicked candidate ${registered.candidate.candidate_local_id}.`,
-    output: {
-      candidateLocalId: registered.candidate.candidate_local_id,
-      candidateRef: registered.candidateRef,
-    },
-    signals: ['candidate_clicked'],
-    artifacts,
-    knownLimits: [
-      'caller_must_invoke_chrome_observe_after_action',
-      'driver_liveness_recheck_preserved',
-    ],
-  }
-}
-
-async function invokeFocusTextInput(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  promotedCandidates: Map<string, RegisteredPromotedCandidate>,
-  setFocusedTarget: (target: RegisteredFocusedTarget) => void,
-): Promise<ComputerUseInvokeResult> {
-  const parsed = parseCandidateLocalIdInput(request.inputs, {
-    missingCode: 'missing_candidate_local_id',
-    rawCandidateCode: 'raw_candidate_not_accepted',
-  })
-  if (!parsed.ok)
-    return parsed.result(spec.id)
-
-  const registered = promotedCandidates.get(parsed.candidateLocalId)
-  if (!registered) {
-    return candidateProvenanceRefusal({
-      commandId: spec.id,
-      code: 'candidate_not_in_sequence',
-      message: 'candidateLocalId was not produced by chrome.promote in this handler sequence.',
-      signals: ['candidate_not_in_sequence'],
-    })
-  }
-
-  if (registered.recognitionTargetKind !== 'text_input' || registered.candidate.target_spec.grounding !== 'ax_node') {
-    return candidateProvenanceRefusal({
-      commandId: spec.id,
-      code: 'focus_candidate_not_ax_node_text_input',
-      message: 'chrome.focusTextInput requires a same-session ax_node candidate recognized as text_input.',
-      signals: ['focus_candidate_not_ax_node_text_input'],
-      artifacts: [registered.candidateRef],
-    })
-  }
-
-  if (parsed.candidateRef && !sameArtifactRef(parsed.candidateRef, registered.candidateRef)) {
-    return candidateProvenanceRefusal({
-      commandId: spec.id,
-      code: 'candidate_ref_mismatch',
-      message: 'candidateRef does not match the registered same-session promoted candidate.',
-      signals: ['candidate_ref_mismatch'],
-      artifacts: [registered.candidateRef],
-    })
-  }
-
-  const artifacts = uniqueArtifactRefs([registered.candidateRef, ...candidateEvidenceRefs(registered.candidate)])
-  try {
-    await driver.focusTextInput(registered.candidate)
-  }
-  catch (error) {
-    return driverActionFailureResult(spec.id, 'focusTextInput', error, artifacts)
-  }
-
-  const focusedTarget = {
-    candidateLocalId: registered.candidate.candidate_local_id,
-    candidateRef: registered.candidateRef,
-  }
-  setFocusedTarget(focusedTarget)
-
-  return {
-    commandId: spec.id,
-    status: 'completed',
-    summary: `Focused text input candidate ${registered.candidate.candidate_local_id}.`,
-    output: {
-      candidateLocalId: registered.candidate.candidate_local_id,
-      candidateRef: registered.candidateRef,
-    },
-    signals: ['candidate_focused', 'focused_target_recorded'],
-    artifacts,
-    knownLimits: [
-      'caller_must_invoke_chrome_observe_after_keyboard_action',
-      'driver_liveness_recheck_preserved',
-    ],
-  }
-}
-
-async function invokeTypeText(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  latestFocusedTarget: RegisteredFocusedTarget | undefined,
-  latestNonTextInputClickedTarget: RegisteredFocusedTarget | undefined,
-): Promise<ComputerUseInvokeResult> {
-  const text = request.inputs?.text
-  if (typeof text !== 'string') {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'typeText requires text input.',
-      failureClass: 'invalid_input',
-      code: 'missing_text',
-      message: 'chrome.typeText requires inputs.text as a string.',
-      signals: ['missing_text'],
-      knownLimits: ['audited_focused_target_required'],
-    })
-  }
-
-  const focused = requireFocusedCandidate(request.inputs, latestFocusedTarget, latestNonTextInputClickedTarget)
-  if (!focused.ok)
-    return focused.result(spec.id)
-
-  try {
-    await driver.typeText(text)
-  }
-  catch (error) {
-    return driverActionFailureResult(spec.id, 'typeText', error, [focused.focusedTarget.candidateRef])
-  }
-
-  return {
-    commandId: spec.id,
-    status: 'completed',
-    summary: 'Typed text into audited focused target.',
-    output: {
-      focusedCandidateLocalId: focused.focusedTarget.candidateLocalId,
-      textLength: text.length,
-    },
-    signals: ['text_typed'],
-    artifacts: [focused.focusedTarget.candidateRef],
-    knownLimits: [
-      'audited_focused_target_required',
-      'caller_must_invoke_chrome_observe_after_action',
-    ],
-  }
-}
-
-async function invokePressKey(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  latestFocusedTarget: RegisteredFocusedTarget | undefined,
-  latestNonTextInputClickedTarget: RegisteredFocusedTarget | undefined,
-): Promise<ComputerUseInvokeResult> {
-  const key = request.inputs?.key
-  if (typeof key !== 'string') {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'pressKey requires key input.',
-      failureClass: 'invalid_input',
-      code: 'missing_key',
-      message: 'chrome.pressKey requires inputs.key as a string.',
-      signals: ['missing_key'],
-      knownLimits: ['audited_focused_target_required'],
-    })
-  }
-
-  const modifiers = request.inputs?.modifiers
-  if (modifiers !== undefined && (!Array.isArray(modifiers) || modifiers.some(item => typeof item !== 'string'))) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'pressKey modifiers input is invalid.',
-      failureClass: 'invalid_input',
-      code: 'invalid_modifiers',
-      message: 'chrome.pressKey inputs.modifiers must be an array of strings when provided.',
-      signals: ['invalid_modifiers'],
-      knownLimits: ['audited_focused_target_required'],
-    })
-  }
-
-  const focused = requireFocusedCandidate(request.inputs, latestFocusedTarget, latestNonTextInputClickedTarget)
-  if (!focused.ok)
-    return focused.result(spec.id)
-
-  const normalizedModifiers = modifiers ?? []
-  try {
-    await driver.pressKey(key, normalizedModifiers)
-  }
-  catch (error) {
-    return driverActionFailureResult(spec.id, 'pressKey', error, [focused.focusedTarget.candidateRef])
-  }
-
-  return {
-    commandId: spec.id,
-    status: 'completed',
-    summary: 'Pressed key for audited focused target.',
-    output: {
-      focusedCandidateLocalId: focused.focusedTarget.candidateLocalId,
-      key,
-      modifiers: normalizedModifiers,
-    },
-    signals: ['key_pressed'],
-    artifacts: [focused.focusedTarget.candidateRef],
-    knownLimits: [
-      'audited_focused_target_required',
-      'caller_must_invoke_chrome_observe_after_action',
-    ],
-  }
-}
-
-async function invokeScroll(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  latestObservation: ObservationSnapshot | undefined,
-): Promise<ComputerUseInvokeResult> {
-  const forbiddenInput = firstForbiddenScrollInput(request.inputs)
-  if (forbiddenInput) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      status: 'refused',
-      summary: 'scroll rejected unsupported target input.',
-      failureClass: 'invalid_input',
-      code: 'scroll_target_input_not_accepted',
-      message: `chrome.scroll does not accept inputs.${forbiddenInput}; run chrome.observe and let the driver derive the scroll region.`,
-      signals: ['scroll_target_input_not_accepted', forbiddenInput],
-      knownLimits: ['scroll_uses_latest_observed_chrome_region'],
-    })
-  }
-
-  const deltaY = numberInputOrDefault(request.inputs?.deltaY, 600)
-  if (!deltaY.ok)
-    return deltaY.result(spec.id, 'deltaY')
-  const deltaX = numberInputOrDefault(request.inputs?.deltaX, 0)
-  if (!deltaX.ok)
-    return deltaX.result(spec.id, 'deltaX')
-  const settleMs = optionalNumberInput(request.inputs?.settleMs)
-  if (!settleMs.ok)
-    return settleMs.result(spec.id, 'settleMs')
-
-  if (!latestObservation) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      status: 'refused',
-      summary: 'scroll requires a prior observe command.',
-      failureClass: 'safety_gate',
-      code: 'scroll_region_not_observed',
-      message: 'chrome.scroll requires a latest chrome.observe result so the driver can use its observed Chrome scroll region.',
-      signals: ['scroll_region_not_observed'],
-      knownLimits: ['caller_must_invoke_chrome_observe_before_scroll'],
-    })
-  }
-
-  const options: MacOSChromeInvokeScrollOptions = {}
-  if (settleMs.value !== undefined)
-    options.settleMs = settleMs.value
-
-  const artifacts = uniqueArtifactRefs([
-    observationArtifactRef(latestObservation),
-    ...latestObservation.evidence,
-    ...(latestObservation.capture_contract_ref ? [latestObservation.capture_contract_ref] : []),
-  ])
-  try {
-    await driver.scroll(deltaY.value, deltaX.value, options)
-  }
-  catch (error) {
-    return driverActionFailureResult(spec.id, 'scroll', error, artifacts)
-  }
-
-  return {
-    commandId: spec.id,
-    status: 'completed',
-    summary: `Scrolled observed Chrome region from snapshot ${latestObservation.snapshot_id}.`,
-    output: {
-      observationSnapshotId: latestObservation.snapshot_id,
-      deltaY: deltaY.value,
-      deltaX: deltaX.value,
-    },
-    signals: ['scroll_delivered'],
-    artifacts,
-    knownLimits: [
-      'scroll_uses_latest_observed_chrome_region',
-      'scroll_result_does_not_claim_page_boundary',
-      'caller_must_invoke_chrome_observe_after_action',
-    ],
-  }
-}
-
-function isRecognitionResult(value: unknown): value is RecognitionResult {
-  return isObjectLikeRecord(value)
-    && typeof value.recognition_id === 'string'
-    && typeof value.found === 'boolean'
-    && Array.isArray(value.evidence)
-}
-
-function isObservationSnapshot(value: unknown): value is ObservationSnapshot {
-  return isObjectLikeRecord(value)
-    && value.api_version === 'careerdeepseek.observation_snapshot.v1alpha1'
-    && typeof value.snapshot_id === 'string'
-    && Array.isArray(value.evidence)
-}
-
-function firstForbiddenScrollInput(inputs: Record<string, unknown> | undefined): string | undefined {
-  if (!inputs)
-    return undefined
-  for (const field of ['candidateLocalId', 'candidateRef', 'candidate', 'screenPoint', 'windowLocalPoint']) {
-    if (Object.hasOwn(inputs, field))
-      return field
-  }
-  return undefined
-}
-
 function observationArtifactRef(snapshot: ObservationSnapshot): ArtifactRef {
   return {
     run_id: snapshot.run_id,
@@ -820,329 +489,261 @@ function observationArtifactRef(snapshot: ObservationSnapshot): ArtifactRef {
   }
 }
 
-function recognitionArtifactRef(result: RecognitionResult): ArtifactRef {
-  return {
-    run_id: result.detail.run_id && typeof result.detail.run_id === 'string'
-      ? result.detail.run_id
-      : result.evidence[0]?.run_id ?? 'unknown_run',
-    artifact_id: `recognition_${result.recognition_id}`,
-    span_id: result.detail.span_id && typeof result.detail.span_id === 'string'
-      ? result.detail.span_id
-      : result.evidence[0]?.span_id ?? 'unknown_span',
-  }
-}
+type StringInputResult
+  = | { ok: true, value: string }
+    | { ok: false, result: ComputerUseInvokeResult }
 
-function promotedCandidateArtifactRef(candidate: PromotedCandidate): ArtifactRef {
-  return {
-    run_id: candidate.source_run_id,
-    artifact_id: `promoted_${sanitizeArtifactId(candidate.source_operation_id)}`,
-    span_id: candidate.source_span_id,
-  }
-}
+type OptionalStringInputResult
+  = | { ok: true, value: string | undefined }
+    | { ok: false, result: ComputerUseInvokeResult }
 
-function candidateEvidenceRefs(candidate: PromotedCandidate): ArtifactRef[] {
-  return [
-    candidate.evidence.capture_artifact,
-    candidate.evidence.recognition_artifact,
-  ]
-}
+type NumberValueInputResult
+  = | { ok: true, value: number }
+    | { ok: false, result: ComputerUseInvokeResult }
 
-type RecognitionTargetParseResult
-  = | { ok: true, target: ChromeRecognitionTarget }
-    | { ok: false, code: string, message: string }
+type OptionalModifiersInputResult
+  = | { ok: true, value: string[] }
+    | { ok: false, result: ComputerUseInvokeResult }
 
-function parseRecognitionTarget(value: unknown): RecognitionTargetParseResult {
-  if (!isObjectLikeRecord(value)) {
-    return {
-      ok: false,
-      code: 'missing_recognition_target',
-      message: 'chrome.recognize requires inputs.target.',
-    }
-  }
+type RegionInputResult
+  = | { ok: true, value: { left: number, top: number, right: number, bottom: number } }
+    | { ok: false, result: ComputerUseInvokeResult }
 
-  switch (value.kind) {
-    case 'text_input':
-      if (isStringOrRegExp(value.name))
-        return { ok: true, target: { kind: value.kind, name: value.name } }
-      break
-    case 'button':
-    case 'link':
-    case 'visible_text':
-    case 'ocr_text':
-    case 'ocr_row':
-      if (isStringOrRegExp(value.text))
-        return { ok: true, target: { kind: value.kind, text: value.text } }
-      break
-  }
+function requiredString(
+  inputs: Record<string, unknown> | undefined,
+  key: string,
+  commandId: string,
+  missingCode = `missing_${key}`,
+): StringInputResult {
+  const value = inputs?.[key]
+  if (typeof value === 'string' && value.trim() !== '')
+    return { ok: true, value }
 
   return {
     ok: false,
-    code: 'invalid_recognition_target',
-    message: 'Recognition target must include a supported kind and a string or RegExp text/name field.',
-  }
-}
-
-function isStringOrRegExp(value: unknown): value is string | RegExp {
-  return typeof value === 'string' || value instanceof RegExp
-}
-
-type CandidateLocalIdParseResult
-  = | {
-    ok: true
-    candidateLocalId: string
-    candidateRef?: ArtifactRef
-  }
-  | {
-    ok: false
-    result: (commandId: string) => ComputerUseInvokeResult
-  }
-
-function parseCandidateLocalIdInput(
-  inputs: Record<string, unknown> | undefined,
-  codes: {
-    missingCode: string
-    rawCandidateCode: string
-  },
-): CandidateLocalIdParseResult {
-  if (isObjectLikeRecord(inputs) && Object.hasOwn(inputs, 'candidate')) {
-    return {
-      ok: false,
-      result: commandId => handlerFailureResult({
-        commandId,
-        summary: 'Raw candidate JSON is not accepted as action input.',
-        failureClass: 'invalid_input',
-        code: codes.rawCandidateCode,
-        message: 'Action commands consume same-session candidateLocalId, not raw PromotedCandidate JSON.',
-        signals: [codes.rawCandidateCode],
-        knownLimits: ['same_session_candidate_only'],
-      }),
-    }
-  }
-
-  const candidateLocalId = inputs?.candidateLocalId
-  if (typeof candidateLocalId !== 'string' || candidateLocalId.trim() === '') {
-    return {
-      ok: false,
-      result: commandId => candidateProvenanceRefusal({
-        commandId,
-        code: codes.missingCode,
-        message: 'Action command requires inputs.candidateLocalId from a prior chrome.promote call.',
-        signals: [codes.missingCode],
-      }),
-    }
-  }
-
-  const candidateRefInput = inputs?.candidateRef
-  if (candidateRefInput === undefined)
-    return { ok: true, candidateLocalId }
-
-  if (!isCapturedEventArtifactRef(candidateRefInput)) {
-    return {
-      ok: false,
-      result: commandId => handlerFailureResult({
-        commandId,
-        summary: 'candidateRef input is invalid.',
-        failureClass: 'invalid_input',
-        code: 'invalid_candidate_ref',
-        message: 'inputs.candidateRef must be an ArtifactRef when provided.',
-        signals: ['invalid_candidate_ref'],
-        knownLimits: ['same_session_candidate_only'],
-      }),
-    }
-  }
-
-  return { ok: true, candidateLocalId, candidateRef: candidateRefInput }
-}
-
-type FocusedCandidateCheck
-  = | { ok: true, focusedTarget: RegisteredFocusedTarget }
-    | { ok: false, result: (commandId: string) => ComputerUseInvokeResult }
-
-function requireFocusedCandidate(
-  inputs: Record<string, unknown> | undefined,
-  latestFocusedTarget: RegisteredFocusedTarget | undefined,
-  latestNonTextInputClickedTarget: RegisteredFocusedTarget | undefined,
-): FocusedCandidateCheck {
-  const focusedCandidateLocalId = inputs?.focusedCandidateLocalId
-  if (typeof focusedCandidateLocalId !== 'string' || focusedCandidateLocalId.trim() === '') {
-    return {
-      ok: false,
-      result: commandId => candidateProvenanceRefusal({
-        commandId,
-        code: 'missing_focused_candidate_local_id',
-        message: 'Keyboard action requires inputs.focusedCandidateLocalId from a successful focusTextInput action.',
-        signals: ['missing_focused_candidate_local_id'],
-      }),
-    }
-  }
-
-  if (!latestFocusedTarget || latestFocusedTarget.candidateLocalId !== focusedCandidateLocalId) {
-    if (latestNonTextInputClickedTarget?.candidateLocalId === focusedCandidateLocalId) {
-      return {
-        ok: false,
-        result: commandId => candidateProvenanceRefusal({
-          commandId,
-          code: 'focused_candidate_not_text_input',
-          message: 'focusedCandidateLocalId refers to the latest clicked candidate, but that candidate was not recognized as text_input.',
-          signals: ['focused_candidate_not_text_input'],
-          artifacts: [latestNonTextInputClickedTarget.candidateRef],
-        }),
-      }
-    }
-
-    return {
-      ok: false,
-      result: commandId => candidateProvenanceRefusal({
-        commandId,
-        code: 'focused_candidate_not_in_sequence',
-        message: 'focusedCandidateLocalId does not match the latest successful focusTextInput record.',
-        signals: ['focused_candidate_not_in_sequence'],
-      }),
-    }
-  }
-
-  return { ok: true, focusedTarget: latestFocusedTarget }
-}
-
-function candidateProvenanceRefusal(input: {
-  commandId: string
-  code: string
-  message: string
-  signals: string[]
-  artifacts?: ArtifactRef[]
-}): ComputerUseInvokeResult {
-  return handlerFailureResult({
-    commandId: input.commandId,
-    status: 'refused',
-    summary: `Candidate provenance refused: ${input.code}.`,
-    failureClass: 'candidate_provenance',
-    code: input.code,
-    message: input.message,
-    signals: input.signals,
-    artifacts: input.artifacts,
-    knownLimits: ['same_session_candidate_only'],
-  })
-}
-
-type NumberInputResult
-  = | { ok: true, value: number | undefined }
-    | {
-      ok: false
-      result: (commandId: string, field: string) => ComputerUseInvokeResult
-    }
-
-function numberInputOrDefault(value: unknown, defaultValue: number): NumberInputResult {
-  if (value === undefined)
-    return { ok: true, value: defaultValue }
-  return optionalNumberInput(value)
-}
-
-function optionalNumberInput(value: unknown): NumberInputResult {
-  if (value === undefined)
-    return { ok: true, value }
-  if (typeof value === 'number' && Number.isFinite(value))
-    return { ok: true, value }
-  return {
-    ok: false,
-    result: (commandId, field) => handlerFailureResult({
+    result: handlerFailureResult({
       commandId,
-      summary: `${field} input is invalid.`,
+      summary: `${key} input is required.`,
       failureClass: 'invalid_input',
-      code: `invalid_${field}`,
-      message: `${field} must be a finite number when provided.`,
-      signals: [`invalid_${field}`],
-      knownLimits: ['scroll_uses_latest_observed_chrome_region'],
+      code: missingCode,
+      message: `${commandId} requires ${key} as a non-empty string.`,
+      signals: [missingCode],
+      knownLimits: ['cli_flat_inputs_only'],
     }),
   }
 }
 
-function driverActionFailureResult(
+function optionalString(
+  inputs: Record<string, unknown> | undefined,
+  key: string,
+  commandId: string,
+  defaultValue?: string,
+): OptionalStringInputResult {
+  const value = inputs?.[key]
+  if (value === undefined)
+    return { ok: true, value: defaultValue }
+  if (typeof value === 'string')
+    return { ok: true, value }
+
+  return {
+    ok: false,
+    result: handlerFailureResult({
+      commandId,
+      summary: `${key} input is invalid.`,
+      failureClass: 'invalid_input',
+      code: `invalid_${key}`,
+      message: `${commandId} requires ${key} to be a string when provided.`,
+      signals: [`invalid_${key}`],
+      knownLimits: ['cli_flat_inputs_only'],
+    }),
+  }
+}
+
+function optionalInteger(
+  inputs: Record<string, unknown> | undefined,
+  key: string,
+  defaultValue: number,
+  commandId: string,
+): NumberValueInputResult {
+  const parsed = parseFiniteNumber(inputs?.[key], defaultValue)
+  if (parsed === undefined || !Number.isInteger(parsed)) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: `${key} input is invalid.`,
+        failureClass: 'invalid_input',
+        code: `invalid_${key}`,
+        message: `${commandId} requires ${key} to be an integer when provided.`,
+        signals: [`invalid_${key}`],
+        knownLimits: ['cli_flat_inputs_only'],
+      }),
+    }
+  }
+  return { ok: true, value: parsed }
+}
+
+function optionalNumber(
+  inputs: Record<string, unknown> | undefined,
+  key: string,
+  defaultValue: number,
+  commandId: string,
+): NumberValueInputResult {
+  const parsed = parseFiniteNumber(inputs?.[key], defaultValue)
+  if (parsed === undefined) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: `${key} input is invalid.`,
+        failureClass: 'invalid_input',
+        code: `invalid_${key}`,
+        message: `${commandId} requires ${key} to be a finite number when provided.`,
+        signals: [`invalid_${key}`],
+        knownLimits: ['cli_flat_inputs_only'],
+      }),
+    }
+  }
+  return { ok: true, value: parsed }
+}
+
+function optionalModifiers(
+  inputs: Record<string, unknown> | undefined,
+  commandId: string,
+): OptionalModifiersInputResult {
+  const value = inputs?.modifiers
+  if (value === undefined)
+    return { ok: true, value: [] }
+  if (Array.isArray(value) && value.every(item => typeof item === 'string'))
+    return { ok: true, value }
+  if (typeof value === 'string') {
+    return {
+      ok: true,
+      value: value.split(',').map(item => item.trim()).filter(Boolean),
+    }
+  }
+
+  return {
+    ok: false,
+    result: handlerFailureResult({
+      commandId,
+      summary: 'modifiers input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_modifiers',
+      message: `${commandId} modifiers must be a comma-separated string or array of strings.`,
+      signals: ['invalid_modifiers'],
+      knownLimits: ['cli_flat_inputs_only'],
+    }),
+  }
+}
+
+function optionalRegion(
+  inputs: Record<string, unknown> | undefined,
+  commandId: string,
+): RegionInputResult {
+  const left = optionalNumber(inputs, 'region_left', 0, commandId)
+  if (!left.ok)
+    return left
+  const top = optionalNumber(inputs, 'region_top', 0, commandId)
+  if (!top.ok)
+    return top
+  const right = optionalNumber(inputs, 'region_right', 1, commandId)
+  if (!right.ok)
+    return right
+  const bottom = optionalNumber(inputs, 'region_bottom', 1, commandId)
+  if (!bottom.ok)
+    return bottom
+
+  const region = { left: left.value, top: top.value, right: right.value, bottom: bottom.value }
+  if (!Object.values(region).every(value => value >= 0 && value <= 1)) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'region ratio input is invalid.',
+        failureClass: 'invalid_input',
+        code: 'invalid_region_ratio',
+        message: 'chrome.scrollRegion region ratios must be within [0, 1].',
+        signals: ['invalid_region_ratio'],
+        knownLimits: ['scroll_region_ratio_inputs'],
+      }),
+    }
+  }
+  if (region.left >= region.right || region.top >= region.bottom) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'region bounds input is invalid.',
+        failureClass: 'invalid_input',
+        code: 'invalid_region_bounds',
+        message: 'chrome.scrollRegion requires region_left < region_right and region_top < region_bottom.',
+        signals: ['invalid_region_bounds'],
+        knownLimits: ['scroll_region_ratio_inputs'],
+      }),
+    }
+  }
+
+  return { ok: true, value: region }
+}
+
+function parseFiniteNumber(value: unknown, defaultValue: number): number | undefined {
+  if (value === undefined)
+    return defaultValue
+  if (typeof value === 'number' && Number.isFinite(value))
+    return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed))
+      return parsed
+  }
+  return undefined
+}
+
+function completedAtomicActionResult(
+  commandId: string,
+  summary: string,
+  signal: string,
+  result: { evidence: ArtifactRef[], knownLimits: string[] },
+): ComputerUseInvokeResult {
+  return {
+    commandId,
+    status: 'completed',
+    summary,
+    output: result,
+    signals: [signal],
+    artifacts: result.evidence,
+    knownLimits: result.knownLimits,
+  }
+}
+
+function atomicFailureResult(
   commandId: string,
   actionType: string,
+  failureClass: ComputerUseFailureClass,
   error: unknown,
-  artifacts: ArtifactRef[],
 ): ComputerUseInvokeResult {
-  const mapped = mapDriverActionError(error)
+  const code = errorCode(error) ?? `${actionType}_failed`
   return handlerFailureResult({
     commandId,
-    summary: `${actionType} action failed: ${mapped.code}.`,
-    failureClass: mapped.failureClass,
-    code: mapped.code,
+    summary: `${actionType} failed.`,
+    failureClass: classifyAtomicFailure(code, failureClass),
+    code,
     message: safeErrorMessage(error),
-    signals: uniqueStrings([`${actionType}_failed`, mapped.code]),
-    artifacts,
-    knownLimits: ['driver_action_failure_mapped_without_browser_recovery'],
+    signals: [`${actionType}_failed`],
+    knownLimits: ['atomic_cli_command_failed_without_sequence_state'],
   })
 }
 
-const SAFETY_GATE_FAILURE_CODES = new Set([
-  'chrome_context_lease_missing',
-  'chrome_context_lease_invalid',
-  'profile_mismatch',
-  'chrome_not_foreground',
-  'fresh_window_mismatch',
-  'fresh_observe_failed',
-  'fresh_capture_missing',
-  'fresh_recognition_failed',
-  'fresh_recognition_not_found',
-  'fresh_target_conflict',
-  'fresh_target_unstable',
-  'fresh_target_outside_window',
-  'unsupported_click_candidate_kind',
-  'anchor_recheck_unavailable',
-  'anchor_recheck_ambiguous',
-  'anchor_recheck_missing',
-  'anchor_recheck_incompatible_source',
-  'anchor_recheck_projection_unavailable',
-  'anchor_recheck_low_confidence',
-  'anchor_recheck_moved',
-  'anchor_recheck_outside_window',
-  'scroll_region_not_observed',
-  'scroll_region_stale',
-  'scroll_region_window_changed',
-  'scroll_region_outside_window',
-])
-
-function mapDriverActionError(error: unknown): {
-  failureClass: ComputerUseFailureClass
-  code: string
-} {
-  const code = errorCode(error)
-  const message = safeErrorMessage(error)
-  const searchable = `${code ?? ''}\n${message}`.toLowerCase()
-
-  if (searchable.includes('missing_promoted_candidate_artifact')) {
-    return {
-      failureClass: 'candidate_provenance',
-      code: 'missing_promoted_candidate_artifact',
-    }
-  }
-  if (searchable.includes('promoted_candidate_artifact_mismatch')) {
-    return {
-      failureClass: 'candidate_provenance',
-      code: 'promoted_candidate_artifact_mismatch',
-    }
-  }
-  if (searchable.includes('hard_stop_signal'))
-    return { failureClass: 'hard_stop', code: 'hard_stop_signal' }
-  if (code && SAFETY_GATE_FAILURE_CODES.has(code))
-    return { failureClass: 'safety_gate', code }
-  if (code === 'action_execution_error' || errorName(error) === 'ActionExecutionError')
-    return { failureClass: 'action_delivery', code: 'action_execution_error' }
-
-  for (const safetyCode of SAFETY_GATE_FAILURE_CODES) {
-    if (searchable.includes(safetyCode))
-      return { failureClass: 'safety_gate', code: safetyCode }
-  }
-
-  return { failureClass: 'action_delivery', code: 'action_execution_error' }
-}
-
-function sameArtifactRef(a: ArtifactRef, b: ArtifactRef): boolean {
-  return a.run_id === b.run_id
-    && a.span_id === b.span_id
-    && a.artifact_id === b.artifact_id
-    && a.captured_event_id === b.captured_event_id
+function classifyAtomicFailure(
+  code: string,
+  fallback: ComputerUseFailureClass,
+): ComputerUseFailureClass {
+  if (code === 'recognition_not_found')
+    return 'recognition'
+  if (code === 'target_outside_window')
+    return 'safety_gate'
+  return fallback
 }
 
 function observationHardStopSignals(snapshot: ObservationSnapshot): string[] {
@@ -1184,10 +785,4 @@ function errorCode(error: unknown): string | undefined {
   if (!isObjectLikeRecord(error))
     return undefined
   return typeof error.code === 'string' ? error.code : undefined
-}
-
-function errorName(error: unknown): string | undefined {
-  if (!isObjectLikeRecord(error))
-    return undefined
-  return typeof error.name === 'string' ? error.name : undefined
 }

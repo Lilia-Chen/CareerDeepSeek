@@ -202,19 +202,3 @@ export interface ScrollInput {
   deltaY?: number
   settleMs?: number
 }
-
-export interface WindowTargetedScrollInput {
-  pid: number
-  windowNumber: number
-  screenPoint: {
-    x: number
-    y: number
-  }
-  windowLocalPoint: {
-    x: number
-    y: number
-  }
-  deltaX: number
-  deltaY: number
-  settleMs?: number
-}

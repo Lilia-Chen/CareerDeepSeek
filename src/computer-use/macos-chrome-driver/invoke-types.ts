@@ -44,8 +44,6 @@ export type ComputerUseFailureClass
     | 'invalid_input'
     | 'observe'
     | 'recognition'
-    | 'candidate_promotion'
-    | 'candidate_provenance'
     | 'safety_gate'
     | 'action_delivery'
     | 'hard_stop'

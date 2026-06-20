@@ -147,8 +147,6 @@ function isComputerUseFailureClass(value: unknown): value is ComputerUseFailureC
     || value === 'invalid_input'
     || value === 'observe'
     || value === 'recognition'
-    || value === 'candidate_promotion'
-    || value === 'candidate_provenance'
     || value === 'safety_gate'
     || value === 'action_delivery'
     || value === 'hard_stop'

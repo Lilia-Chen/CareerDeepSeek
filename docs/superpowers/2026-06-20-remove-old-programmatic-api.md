@@ -69,14 +69,14 @@ direct_command = registry.resolve(&command_id)
 
 ### 删除的 public 方法 (1 个)
 
-| 方法 | 删除理由 |
-|------|---------|
+| 方法 | 行号 | 删除理由 |
+|------|------|---------|
 | `scroll(deltaY, deltaX, options)` | driver.ts:659 | reads `#scrollRegionLease` — cross-call state from `observe()` |
 
 ### 保留的 public 方法 (3 个)
 
-| 方法 | 保留理由 |
-|------|---------|
+| 方法 | 行号 | 保留理由 |
+|------|------|---------|
 | `observe()` | driver.ts:212 | 只服务 `chrome.observe` 命令（agent 动作后查看页面状态）。删除对 `#focusedTextInputLease` 的 reset |
 | `checkSafetyGate()` | driver.ts:207 | 只服务 `chrome.checkSafetyGate` |
 | `traceSink` getter | driver.ts:203 | 供 invoke runtime 连接 trace 记录 |

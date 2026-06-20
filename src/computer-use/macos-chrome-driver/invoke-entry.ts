@@ -1,5 +1,5 @@
 import { MacOSChromeDriver } from './driver.js'
-import { createMacOSChromeInvokeHandlers } from './invoke-handlers.js'
+import { createMacOSChromeHandlers } from './invoke-handlers.js'
 import { invoke } from './invoke-runtime.js'
 import type { MacOSChromeDriverOptions } from './driver.js'
 import type { MacOSChromeInvokeDriver } from './invoke-handlers.js'
@@ -11,8 +11,7 @@ export interface MacOSChromeInvokeEntry {
 }
 
 export interface MacOSChromeInvokeEntryOptions {
-  driver?: MacOSChromeInvokeDriver
-  driverOptions?: MacOSChromeDriverOptions
+  driverOptions: MacOSChromeDriverOptions
   trace?: ComputerUseInvokeOptions['trace']
   now?: ComputerUseInvokeOptions['now']
 }
@@ -20,8 +19,22 @@ export interface MacOSChromeInvokeEntryOptions {
 export function createMacOSChromeInvokeEntry(
   options: MacOSChromeInvokeEntryOptions,
 ): MacOSChromeInvokeEntry {
-  const driver = options.driver ?? createLiveDriver(options.driverOptions)
-  const handlers = createMacOSChromeInvokeHandlers(driver)
+  const driver = new MacOSChromeDriver(options.driverOptions)
+  return createMacOSChromeInvokeEntryWithDriver(driver, options)
+}
+
+export function createMacOSChromeInvokeEntryForTest(
+  driver: MacOSChromeInvokeDriver,
+  options: Pick<MacOSChromeInvokeEntryOptions, 'trace' | 'now'> = {},
+): MacOSChromeInvokeEntry {
+  return createMacOSChromeInvokeEntryWithDriver(driver, options)
+}
+
+function createMacOSChromeInvokeEntryWithDriver(
+  driver: MacOSChromeInvokeDriver,
+  options: Pick<MacOSChromeInvokeEntryOptions, 'trace' | 'now'>,
+): MacOSChromeInvokeEntry {
+  const handlers = createMacOSChromeHandlers(driver)
 
   // AUV-aligned: the driver's TraceStore is the single source of truth for
   // events, spans, and artifacts. When no external trace sink is provided,
@@ -48,15 +61,6 @@ export function createMacOSChromeInvokeEntry(
 type RequestParseResult
   = | { ok: true, request: ComputerUseInvokeRequest }
     | { ok: false, result: ComputerUseInvokeResult }
-
-function createLiveDriver(driverOptions: MacOSChromeDriverOptions | undefined): MacOSChromeInvokeDriver {
-  if (!driverOptions) {
-    throw new TypeError(
-      'createMacOSChromeInvokeEntry requires either a driver or driverOptions.',
-    )
-  }
-  return new MacOSChromeDriver(driverOptions)
-}
 
 function parseInvokeRequest(request: unknown): RequestParseResult {
   if (!isNonArrayRecord(request)) {

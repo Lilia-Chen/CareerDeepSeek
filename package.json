@@ -11,6 +11,7 @@
   },
   "scripts": {
     "ci:public": "pnpm run lint && pnpm run typecheck && pnpm test",
+    "cds": "tsx src/cli.ts",
     "hooks:install": "git config core.hooksPath .githooks",
     "lint": "moeru-lint .",
     "lint:fix": "moeru-lint --fix .",

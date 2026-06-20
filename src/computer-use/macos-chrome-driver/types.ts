@@ -146,58 +146,6 @@ export interface OcrTextSnapshot {
   knownLimits?: string[]
 }
 
-export type ChromeRecognitionTarget
-  = | {
-    kind: 'text_input'
-    name: string | RegExp
-  }
-  | {
-    kind: 'button'
-    text: string | RegExp
-  }
-  | {
-    kind: 'link'
-    text: string | RegExp
-  }
-  | {
-    kind: 'visible_text'
-    text: string | RegExp
-  }
-  | {
-    kind: 'ocr_text'
-    text: string | RegExp
-  }
-  | {
-    kind: 'ocr_row'
-    text: string | RegExp
-  }
-
-export const TEXT_INPUT_KINDS: ReadonlySet<string> = new Set([
-  'dom_textbox',
-  'dom_searchbox',
-  'dom_combobox',
-  'ax_textfield',
-  'ax_textarea',
-  'ax_combobox',
-])
-
-export const BUTTON_KINDS: ReadonlySet<string> = new Set([
-  'dom_button',
-  'ax_button',
-])
-
-export const LINK_KINDS: ReadonlySet<string> = new Set([
-  'dom_link',
-  'ax_link',
-])
-
-export const COORDINATE_CLICK_KINDS: ReadonlySet<string> = new Set([
-  'dom_button',
-  'ax_button',
-  'dom_link',
-  'ax_link',
-])
-
 export function requireWindowNumber(window: WindowDescriptor): number {
   const windowNumber = window.windowNumber
   if (typeof windowNumber !== 'number' || !Number.isInteger(windowNumber) || windowNumber <= 0) {
@@ -244,28 +192,6 @@ export interface RecognitionScope {
   capture_contract_artifact?: ArtifactRef
 }
 
-export interface RecognizedItem {
-  item_id: string
-  kind: string
-  box: RecognitionBox
-  text?: string
-  provider_score?: number
-  detail: Record<string, unknown>
-}
-
-export interface RecognitionResult {
-  found: boolean
-  recognition_id: string
-  source: RecognitionSource
-  scope: RecognitionScope
-  best: RecognizedItem | null
-  filtered: RecognizedItem[]
-  all: RecognizedItem[]
-  detail: Record<string, unknown>
-  evidence: ArtifactRef[]
-  known_limits: string[]
-}
-
 export interface NodeRef {
   run_id: string
   span_id: string
@@ -302,69 +228,6 @@ export interface ObservationSnapshot {
   evidence: ArtifactRef[]
   nodes: SurfaceNode[]
   detail: Record<string, unknown>
-  known_limits: string[]
-}
-
-export type CandidatePromotion
-  = | { status: 'promoted', candidate: PromotedCandidate, residual_known_limits: string[] }
-    | { status: 'refused', reasons: PromotionRefusal[], residual_known_limits: string[] }
-
-export type PromotionRefusal
-  = | 'empty_recognition'
-    | 'no_unambiguous_target'
-    | 'no_runtime_evidence'
-    | 'missing_capture_artifact'
-    | 'item_not_actionable'
-    | 'item_outside_viewport'
-    | 'stale_capture'
-    | 'profile_mismatch'
-    | 'chrome_not_foreground'
-    | 'hard_stop_signal'
-    | 'projection_unavailable'
-    | 'audit_unavailable'
-    | 'ambiguous_recognition'
-
-export type CandidateGrounding = 'ocr_anchor' | 'visual_row' | 'ax_node' | 'coordinate'
-
-export interface PromotedCandidate {
-  candidate_local_id: string
-  kind: string
-  label?: string
-  target_spec: {
-    grounding: CandidateGrounding
-    box: RecognitionBox
-    anchor_text?: string
-    region_hint?: RatioRegion
-  }
-  evidence: {
-    capture_artifact: ArtifactRef
-    recognition_artifact: ArtifactRef
-    observation_blob: Record<string, unknown>
-  }
-  liveness: {
-    preconditions: {
-      window_ref: {
-        app_bundle_id: string
-        window_title_substring?: string
-        window_number?: number
-      }
-      anchor_recheck?: {
-        text: string
-        region_hint?: RatioRegion
-        expected_min_confidence: number
-        max_pixel_distance: number
-      }
-    }
-    ttl_hint_ms?: number
-  }
-  control: {
-    requires_app_frontmost: boolean
-    requires_window_focus: boolean
-  }
-  source_run_id: string
-  source_span_id: string
-  source_operation_id: string
-  source_artifact_id: string
   known_limits: string[]
 }
 

@@ -1,6 +1,6 @@
 # P2 AUV Alignment — Design Spec
 
-**Status:** Revised
+**Status:** Superseded for Feature 1 by `docs/superpowers/2026-06-20-remove-old-programmatic-api.md`
 **Date:** 2026-06-19
 **Updated:** 2026-06-20 — Feature 1 now follows AUV-shaped regular UI command boundaries.
 
@@ -151,6 +151,8 @@ cds invoke chrome.clickText --query "LangChain" --anchor_offset_x 8 --anchor_off
 ```
 
 Operation: resolve managed Chrome window -> capture screenshot -> OCR once -> select `match_index` -> project once -> apply optional anchor offset -> click.
+
+`--anchor_offset_x` and `--anchor_offset_y` are capture-pixel offsets from the OCR match center. CDS projects the offset point to global logical screen coordinates inside the command.
 
 The fresh capture and OCR pass are the liveness check. Do not promote. Do not call `driver.click()`. Do not call `driver.observe()` or driver-level `recognizeFromCapture()`.
 
