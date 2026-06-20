@@ -1,243 +1,291 @@
 # P2 AUV Alignment — Design Spec
 
-**Status:** Draft
+**Status:** Revised
 **Date:** 2026-06-19
-**Scope:** Four features to close the remaining AUV alignment gap
+**Updated:** 2026-06-20 — Feature 1 now follows AUV-shaped regular UI command boundaries.
+
+---
+
+## Mode Decision
+
+AUV has two invoke modes:
+
+1. **Regular UI commands** — `window.findText`, `window.clickText`, `window.findRows`, `window.clickRow`, `input.focusText`, `input.axFocusText`, `input.typeText`, `input.key`, `window.scrollRegion`, `input.pressButton`, `input.axPressButton`. Each command is self-contained. The agent bridges calls by passing the target description again, such as `--query "Search"` or `--match_index 1`.
+2. **Typed/domain commands** — `music.search.results -> music.result.play` and `recognition.read.ratio`. These consume `CandidateRef` / `recognition_ref` JSON and read `.auv/runs/<run_id>/artifacts.jsonl` plus artifact files. This is an explicit typed contract, not the bridge used by regular UI commands.
+
+**Feature 1 implements mode 1 only.** Mode 2 is out of scope for P2.
+
+Critical architectural point: AUV regular UI commands run lightweight single-purpose paths. `window.findText` captures once and OCRs once. `window.clickText` captures once, OCRs once, resolves the requested match, then clicks. `input.typeText` types into the active control and does not locate/focus the target. CDS must mirror those command boundaries. The CLI path must not compose the existing programmatic session workflow API (`observe() -> recognizeFromCapture() -> promoteCandidate() -> driver.click()`), because those methods carry full-observe overhead, handler closure state, and internal re-OCR/re-capture loops that do not exist in AUV regular commands.
+
+Reference files:
+
+- `auv/src/cli.rs:945-1013` — `parse_invoke()`: flat `--key value` grammar, `--target` is app id.
+- `auv/src/runtime.rs:300-459` — `Runtime::invoke`: each invoke creates an independent run and calls one command handler.
+- `auv/src/catalog.rs:485-492` — `window.findText`: observe command.
+- `auv/src/catalog.rs:503-510` — `window.findRows`: observe command.
+- `auv/src/catalog.rs:540-548` — `window.scrollRegion`: self-contained action command.
+- `auv/src/catalog.rs:603-638` — `input.focusText`, `input.pressButton`, `input.axFocusText`: AX-based action commands.
+- `auv/src/catalog.rs:657-683` — `input.typeText`, `input.key`: active-control keyboard commands.
+- `auv/src/catalog.rs:729-745` — `window.clickText`, `window.clickRow`: self-contained pointer action commands.
+- `auv/src/driver/macos/control/window_ocr.rs:86-146` — `find_window_text`: capture -> OCR -> matches, no promote.
+- `auv/src/driver/macos/control/window_ocr.rs:239-426` — `click_window_text`: capture -> OCR -> `match_index` -> project -> click.
+- `auv/src/driver/macos/control/window_ocr.rs:606-698` — `find_window_rows`: capture -> row detection.
+- `auv/src/driver/macos/control/window_ocr.rs:839-957` — `click_window_row`: capture -> row detection -> `row_index` -> click.
+- `auv/src/driver/macos/control/ax.rs:43-148` — `focus_text_input`: AX capture -> query/candidate resolve -> pointer focus.
+- `auv/src/driver/macos/control/ax.rs:473-695` — `ax_focus_text_input`: AX capture -> AX focused attribute.
+- `auv/src/driver/macos/control/text.rs:55-128` — `type_text`: type into active control only.
+- `auv/src/driver/macos/control/region.rs:251-410` — `scroll_window_region`: resolve window/region on every invocation.
+- `auv/src/driver/macos/control/music.rs:90-756` and `recognition_read.rs:38-115` — typed/domain artifact consumers, out of scope for Feature 1.
 
 ---
 
 ## Implementation Order
 
-1. **CLI Encapsulation** — smallest scope, blocks nothing, immediately prevents script-based workflows
-2. **CLI User Guide** — ships with CLI so agents understand it's a tool, not a workflow
-3. **Trace Inspection** — must align with AUV's inspect/inspect_server for self-diagnosis
-4. **Chrome App Profile** — region tagging and filtering, depends on solid CLI + trace foundation
+1. **Atomic Invoke Commands + CLI** — add AUV-shaped command handlers and lightweight driver primitives.
+2. **Trace Inspection** — align with AUV inspect/inspect_server for command self-diagnosis.
+3. **Chrome App Profile** — region tagging and filtering for managed Chrome.
 
 ---
 
-## Feature 1: CLI Encapsulation
+## Feature 1: Atomic Invoke Commands + CLI
 
 ### Goal
 
-Add a CLI entry point `cds invoke <command-id> [--input key=value ...] [--dry-run]` that executes one command, prints JSON result to stdout, and exits. No workflow composition. Aligned with AUV's `auv-cli invoke <command-id>`.
+Replace CDS's sequence-state-dependent invoke model with AUV-style self-contained regular UI commands. Each CLI command must complete one operation internally and must not depend on handler closure state from a previous command.
 
-### Problem
+### Current CDS Problem
 
-CDS has only programmatic invoke (`createMacOSChromeInvokeEntry().invoke()`). Coding agents import the API and write scripts, hardcoding workflows into TypeScript loops.
+CDS's current programmatic invoke model depends on closure state:
 
-### Architecture
-
-```
-src/cli.ts                      ← NEW: CLI entry point
-package.json                    ← MODIFIED: add "cds" bin entry
-```
-
-### CLI Contract
-
-```
-cds invoke <command-id> [--input key=value ...] [--dry-run] [--profile path]
-
-Exit codes:
-  0 — command completed
-  1 — command failed or refused
-  2 — invalid input
-
-stdout: JSON result { commandId, status, summary, output?, failure?, knownLimits }
+```txt
+chrome.recognize -> latestRecognition
+chrome.promote -> promotedCandidates
+chrome.clickCandidate -> promotedCandidates
+chrome.focusTextInput -> promotedCandidates
+chrome.typeText -> latestFocusedTarget
+chrome.pressKey -> latestFocusedTarget
+chrome.scroll -> latestObservation
 ```
 
-### Examples
+Those variables are in `src/computer-use/macos-chrome-driver/invoke-handlers.ts`. They break CLI usage because each CLI invocation creates a new process/entry and therefore a new handler registry.
+
+The existing driver methods are also too coarse for AUV-style atomic commands:
+
+- `driver.observe()` captures screenshot + AX + DOM + OCR + OCR rows.
+- `driver.recognizeFromCapture()` re-runs OCR and OCR rows, then reads `#lastObservation.nodes` for DOM/AX items.
+- `driver.click()` calls `#recheckCandidateLiveness()`, which performs another full observe and recognition pass.
+- `driver.focusTextInput()` has the same promoted-candidate liveness path.
+- `driver.scroll()` depends on a scroll region lease created by `observe()`.
+
+These methods remain valid for the backward-compatible programmatic API. They are not the implementation substrate for CLI regular UI commands.
+
+### CLI Public Surface
+
+Feature 1 exposes AUV-shaped command IDs:
+
+```txt
+chrome.observe
+chrome.checkSafetyGate
+
+chrome.findText
+chrome.clickText
+chrome.findRows
+chrome.clickRow
+chrome.focusText
+chrome.axFocusText
+chrome.pressButton
+chrome.axPressButton
+chrome.typeText
+chrome.key
+chrome.scrollRegion
+```
+
+Do not expose these stateful programmatic commands in CLI help or dry-run:
+
+```txt
+chrome.recognize
+chrome.promote
+chrome.clickCandidate
+chrome.focusTextInput
+chrome.pressKey
+chrome.scroll
+```
+
+### Command Contracts
+
+#### `chrome.findText`
 
 ```bash
-cds invoke chrome.observe
-cds invoke chrome.recognize --input target.kind=text_input --input target.name=Search
-cds invoke chrome.promote
-cds invoke chrome.clickCandidate --input candidateLocalId=mcr_xxx
-cds invoke chrome.scroll --input deltaY=-600
-cds invoke chrome.typeText --input text="AI agent London"
+cds invoke chrome.findText --query "LangChain"
 ```
 
-### Key Decisions
+Operation: resolve managed Chrome window -> capture screenshot -> OCR once -> filter matches. No promotion. No state stored.
 
-1. One command per invocation — composition is the agent's responsibility
-2. JSON on stdout — machine-parseable
-3. Profile as optional flag — defaults to `./.computer-use/profile.json`
-4. All inputs via `--input key=value` — no positional arguments
-5. `--dry-run` validates command resolution without executing
+No-match behavior: `status: "completed"` with `found: false`, `matchCount: 0`, and empty `matches`. Missing input, capture failure, or OCR failure are command failures.
+
+Output includes:
+
+```json
+{
+  "found": true,
+  "matchCount": 2,
+  "best": {
+    "text": "LangChain",
+    "box": { "x": 10, "y": 20, "width": 100, "height": 30 },
+    "confidence": 0.93,
+    "logicalPoint": { "x": 160.5, "y": 244.5 },
+    "matchIndex": 0
+  },
+  "matches": []
+}
+```
+
+Coordinates in output are global logical coordinates. Raw OCR pixel bounds may appear under `detail.rawPixelBox`, but must not be used as `box`.
+
+#### `chrome.clickText`
+
+```bash
+cds invoke chrome.clickText --query "LangChain"
+cds invoke chrome.clickText --query "LangChain" --match_index 1
+cds invoke chrome.clickText --query "LangChain" --anchor_offset_x 8 --anchor_offset_y 0
+```
+
+Operation: resolve managed Chrome window -> capture screenshot -> OCR once -> select `match_index` -> project once -> apply optional anchor offset -> click.
+
+The fresh capture and OCR pass are the liveness check. Do not promote. Do not call `driver.click()`. Do not call `driver.observe()` or driver-level `recognizeFromCapture()`.
+
+#### `chrome.findRows`
+
+```bash
+cds invoke chrome.findRows
+cds invoke chrome.findRows --query "Result"
+```
+
+Operation: resolve managed Chrome window -> capture screenshot -> OCR once -> group OCR text into rows. Zero rows is a completed observation.
+
+`--query` is a CDS extension over AUV. AUV `find_window_rows` returns all rows; CDS may optionally filter rows containing the text for agent ergonomics.
+
+#### `chrome.clickRow`
+
+```bash
+cds invoke chrome.clickRow --row_index 1
+cds invoke chrome.clickRow --query "Result" --row_index 2
+```
+
+Operation: resolve managed Chrome window -> capture screenshot -> OCR once -> group rows -> optional text filter -> select `row_index` (1-based, aligned with AUV user-facing row index) -> click row anchor.
+
+#### `chrome.focusText`
+
+```bash
+cds invoke chrome.focusText --query "Search"
+```
+
+Operation: resolve managed Chrome app/window -> capture AX tree -> resolve text-input AX node by query -> pointer click center. This matches AUV `input.focusText`.
+
+#### `chrome.axFocusText`
+
+```bash
+cds invoke chrome.axFocusText --query "Search"
+```
+
+Operation: resolve managed Chrome app/window -> capture AX tree -> resolve text-input AX node by query -> set AX focused attribute. This matches AUV `input.axFocusText`. It should report whether AX focus succeeded and whether the real cursor moved.
+
+#### `chrome.pressButton`
+
+```bash
+cds invoke chrome.pressButton --query "Submit"
+```
+
+Operation: resolve managed Chrome app/window -> capture AX tree -> resolve button-like AX node by query -> pointer click center.
+
+#### `chrome.axPressButton`
+
+```bash
+cds invoke chrome.axPressButton --query "Submit"
+```
+
+Operation: resolve managed Chrome app/window -> capture AX tree -> resolve button-like AX node by query -> AX press action. If AX press is unavailable, fail with an explicit code; do not silently fall back to pointer click in this command.
+
+#### `chrome.typeText`
+
+```bash
+cds invoke chrome.typeText --text "AI agent London"
+cds invoke chrome.typeText --text "AI agent London" --submit_key return
+```
+
+Operation: optionally activate managed Chrome -> type into the active control. This command does not locate or focus a target. Agents should call `chrome.focusText` or `chrome.axFocusText` first when target focus is needed.
+
+#### `chrome.key`
+
+```bash
+cds invoke chrome.key --key return
+cds invoke chrome.key --key l --modifiers command
+```
+
+Operation: optionally activate managed Chrome -> press a key/shortcut in the active app.
+
+#### `chrome.scrollRegion`
+
+```bash
+cds invoke chrome.scrollRegion --direction down --amount 6
+cds invoke chrome.scrollRegion --direction up --amount 4 --region_top 0.2 --region_bottom 0.8
+```
+
+Operation: resolve managed Chrome window every invocation -> compute region center -> scroll. This command must not consume `latestObservation` or any scroll lease.
+
+### CLI Grammar
+
+Aligned to AUV `parse_invoke()`:
+
+```txt
+cds invoke <command-id> [--target managed] [--<key> <value> ...] [--dry-run] [--help]
+cds invoke --help
+cds invoke <command-id> --help
+```
+
+Rules:
+
+- The top-level subcommand is required: `cds invoke ...`.
+- `--target` accepts only `managed` in Feature 1. Arbitrary app bundle IDs are out of scope until the Chrome profile work lands.
+- All other flags become a flat `Record<string, string>`.
+- No dotted nesting. Use `--query`, `--row_index`, `--submit_key`, not `--target.query`.
+- Numeric inputs stay strings until the handler parses them.
+- `--dry-run` resolves the command spec and validates command visibility, but does not invoke the driver.
+
+### Driver Boundary
+
+Add lightweight command primitives to `MacOSChromeDriver` or a sibling command-adapter module. These primitives may use low-level helpers such as `captureChromeWindow`, `recognizeTextInImage`, `produceOcrRows`, `captureAXTree`, `executeMoveAndClick`, `executeTypeText`, `executePressKeys`, and `executeWindowTargetedScroll`.
+
+They must not call:
+
+```txt
+driver.observe()
+driver.recognizeFromCapture()
+driver.promoteCandidate()
+driver.click()
+driver.focusTextInput()
+driver.typeText()
+driver.pressKey()
+driver.scroll()
+```
+
+The pure matcher in `src/computer-use/macos-chrome-driver/recognition.ts` may be reused only after it is split so AX-only recognition does not require a fake `ChromeCaptureContract`. Do not use `null as any` to force AX items through a capture-backed API.
+
+### Evidence and Trace
+
+Feature 1 does not introduce cross-command artifact refs, but every command should still record same-command evidence for inspection:
+
+- screenshot artifact for screenshot/OCR commands.
+- capture contract artifact for screenshot/OCR commands.
+- OCR text or row report artifact for OCR commands.
+- AX report artifact for AX commands.
+- action result artifact or trace event for action commands.
+
+Empty `evidence: []` is only acceptable for commands that truly produce no observable evidence, such as a simple key press. Text/row/AX commands must attach evidence.
 
 ### Non-Goals
 
-- No shell scripting support
-- No workflow composition (no `cds workflow run`)
-- No interactive mode
-- No multi-command batching
-
-### AUV Reference
-
-`auv/src/cli.rs` — `parse_invoke()` parses `invoke <command-id> [--target ...] [--dry-run]`.  
-`auv/src/main.rs` — `CliCommand::Invoke { request, inspect }` constructs `Runtime::invoke(request)`.
-
----
-
-## Feature 2: CLI User Guide
-
-### Goal
-
-A single document that tells any agent: CDS is a tool, one command per invocation, follow the action loop, don't script.
-
-### Format
-
-`docs/cds-cli-guide.md` — covers command reference, common patterns, anti-patterns, trace reading.
-
-### Content Outline
-
-```markdown
-# CDS CLI — Computer-Use Tool Reference
-
-## What CDS Is
-cds is a single-command tool for browser computer-use. Each invocation does
-exactly one thing. cds is NOT a workflow engine. Do NOT write scripts.
-
-## The Action Loop
-observe → recognize → promote → action → observe
-Each command returns JSON. Read output before deciding next command.
-
-## Command Reference
-chrome.observe | chrome.recognize | chrome.promote |
-chrome.clickCandidate | chrome.scroll | chrome.focusTextInput |
-chrome.typeText | chrome.pressKey | chrome.checkSafetyGate
-
-## Common Patterns
-- Search on Google
-- Click a search result
-- Scroll to see more content
-
-## Anti-Patterns
-- Do NOT script cds in loops
-- Do NOT hardcode URLs or search queries
-- Do NOT skip observe between actions
-- Do NOT assume scroll succeeded without observing
-- Do NOT promote before recognize
-
-## Reading Trace Output
-How to use `cds inspect <run-id>` to debug failures.
-```
-
----
-
-## Feature 3: Trace Inspection
-
-### Goal
-
-Replace `trace-visual-report.ts` with an inspect system that produces structured lineage records per artifact role, validates artifact completeness on read, automatically flags common failure patterns, and serves an interactive web viewer. Aligned with AUV's `inspect` + `inspect_server`.
-
-### Problem
-
-CDS's `trace-visual-report.ts` generates static HTML showing command_count and artifact counts. It cannot answer: "why did scroll not move the page?", "what item was refused by promotion?", "which action clicked the address bar instead of the page?"
-
-### Architecture
-
-```
-src/computer-use/macos-chrome-driver/inspect.ts       ← NEW: lineage extraction
-src/computer-use/macos-chrome-driver/inspect-server.ts ← NEW: HTTP server
-src/computer-use/macos-chrome-driver/inspect-viewer.html ← NEW: SPA viewer
-src/computer-use/macos-chrome-driver/inspect-cli.ts    ← NEW: cds inspect CLI
-```
-
-Delete: `trace-visual-report.ts`
-
-### Lineage Records
-
-| Artifact Role | Lineage Type | Key Fields |
-|---|---|---|
-| `observation-snapshot` | ObservationLineage | snapshot_id, source, node_count, region_tag_counts, known_limits |
-| `recognition-result` | RecognitionLineage | recognition_id, target_kind, target_text, best_item_kind, best_item_text, best_item_box, filtered_count, found |
-| `promoted-candidate` | PromotionLineage | candidate_local_id, kind, label, grounding, box, refusal_reasons |
-| `action-execution` | ActionLineage | action_type, executed, refused, refusal_reasons, click_point, liveness_recheck, scroll_region |
-
-### Self-Diagnosis Flags
-
-- `promotion_refused` — what item, what reason, what target
-- `scroll_no_visible_change` — consecutive screenshots with near-identical viewport OCR text
-- `clicked_browser_chrome` — click point in tab/address bar y-range
-- `focus_on_address_bar` — focusTextInput on element matching address bar AX role/label
-
-### Inspect Server
-
-```
-GET  /                 ← SPA viewer
-GET  /runs             ← JSON list of all runs
-GET  /runs/:run_id     ← JSON run + lineage records
-GET  /runs/:run_id/events
-GET  /runs/:run_id/artifacts/:id  ← raw artifact file
-```
-
-### Inspect CLI
-
-```
-cds inspect <run-id>         ← text dump to stdout
-cds inspect serve [--port]   ← start web viewer
-```
-
-### Key Decisions
-
-1. Lineage records are read-side only — no write-side changes to trace-store.ts
-2. Self-diagnosis flags common failure patterns automatically
-3. Interactive single-file HTML viewer, no build step
-4. Screenshot bounding box overlays show where clicks/scrolls landed
-
-### Non-Goals
-
-- No live WebSocket streaming (AUV has this, can add later)
-- No write endpoints (read-only viewer)
-- No multi-run comparison
-
-### AUV Reference
-
-`auv/src/inspect.rs` — `inspect_run()` text dump with lineage records.  
-`auv/src/inspect_server/mod.rs` — HTTP/WS server with SPA viewer (3508 lines).  
-`auv/src/run_read.rs` — lineage extraction from artifact roles (2924 lines).  
-`auv/src/recorded_operation.rs` — per-operation metadata capture.
-
----
-
-## Feature 4: Chrome App Profile — Region Tagging
-
-### Goal
-
-Add per-node region tagging (`chrome_tab_bar` / `chrome_address_bar` / `chrome_bookmark_bar` / `page_viewport`) to observe, and optional region filtering to recognize. Eliminate hardcoded pixel thresholds and role-based node deletion.
-
-### Architecture
-
-```
-chrome-app-profile.ts          ← NEW: Chrome spatial structure knowledge
-driver.ts (observe)            ← MODIFIED: tags each SurfaceNode with region
-recognition.ts (matchesTarget) ← MODIFIED: optional region filter
-types.ts                       ← MODIFIED: extend RecognitionSurface
-invoke-handlers.ts             ← MODIFIED: forward region in parseRecognitionTarget
-```
-
-### Deletions
-
-- `isBrowserChromeRole()` — replaced by region tag system
-- `windowContentFallbackBounds()` — replaced by known_limit fallback
-- `BROWSER_CHROME_FALLBACK_TOP_INSET = 96` — removed
-
-### Key Decisions
-
-1. AX is the primary structural source; no pixel thresholds
-2. OCR is full-window; tab/address bar text get region tags, not deleted
-3. Region filter is opt-in; default behavior unchanged
-4. No node deletion
-5. Known limits over false confidence
-
----
-
-## Non-Goals (All Features)
-
-- No tab transition handling
-- No browser back/close/recovery
-- No structural overlay dismissal
-- No fixed company-search workflow
-- No MCP/server/public command catalog expansion
-- No multi-frame stability assessment (separate P2 feature)
-- No artifact staging pipeline changes (separate P2 feature)
+- No daemon.
+- No cross-command state bridge.
+- No generic `CandidateRef` / `recognition_ref` consumer in Feature 1.
+- No `chrome.find` / `chrome.click` / `chrome.type` generic facade in Feature 1. If a future CDS facade is added, it must be documented as a CDS-specific layer over AUV-shaped primitives, not as AUV alignment.
