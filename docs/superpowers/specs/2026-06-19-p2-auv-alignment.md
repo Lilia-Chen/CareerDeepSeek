@@ -1,6 +1,6 @@
 # P2 AUV Alignment — Design Spec
 
-**Status:** Superseded for Feature 1 by `docs/superpowers/2026-06-20-remove-old-programmatic-api.md`
+**Status:** Current architecture spec
 **Date:** 2026-06-19
 **Updated:** 2026-06-20 — Feature 1 now follows AUV-shaped regular UI command boundaries.
 
