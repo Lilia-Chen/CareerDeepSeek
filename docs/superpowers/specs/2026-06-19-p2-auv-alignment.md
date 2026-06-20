@@ -1,6 +1,6 @@
 # P2 AUV Alignment — Design Spec
 
-**Status:** Draft
+**Status:** Superseded for Feature 1 by `docs/superpowers/2026-06-20-remove-old-programmatic-api.md`
 **Date:** 2026-06-19
 **Scope:** Four features to close the remaining AUV alignment gap
 
@@ -23,7 +23,7 @@ Add a CLI entry point `cds invoke <command-id> [--input key=value ...] [--dry-ru
 
 ### Problem
 
-CDS has only programmatic invoke (`createMacOSChromeInvokeEntry().invoke()`). Coding agents import the API and write scripts, hardcoding workflows into TypeScript loops.
+CDS must expose one invoke path shared by CLI and TypeScript entry callers. Coding agents should pass one command id plus flat inputs per invocation, not import driver workflow methods or compose hidden candidate state.
 
 ### Architecture
 
@@ -49,12 +49,14 @@ stdout: JSON result { commandId, status, summary, output?, failure?, knownLimits
 
 ```bash
 cds invoke chrome.observe
-cds invoke chrome.recognize --input target.kind=text_input --input target.name=Search
-cds invoke chrome.promote
-cds invoke chrome.clickCandidate --input candidateLocalId=mcr_xxx
-cds invoke chrome.scroll --input deltaY=-600
-cds invoke chrome.typeText --input text="AI agent London"
+cds invoke chrome.findText --query "LangChain"
+cds invoke chrome.clickText --query "LangChain" --match_index 0
+cds invoke chrome.focusText --query "Search"
+cds invoke chrome.typeText --text "AI agent London"
+cds invoke chrome.scrollRegion --direction down --amount 6
 ```
+
+`chrome.clickText --anchor_offset_x/--anchor_offset_y` uses capture-pixel offsets from the OCR match center. CDS projects the offset point to logical screen coordinates inside the command.
 
 ### Key Decisions
 
@@ -98,13 +100,14 @@ cds is a single-command tool for browser computer-use. Each invocation does
 exactly one thing. cds is NOT a workflow engine. Do NOT write scripts.
 
 ## The Action Loop
-observe → recognize → promote → action → observe
+observe → atomic action → observe
 Each command returns JSON. Read output before deciding next command.
 
 ## Command Reference
-chrome.observe | chrome.recognize | chrome.promote |
-chrome.clickCandidate | chrome.scroll | chrome.focusTextInput |
-chrome.typeText | chrome.pressKey | chrome.checkSafetyGate
+chrome.observe | chrome.checkSafetyGate |
+chrome.findText | chrome.clickText | chrome.findRows | chrome.clickRow |
+chrome.focusText | chrome.axFocusText | chrome.pressButton | chrome.axPressButton |
+chrome.typeText | chrome.key | chrome.scrollRegion
 
 ## Common Patterns
 - Search on Google
@@ -116,7 +119,7 @@ chrome.typeText | chrome.pressKey | chrome.checkSafetyGate
 - Do NOT hardcode URLs or search queries
 - Do NOT skip observe between actions
 - Do NOT assume scroll succeeded without observing
-- Do NOT promote before recognize
+- Do NOT rely on candidate state from a prior invocation
 
 ## Reading Trace Output
 How to use `cds inspect <run-id>` to debug failures.
@@ -132,7 +135,7 @@ Replace `trace-visual-report.ts` with an inspect system that produces structured
 
 ### Problem
 
-CDS's `trace-visual-report.ts` generates static HTML showing command_count and artifact counts. It cannot answer: "why did scroll not move the page?", "what item was refused by promotion?", "which action clicked the address bar instead of the page?"
+CDS's `trace-visual-report.ts` generates static HTML showing command_count and artifact counts. It cannot answer: "why did scroll not move the page?", "which atomic command refused the target?", "which action clicked the address bar instead of the page?"
 
 ### Architecture
 
@@ -150,16 +153,16 @@ Delete: `trace-visual-report.ts`
 | Artifact Role | Lineage Type | Key Fields |
 |---|---|---|
 | `observation-snapshot` | ObservationLineage | snapshot_id, source, node_count, region_tag_counts, known_limits |
-| `recognition-result` | RecognitionLineage | recognition_id, target_kind, target_text, best_item_kind, best_item_text, best_item_box, filtered_count, found |
-| `promoted-candidate` | PromotionLineage | candidate_local_id, kind, label, grounding, box, refusal_reasons |
-| `action-execution` | ActionLineage | action_type, executed, refused, refusal_reasons, click_point, liveness_recheck, scroll_region |
+| `command-result` | CommandLineage | command_id, operation, status, refusal_reasons, known_limits |
+| `match-result` | MatchLineage | operation, query, match_count, best_text, best_box, confidence, selected_index |
+| `input-delivery` | InputLineage | operation, executed, delivery_path, click_point, scroll_region, typed_length |
 
 ### Self-Diagnosis Flags
 
-- `promotion_refused` — what item, what reason, what target
+- `atomic_target_refused` — what command, what query/target, what reason
 - `scroll_no_visible_change` — consecutive screenshots with near-identical viewport OCR text
 - `clicked_browser_chrome` — click point in tab/address bar y-range
-- `focus_on_address_bar` — focusTextInput on element matching address bar AX role/label
+- `focus_on_address_bar` — focus command selected an element matching address bar AX role/label
 
 ### Inspect Server
 
@@ -211,7 +214,7 @@ Add per-node region tagging (`chrome_tab_bar` / `chrome_address_bar` / `chrome_b
 ```
 chrome-app-profile.ts          ← NEW: Chrome spatial structure knowledge
 driver.ts (observe)            ← MODIFIED: tags each SurfaceNode with region
-recognition.ts (matchesTarget) ← MODIFIED: optional region filter
+atomic-recognition.ts          ← MODIFIED: optional region filter
 types.ts                       ← MODIFIED: extend RecognitionSurface
 invoke-handlers.ts             ← MODIFIED: forward region in parseRecognitionTarget
 ```

@@ -211,7 +211,7 @@ export function generateVisualTraceReport(input: GenerateVisualTraceReportInput)
     .filter(artifact => artifact.record.role === 'observation-snapshot')
     .map(artifact => observationSummary(artifact, artifactById))
   const recognitions = loadedArtifacts
-    .filter(artifact => artifact.record.role === 'recognition-result')
+    .filter(artifact => ['recognition-result', 'ocr-text', 'ocr-rows'].includes(artifact.record.role))
     .map(artifact => recognitionSummary(artifact, artifactById))
   const candidateBoxes = loadedArtifacts
     .filter(artifact => artifact.record.role === 'promoted-candidate')
@@ -219,7 +219,7 @@ export function generateVisualTraceReport(input: GenerateVisualTraceReportInput)
     .filter((candidate): candidate is VisualCandidateBoxSummary => candidate !== null)
   const candidateByArtifactId = new Map(candidateBoxes.map(candidate => [candidate.artifactId, candidate]))
   const actions = loadedArtifacts
-    .filter(artifact => artifact.record.role === 'action-execution')
+    .filter(artifact => ['action-execution', 'action-result', 'ax-action'].includes(artifact.record.role))
     .map(artifact => actionSummary(artifact, artifactById, candidateByArtifactId))
   const failures = uniqueFailures([
     ...events.flatMap(eventFailures),
@@ -395,6 +395,9 @@ function recognitionSummary(
   artifact: LoadedArtifact,
   artifactById: Map<string, LoadedArtifact>,
 ): VisualRecognitionSummary {
+  if (artifact.record.role === 'ocr-text' || artifact.record.role === 'ocr-rows')
+    return atomicRecognitionSummary(artifact, artifactById)
+
   const payload = asObject(artifact.payload)
   const best = asObject(payload.best)
   return {
@@ -404,6 +407,27 @@ function recognitionSummary(
     source: stringField(payload, 'source'),
     bestBox: recognitionBox(best.box),
     bestText: stringField(best, 'text'),
+    screenshotPath: screenshotPathForRefs(artifactRefsIn(payload), artifactById),
+    knownLimits: knownLimitsFromObject(payload),
+  }
+}
+
+function atomicRecognitionSummary(
+  artifact: LoadedArtifact,
+  artifactById: Map<string, LoadedArtifact>,
+): VisualRecognitionSummary {
+  const payload = asObject(artifact.payload)
+  const items = artifact.record.role === 'ocr-rows'
+    ? arrayField(payload, 'rows') ?? []
+    : arrayField(payload, 'matches') ?? []
+  const best = asObject(items[0])
+  return {
+    artifactId: artifact.record.artifact_id,
+    recognitionId: stringField(payload, 'recognitionId') ?? artifact.record.artifact_id,
+    found: items.length > 0,
+    source: artifact.record.role,
+    bestBox: recognitionBox(best.bounds),
+    bestText: stringField(best, 'text') ?? ocrRowText(best),
     screenshotPath: screenshotPathForRefs(artifactRefsIn(payload), artifactById),
     knownLimits: knownLimitsFromObject(payload),
   }
@@ -440,6 +464,9 @@ function actionSummary(
   artifactById: Map<string, LoadedArtifact>,
   candidateByArtifactId: Map<string, VisualCandidateBoxSummary>,
 ): VisualActionSummary {
+  if (artifact.record.role === 'action-result' || artifact.record.role === 'ax-action')
+    return atomicActionSummary(artifact)
+
   const payload = asObject(artifact.payload)
   const liveness = asObject(payload.liveness_recheck)
   const candidateRef = isCoreArtifactRef(payload.candidate_ref) ? payload.candidate_ref : undefined
@@ -468,6 +495,32 @@ function actionSummary(
       ...knownLimitsFromObject(payload),
       ...knownLimitsFromObject(liveness),
     ]),
+  }
+}
+
+function atomicActionSummary(artifact: LoadedArtifact): VisualActionSummary {
+  const payload = asObject(artifact.payload)
+  const clicked = asObject(payload.clicked)
+  const logicalPoint = asObject(clicked.logicalPoint)
+  const action = stringField(payload, 'action')
+  const actionType = artifact.record.role === 'ax-action'
+    ? axActionType(action)
+    : actionTypeFromAtomicArtifactId(artifact.record.artifact_id)
+  return {
+    artifactId: artifact.record.artifact_id,
+    actionId: artifact.record.artifact_id,
+    actionType,
+    spanId: artifact.record.span_id,
+    executed: true,
+    refused: false,
+    refusalReasons: [],
+    grounding: stringField(clicked, 'kind') ?? stringField(payload, 'role'),
+    candidateBox: recognitionBox(clicked.box),
+    livenessFreshBox: undefined,
+    clickPoint: pointFromObject(logicalPoint, 'atomic_logical_point'),
+    freshScreenshotPath: undefined,
+    failures: [],
+    knownLimits: knownLimitsFromObject(payload),
   }
 }
 
@@ -651,6 +704,41 @@ function recognitionBox(value: unknown): RecognitionBoxLike | undefined {
   return { x, y, width, height }
 }
 
+function ocrRowText(row: JsonObject): string | undefined {
+  const fragments = arrayField(row, 'textFragments') ?? arrayField(row, 'text_fragments') ?? []
+  const text = fragments
+    .map(fragment => stringField(asObject(fragment), 'text'))
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .join(' ')
+  return text.length > 0 ? text : undefined
+}
+
+function pointFromObject(value: JsonObject, source: string): VisualPoint | undefined {
+  const x = numberField(value, 'x')
+  const y = numberField(value, 'y')
+  return x === undefined || y === undefined ? undefined : { x, y, source }
+}
+
+function actionTypeFromAtomicArtifactId(artifactId: string): string {
+  if (artifactId.startsWith('action_click_text_'))
+    return 'clickText'
+  if (artifactId.startsWith('action_type_text_'))
+    return 'typeText'
+  if (artifactId.startsWith('action_key_'))
+    return 'key'
+  if (artifactId.startsWith('action_scroll_region_'))
+    return 'scrollRegion'
+  return 'atomicAction'
+}
+
+function axActionType(action: string | undefined): string {
+  if (action === 'focus')
+    return 'axFocusText'
+  if (action === 'press')
+    return 'axPressButton'
+  return 'axAction'
+}
+
 function asObject(value: unknown): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     return {}
@@ -690,7 +778,10 @@ function numericAttribute(attributes: Record<string, unknown>, field: string): n
 }
 
 function knownLimitsFromObject(record: JsonObject): string[] {
-  return stringArrayField(record, 'known_limits')
+  return uniqueStrings([
+    ...stringArrayField(record, 'known_limits'),
+    ...stringArrayField(record, 'knownLimits'),
+  ])
 }
 
 function uniqueFailures(failures: VisualFailureSummary[]): VisualFailureSummary[] {

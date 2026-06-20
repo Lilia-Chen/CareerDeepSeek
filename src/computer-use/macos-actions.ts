@@ -15,7 +15,6 @@ import type {
   PressKeysInput,
   ScrollInput,
   TypeTextInput,
-  WindowTargetedScrollInput,
 } from './types.js'
 
 import { runProcess } from './process.js'
@@ -349,128 +348,6 @@ print("{}")
 `
 }
 
-function windowTargetedScrollScript(): string {
-  return String.raw`
-import CoreGraphics
-import Darwin
-import Foundation
-
-typealias CGEventSetWindowLocationFn = @convention(c) (
-  CGEvent,
-  CGPoint
-) -> Void
-
-typealias SLEventPostToPidFn = @convention(c) (
-  pid_t,
-  CGEvent
-) -> Void
-
-let cgEventSetWindowLocation: CGEventSetWindowLocationFn? = {
-  let symbolName = "CGEventSetWindowLocation"
-  let globalHandle = UnsafeMutableRawPointer(bitPattern: -2)
-  if let symbol = dlsym(globalHandle, symbolName) {
-    return unsafeBitCast(symbol, to: CGEventSetWindowLocationFn.self)
-  }
-
-  let skyLightPath = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
-  guard let handle = dlopen(skyLightPath, RTLD_LAZY) else {
-    return nil
-  }
-  guard let symbol = dlsym(handle, symbolName) else {
-    return nil
-  }
-  return unsafeBitCast(symbol, to: CGEventSetWindowLocationFn.self)
-}()
-
-let slEventPostToPid: SLEventPostToPidFn? = {
-  let symbolName = "SLEventPostToPid"
-  let skyLightPath = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
-  _ = dlopen(skyLightPath, RTLD_LAZY | RTLD_GLOBAL)
-  let globalHandle = UnsafeMutableRawPointer(bitPattern: -2)
-  guard let symbol = dlsym(globalHandle, symbolName) else {
-    return nil
-  }
-  return unsafeBitCast(symbol, to: SLEventPostToPidFn.self)
-}()
-
-func setRawIntegerField(_ event: CGEvent, _ raw: UInt32, _ value: Int64) {
-  if let field = CGEventField(rawValue: raw) {
-    event.setIntegerValueField(field, value: value)
-  }
-}
-
-let environment = ProcessInfo.processInfo.environment
-let rawInput = environment["COMPUTER_USE_SWIFT_STDIN"] ?? "{}"
-let inputData = rawInput.data(using: .utf8) ?? Data()
-let input = (try? JSONSerialization.jsonObject(with: inputData)) as? [String: Any] ?? [:]
-let pid = Int64(input["pid"] as? Int ?? 0)
-let windowNumber = Int64(input["windowNumber"] as? Int ?? 0)
-let screenPoint = input["screenPoint"] as? [String: Any] ?? [:]
-let windowLocalPoint = input["windowLocalPoint"] as? [String: Any] ?? [:]
-let screenLocation = CGPoint(
-  x: screenPoint["x"] as? Double ?? 0,
-  y: screenPoint["y"] as? Double ?? 0
-)
-let windowLocation = CGPoint(
-  x: windowLocalPoint["x"] as? Double ?? 0,
-  y: windowLocalPoint["y"] as? Double ?? 0
-)
-let deltaX = input["deltaX"] as? Double ?? 0
-let deltaY = input["deltaY"] as? Double ?? 0
-let settleMs = input["settleMs"] as? Int ?? 0
-
-guard pid > 0 else {
-  fputs("window-targeted scroll requires a positive pid\n", stderr)
-  exit(2)
-}
-
-guard windowNumber > 0 else {
-  fputs("window-targeted scroll requires a positive windowNumber\n", stderr)
-  exit(2)
-}
-
-guard let setWindowLocation = cgEventSetWindowLocation else {
-  fputs("CGEventSetWindowLocation is unavailable\n", stderr)
-  exit(2)
-}
-
-guard
-  let scrollEvent = CGEvent(
-    scrollWheelEvent2Source: nil,
-    units: .pixel,
-    wheelCount: 2,
-    wheel1: Int32(deltaY.rounded()),
-    wheel2: Int32(deltaX.rounded()),
-    wheel3: 0
-  )
-else {
-  fputs("failed to create window-targeted scroll event\n", stderr)
-  exit(2)
-}
-
-scrollEvent.location = screenLocation
-scrollEvent.setIntegerValueField(.eventTargetUnixProcessID, value: pid)
-setRawIntegerField(scrollEvent, 40, pid)
-setRawIntegerField(scrollEvent, 51, windowNumber)
-setRawIntegerField(scrollEvent, 91, windowNumber)
-setRawIntegerField(scrollEvent, 92, windowNumber)
-setWindowLocation(scrollEvent, windowLocation)
-
-if let slEventPostToPid {
-  slEventPostToPid(pid_t(pid), scrollEvent)
-}
-else {
-  scrollEvent.postToPid(pid_t(pid))
-}
-
-if settleMs > 0 {
-  usleep(useconds_t(settleMs * 1000))
-}
-
-print("{}")
-`
-}
-
 // ---------------------------------------------------------------------------
 // Public action functions
 // ---------------------------------------------------------------------------
@@ -519,18 +396,6 @@ export async function executeScroll(
     swiftBinary: config.binaries.swift,
     timeoutMs: config.timeoutMs,
     source: scrollScript(),
-    stdinPayload: input,
-  })
-}
-
-export async function executeWindowTargetedScroll(
-  config: ComputerUseConfig,
-  input: WindowTargetedScrollInput,
-): Promise<void> {
-  await runSwiftScript({
-    swiftBinary: config.binaries.swift,
-    timeoutMs: config.timeoutMs,
-    source: windowTargetedScrollScript(),
     stdinPayload: input,
   })
 }
