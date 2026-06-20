@@ -95,6 +95,10 @@ export class MacOSChromeDriver {
     return this.#traceStore
   }
 
+  finishRun(statusCode: 'ok' | 'error', summary?: string): void {
+    this.#traceStore?.endRun(this.#runId, statusCode, summary)
+  }
+
   async invokeOperation(call: MacOSChromeOperationCall): Promise<MacOSChromeOperationResponse> {
     return invokeMacOSChromeOperation({
       config: this.#config,

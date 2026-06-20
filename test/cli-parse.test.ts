@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { helpText, parseCliArgs } from '../src/cli.js'
+import { helpText, parseCliArgs, parseCliCommand } from '../src/cli.js'
 import { COMPUTER_USE_COMMAND_SPECS } from '../src/computer-use/macos-chrome-driver/invoke-catalog.js'
 
 describe('parseCliArgs', () => {
@@ -38,5 +38,14 @@ describe('parseCliArgs', () => {
       expect(output).toContain(spec.id)
       expect(output).toContain(spec.summary)
     }
+  })
+
+  it('parses inspect commands separately from invoke', () => {
+    expect(parseCliCommand(['inspect'])).toEqual({ command: 'inspect', runId: undefined })
+    expect(parseCliCommand(['inspect', 'run_123'])).toEqual({ command: 'inspect', runId: 'run_123' })
+  })
+
+  it('ignores pnpm script argument separator before top-level commands', () => {
+    expect(parseCliCommand(['--', 'inspect'])).toEqual({ command: 'inspect', runId: undefined })
   })
 })

@@ -1,5 +1,6 @@
 import type { ComputerUseConfig } from '../config.js'
 import type { AXNode } from '../types.js'
+import { unlink } from 'node:fs/promises'
 import type {
   AtomicClickResult,
   AtomicFindResult,
@@ -8,6 +9,7 @@ import type {
   AtomicRowsResult,
   AtomicScrollRegionResult,
   AtomicTypeTextResult,
+  AtomicWaitForTextResult,
 } from './atomic-types.js'
 import type {
   ArtifactRef,
@@ -65,6 +67,7 @@ export interface LiveMacOSChromeAtomicCommandInput {
 
 export interface MacOSChromeAtomicCommands {
   findText: (input: { query: string }) => Promise<AtomicFindResult>
+  waitForText: (input: { query: string, timeoutMs?: number, pollIntervalMs?: number }) => Promise<AtomicWaitForTextResult>
   clickText: (input: { query: string, matchIndex?: number, anchorOffsetX?: number, anchorOffsetY?: number }) => Promise<AtomicClickResult>
   findRows: (input: { query?: string }) => Promise<AtomicRowsResult>
   clickRow: (input: { query?: string, rowIndex: number }) => Promise<AtomicClickResult>
@@ -102,6 +105,7 @@ export interface MacOSChromeOperationCall {
 
 export type MacOSChromeOperationResponse
   = | AtomicFindResult
+    | AtomicWaitForTextResult
     | AtomicClickResult
     | AtomicRowsResult
     | AtomicTypeTextResult
@@ -148,6 +152,42 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     }
   }
 
+  async waitForText(input: {
+    query: string
+    timeoutMs?: number
+    pollIntervalMs?: number
+  }): Promise<AtomicWaitForTextResult> {
+    const timeoutMs = input.timeoutMs ?? 3000
+    const pollIntervalMs = input.pollIntervalMs ?? 250
+    const startedAt = Date.now()
+    let pollCount = 0
+    let previousScreenshotPath: string | undefined
+
+    while (true) {
+      pollCount += 1
+      const ocr = await this.#captureAndRecognizeText(input.query, `wait-text-${pollCount}`)
+      const elapsedMs = Date.now() - startedAt
+      const timedOut = elapsedMs >= timeoutMs
+      if (ocr.matches.length > 0 || timedOut) {
+        await removeIfPresent(previousScreenshotPath)
+        return {
+          found: ocr.matches.length > 0,
+          query: input.query,
+          elapsedMs,
+          pollCount,
+          best: ocr.matches[0],
+          matches: ocr.matches.length > 0 ? ocr.matches : [],
+          evidence: ocr.evidence,
+          knownLimits: ocr.knownLimits,
+        }
+      }
+
+      await removeIfPresent(previousScreenshotPath)
+      previousScreenshotPath = ocr.capture.screenshot.path
+      await sleep(pollIntervalMs)
+    }
+  }
+
   async clickText(input: {
     query: string
     matchIndex?: number
@@ -159,7 +199,7 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     const rawMatch = ocr.ocr.matches[matchIndex]
     const clicked = ocr.matches[matchIndex]
     if (!rawMatch || !clicked)
-      throw Object.assign(new Error(`No OCR text match at index ${matchIndex} for query ${input.query}.`), { code: 'recognition_not_found' })
+      throw atomicError(`No OCR text match at index ${matchIndex} for query ${input.query}.`, 'recognition_not_found', ocr.evidence)
 
     const anchorOffset = {
       x: input.anchorOffsetX ?? 0,
@@ -171,12 +211,12 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     }
     const logicalPoint = projectPixelPointToLogical(pixelPoint, ocr.capture.contract)
     if (!pointInsideBounds(logicalPoint, ocr.context.window.bounds))
-      throw Object.assign(new Error('Resolved OCR click point is outside the managed Chrome window.'), { code: 'target_outside_window' })
+      throw atomicError('Resolved OCR click point is outside the managed Chrome window.', 'target_outside_window', ocr.evidence)
 
-    await this.#clickLogicalPoint(logicalPoint)
+    await this.#clickLogicalPoint(logicalPoint, ocr.evidence)
     const clickedWithPoint = { ...clicked, logicalPoint }
 
-    this.#recordJsonArtifact(ocr.spanId, `action_click_text_${ocr.spanId}`, 'action-result', {
+    const actionRef = this.#recordJsonArtifact(ocr.spanId, `action_click_text_${ocr.spanId}`, 'action-result', {
       query: input.query,
       match_index: matchIndex,
       clicked: clickedWithPoint,
@@ -184,7 +224,7 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
 
     return {
       clicked: { ...clickedWithPoint, anchorOffset },
-      evidence: ocr.evidence,
+      evidence: compactArtifactRefs([...ocr.evidence, actionRef]),
       knownLimits: ocr.knownLimits,
     }
   }
@@ -206,12 +246,17 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     const index = Math.max(1, input.rowIndex) - 1
     const matched = rows.matches[index]
     if (!matched)
-      throw Object.assign(new Error(`No OCR row at 1-based index ${input.rowIndex}.`), { code: 'recognition_not_found' })
+      throw atomicError(`No OCR row at 1-based index ${input.rowIndex}.`, 'recognition_not_found', rows.evidence)
 
-    await this.#clickLogicalPoint(matched.logicalPoint)
+    await this.#clickLogicalPoint(matched.logicalPoint, rows.evidence)
+    const actionRef = this.#recordJsonArtifact(rows.spanId, `action_click_row_${rows.spanId}`, 'action-result', {
+      query: input.query ?? null,
+      row_index: input.rowIndex,
+      clicked: matched,
+    })
     return {
       clicked: { ...matched, anchorOffset: { x: 0, y: 0 } },
-      evidence: rows.evidence,
+      evidence: compactArtifactRefs([...rows.evidence, actionRef]),
       knownLimits: rows.knownLimits,
     }
   }
@@ -418,14 +463,19 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     ])
     const node = findBestAXNodeForAtomicAction(snapshot.root, query, roles, context.window.bounds)
     if (!node?.bounds)
-      throw Object.assign(new Error(`No matching AX node found for ${query}.`), { code: 'recognition_not_found' })
+      throw atomicError(`No matching AX node found for ${query}.`, 'recognition_not_found', evidence)
 
     const match = axNodeToAtomicMatch(node, query, label)
-    await this.#clickLogicalPoint(match.logicalPoint)
+    await this.#clickLogicalPoint(match.logicalPoint, evidence)
+    const actionRef = this.#recordJsonArtifact(spanId, `action_${sanitizeId(label)}_${spanId}`, 'action-result', {
+      query,
+      roles: [...roles],
+      clicked: match,
+    })
     this.#endSpan(spanId, 'ok', `${label} completed`)
     return {
       clicked: { ...match, anchorOffset: { x: 0, y: 0 } },
-      evidence,
+      evidence: compactArtifactRefs([...evidence, actionRef]),
       knownLimits: ['ax_capture_once'],
     }
   }
@@ -476,17 +526,22 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     }
   }
 
-  async #clickLogicalPoint(point: { x: number, y: number }): Promise<void> {
-    await executeMoveAndClick(this.#config, {
-      pointerTrace: [
-        ...(this.#getLastCursorPosition?.()
-          ? [{ ...this.#getLastCursorPosition()!, delayMs: 0 }]
-          : []),
-        { ...point, delayMs: 0 },
-      ],
-      button: 0,
-      clickCount: 1,
-    })
+  async #clickLogicalPoint(point: { x: number, y: number }, evidence: ArtifactRef[]): Promise<void> {
+    try {
+      await executeMoveAndClick(this.#config, {
+        pointerTrace: [
+          ...(this.#getLastCursorPosition?.()
+            ? [{ ...this.#getLastCursorPosition()!, delayMs: 0 }]
+            : []),
+          { ...point, delayMs: 0 },
+        ],
+        button: 0,
+        clickCount: 1,
+      })
+    }
+    catch (error) {
+      throw atomicError(safeErrorMessage(error), atomicErrorCode(error) ?? 'click_delivery_failed', evidence)
+    }
     this.#setLastCursorPosition?.(point)
   }
 
@@ -547,6 +602,12 @@ export async function invokeMacOSChromeOperation(
   switch (call.operation) {
     case 'findText':
       return commands.findText({ query: stringInput(call, 'query') })
+    case 'waitForText':
+      return commands.waitForText({
+        query: stringInput(call, 'query'),
+        timeoutMs: optionalNumberInput(call, 'timeoutMs'),
+        pollIntervalMs: optionalNumberInput(call, 'pollIntervalMs'),
+      })
     case 'clickText':
       return commands.clickText({
         query: stringInput(call, 'query'),
@@ -749,6 +810,28 @@ export function atomicScrollDelta(direction: string, amount: number): { x: numbe
 
 function compactArtifactRefs(refs: Array<ArtifactRef | undefined>): ArtifactRef[] {
   return refs.filter((ref): ref is ArtifactRef => ref !== undefined)
+}
+
+function atomicError(message: string, code: string, evidence: ArtifactRef[]): Error & { code: string, evidence: ArtifactRef[] } {
+  return Object.assign(new Error(message), { code, evidence })
+}
+
+function atomicErrorCode(error: unknown): string | undefined {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    return typeof code === 'string' ? code : undefined
+  }
+  return undefined
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function removeIfPresent(path: string | undefined): Promise<void> {
+  if (!path)
+    return
+  await unlink(path).catch(() => {})
 }
 
 function sanitizeId(value: string): string {

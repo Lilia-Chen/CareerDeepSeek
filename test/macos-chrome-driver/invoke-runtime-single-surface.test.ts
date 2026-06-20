@@ -3,11 +3,13 @@ import {
   COMPUTER_USE_COMMAND_SPECS,
 } from '../../src/computer-use/macos-chrome-driver/invoke-catalog.js'
 import { invoke } from '../../src/computer-use/macos-chrome-driver/invoke-runtime.js'
+import type { ComputerUseInvokeTraceSink } from '../../src/computer-use/macos-chrome-driver/invoke-runtime.js'
 
 const expectedCommandIds = [
   'chrome.observe',
   'chrome.checkSafetyGate',
   'chrome.findText',
+  'chrome.waitForText',
   'chrome.clickText',
   'chrome.findRows',
   'chrome.clickRow',
@@ -57,5 +59,71 @@ describe('invoke runtime single surface', () => {
       expect(result.status).toBe('completed')
       expect(result.failure).toBeUndefined()
     }
+  })
+
+  it('records failure messages in trace events for inspect', async () => {
+    const events: Array<{ attributes: Record<string, unknown> }> = []
+    const trace: ComputerUseInvokeTraceSink = {
+      startSpan: () => {},
+      endSpan: () => {},
+      recordEvent: event => events.push(event),
+    }
+
+    await invoke(
+      { commandId: 'chrome.findText', inputs: { query: 'Missing' } },
+      {
+        trace,
+        handlers: {
+          'chrome.findText': () => ({
+            commandId: 'chrome.findText',
+            status: 'failed',
+            summary: 'findText failed.',
+            signals: ['findText_failed'],
+            artifacts: [],
+            failure: {
+              class: 'recognition',
+              code: 'ocr_failed',
+              message: 'Vision OCR crashed.',
+            },
+            knownLimits: [],
+          }),
+        },
+      },
+    )
+
+    expect(events.some(event =>
+      event.attributes.failure_class === 'recognition'
+      && event.attributes.failure_code === 'ocr_failed'
+      && event.attributes.failure_message === 'Vision OCR crashed.',
+    )).toBe(true)
+  })
+
+  it('records unhandled handler exceptions with failure_message in trace events', async () => {
+    const events: Array<{ name: string, attributes: Record<string, unknown> }> = []
+    const trace: ComputerUseInvokeTraceSink = {
+      startSpan: () => {},
+      endSpan: () => {},
+      recordEvent: event => events.push(event),
+    }
+
+    await invoke(
+      { commandId: 'chrome.findText', inputs: { query: 'Missing' } },
+      {
+        trace,
+        handlers: {
+          'chrome.findText': () => {
+            throw new Error('Unexpected handler failure.')
+          },
+        },
+      },
+    )
+
+    const exceptionEvent = events.find(event => event.name === 'handler_invocation_exception')
+    expect(exceptionEvent?.attributes).toMatchObject({
+      failure_class: 'runtime_unknown',
+      failure_code: 'unhandled_handler_exception',
+      failure_message: 'Unexpected handler failure.',
+    })
+    expect(exceptionEvent?.attributes).not.toHaveProperty('message')
   })
 })

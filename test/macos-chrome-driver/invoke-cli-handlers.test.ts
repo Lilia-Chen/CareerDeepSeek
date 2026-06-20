@@ -32,6 +32,12 @@ async function invokeFakeOperation(
   switch (call.operation) {
     case 'findText':
       return requiredFakeCommand(atomicCommands.findText, call.operation)({ query: call.inputs.query as string })
+    case 'waitForText':
+      return requiredFakeCommand(atomicCommands.waitForText, call.operation)({
+        query: call.inputs.query as string,
+        timeoutMs: call.inputs.timeoutMs as number | undefined,
+        pollIntervalMs: call.inputs.pollIntervalMs as number | undefined,
+      })
     case 'clickText':
       return requiredFakeCommand(atomicCommands.clickText, call.operation)({
         query: call.inputs.query as string,
@@ -102,6 +108,138 @@ describe('macOS Chrome CLI invoke handlers', () => {
     expect(result.status).toBe('completed')
     expect(result.output).toMatchObject({ found: false, matchCount: 0 })
     expect(result.failure).toBeUndefined()
+  })
+
+  it('parses chrome.waitForText defaults and returns timeout as completed observation', async () => {
+    let received: unknown
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      waitForText: async (input) => {
+        received = input
+        return {
+          found: false,
+          query: input.query,
+          elapsedMs: 3000,
+          pollCount: 7,
+          matches: [],
+          evidence: [{ run_id: 'run_test', artifact_id: 'artifact_ocr', span_id: 'span_test' }],
+          knownLimits: [],
+        }
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.waitForText', inputs: { query: 'Results' } },
+      { handlers },
+    )
+
+    expect(received).toEqual({
+      query: 'Results',
+      timeoutMs: 3000,
+      pollIntervalMs: 250,
+    })
+    expect(result.status).toBe('completed')
+    expect(result.output).toMatchObject({ found: false, query: 'Results', matches: [] })
+    expect(result.failure).toBeUndefined()
+    expect(result.signals).toEqual(['text_wait_timed_out'])
+  })
+
+  it('parses chrome.waitForText timeout and poll interval inputs', async () => {
+    let received: unknown
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      waitForText: async (input) => {
+        received = input
+        return {
+          found: true,
+          query: input.query,
+          elapsedMs: 500,
+          pollCount: 2,
+          best: {
+            kind: 'ocr_text',
+            text: input.query,
+            box: { x: 10, y: 20, width: 30, height: 10 },
+            confidence: 0.9,
+            logicalPoint: { x: 25, y: 25 },
+            matchIndex: 0,
+          },
+          matches: [],
+          evidence: [],
+          knownLimits: [],
+        }
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.waitForText', inputs: { query: 'Results', timeout_ms: '5000', poll_interval_ms: '100' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('completed')
+    expect(received).toEqual({
+      query: 'Results',
+      timeoutMs: 5000,
+      pollIntervalMs: 100,
+    })
+    expect(result.signals).toEqual(['text_wait_found'])
+  })
+
+  it('rejects non-positive chrome.waitForText timing inputs', async () => {
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      waitForText: async () => {
+        throw new Error('waitForText should not be called for invalid timing')
+      },
+    }))
+
+    const invalidTimeout = await invoke(
+      { commandId: 'chrome.waitForText', inputs: { query: 'Results', timeout_ms: '0' } },
+      { handlers },
+    )
+    const invalidInterval = await invoke(
+      { commandId: 'chrome.waitForText', inputs: { query: 'Results', poll_interval_ms: '-1' } },
+      { handlers },
+    )
+
+    expect(invalidTimeout.status).toBe('failed')
+    expect(invalidTimeout.failure?.code).toBe('invalid_timeout_ms')
+    expect(invalidInterval.status).toBe('failed')
+    expect(invalidInterval.failure?.code).toBe('invalid_poll_interval_ms')
+  })
+
+  it('classifies chrome.waitForText setup failures as safety gate failures', async () => {
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      waitForText: async () => {
+        throw Object.assign(new Error('Chrome profile mismatch.'), { code: 'profile_mismatch' })
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.waitForText', inputs: { query: 'Results' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('failed')
+    expect(result.failure).toMatchObject({
+      class: 'safety_gate',
+      code: 'profile_mismatch',
+    })
+  })
+
+  it('rejects chrome.waitForText match_index because wait has no candidate selection', async () => {
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      waitForText: async () => {
+        throw new Error('waitForText should not be called when match_index is supplied')
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.waitForText', inputs: { query: 'Results', match_index: '1' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('failed')
+    expect(result.failure).toMatchObject({
+      class: 'invalid_input',
+      code: 'wait_for_text_match_index_not_accepted',
+    })
   })
 
   it('parses chrome.clickText numeric match index and anchor offsets', async () => {
@@ -244,6 +382,27 @@ describe('macOS Chrome CLI invoke handlers', () => {
 
     expect(result.status).toBe('failed')
     expect(result.failure?.code).toBe('invalid_row_index')
+  })
+
+  it('keeps same-command evidence when an atomic action fails after recognition', async () => {
+    const evidence = [{ run_id: 'run_test', artifact_id: 'ocr_text_1', span_id: 'atomic_1' }]
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      clickText: async () => {
+        throw Object.assign(new Error('No OCR text match at index 2.'), {
+          code: 'recognition_not_found',
+          evidence,
+        })
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.clickText', inputs: { query: 'Results', match_index: '2' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('failed')
+    expect(result.failure?.code).toBe('recognition_not_found')
+    expect(result.artifacts).toEqual(evidence)
   })
 
   it('routes focusText and axFocusText through atomic commands', async () => {

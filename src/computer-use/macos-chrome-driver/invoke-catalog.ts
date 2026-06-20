@@ -55,6 +55,18 @@ const commandSpecs = [
     maxDisturbance: 'foreground_app',
   },
   {
+    id: 'chrome.waitForText',
+    summary: 'Poll managed Chrome OCR until a text anchor appears or timeout expires.',
+    namespace: 'observe',
+    driverId: 'macos.chrome',
+    operation: 'waitForText',
+    mutatesPage: false,
+    deliversInput: false,
+    mayActivateChrome: true,
+    disturbanceClasses: ['foreground_app'],
+    maxDisturbance: 'foreground_app',
+  },
+  {
     id: 'chrome.clickText',
     summary: 'Capture the managed Chrome window, resolve OCR text, and click the selected match.',
     namespace: 'action',

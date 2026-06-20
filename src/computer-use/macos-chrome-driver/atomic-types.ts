@@ -20,6 +20,17 @@ export interface AtomicFindResult {
   knownLimits: string[]
 }
 
+export interface AtomicWaitForTextResult {
+  found: boolean
+  query: string
+  elapsedMs: number
+  pollCount: number
+  best?: AtomicMatch
+  matches: AtomicMatch[]
+  evidence: ArtifactRef[]
+  knownLimits: string[]
+}
+
 export interface AtomicClickResult {
   clicked: AtomicMatch & {
     anchorOffset: { x: number, y: number }

@@ -46,16 +46,25 @@ function createMacOSChromeInvokeEntryWithDriver(
   return Object.freeze({
     invoke: async (request: unknown) => {
       const parsed = parseInvokeRequest(request)
-      if (!parsed.ok)
+      if (!parsed.ok) {
+        finalizeDriverRun(driver, parsed.result)
         return parsed.result
+      }
 
-      return invoke(parsed.request, {
+      const result = await invoke(parsed.request, {
         handlers,
         trace: options.trace ?? driverTrace,
         now: options.now,
       })
+      finalizeDriverRun(driver, result)
+      return result
     },
   })
+}
+
+function finalizeDriverRun(driver: MacOSChromeInvokeDriver, result: ComputerUseInvokeResult): void {
+  if (driver instanceof MacOSChromeDriver)
+    driver.finishRun(result.status === 'completed' ? 'ok' : 'error', result.summary)
 }
 
 type RequestParseResult

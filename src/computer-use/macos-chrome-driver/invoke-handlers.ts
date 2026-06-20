@@ -9,6 +9,7 @@ import type {
   AtomicRowsResult,
   AtomicScrollRegionResult,
   AtomicTypeTextResult,
+  AtomicWaitForTextResult,
 } from './atomic-types.js'
 import type {
   ComputerUseCommandSpec,
@@ -53,6 +54,7 @@ export function createMacOSChromeHandlers(driver: MacOSChromeInvokeDriver): Comp
     'chrome.observe': async ({ spec }) => invokeObserve(spec, driver),
     'chrome.checkSafetyGate': async ({ spec }) => invokeCheckSafetyGate(spec, driver),
     'chrome.findText': async ({ request, spec }) => invokeAtomicFindText(request, spec, driver),
+    'chrome.waitForText': async ({ request, spec }) => invokeAtomicWaitForText(request, spec, driver),
     'chrome.clickText': async ({ request, spec }) => invokeAtomicClickText(request, spec, driver),
     'chrome.findRows': async ({ request, spec }) => invokeAtomicFindRows(request, spec, driver),
     'chrome.clickRow': async ({ request, spec }) => invokeAtomicClickRow(request, spec, driver),
@@ -107,6 +109,55 @@ async function invokeAtomicFindText(
   }
   catch (error) {
     return atomicFailureResult(spec.id, 'findText', 'recognition', error)
+  }
+}
+
+async function invokeAtomicWaitForText(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const query = requiredString(request.inputs, 'query', spec.id)
+  if (!query.ok)
+    return query.result
+  if (request.inputs && Object.hasOwn(request.inputs, 'match_index')) {
+    return handlerFailureResult({
+      commandId: spec.id,
+      summary: 'waitForText does not accept match_index input.',
+      failureClass: 'invalid_input',
+      code: 'wait_for_text_match_index_not_accepted',
+      message: 'chrome.waitForText returns observed matches but does not select a match_index. Use chrome.clickText with match_index after waiting.',
+      signals: ['wait_for_text_match_index_not_accepted'],
+      knownLimits: ['wait_for_text_observation_only'],
+    })
+  }
+  const timeoutMs = optionalPositiveInteger(request.inputs, 'timeout_ms', 3000, spec.id)
+  if (!timeoutMs.ok)
+    return timeoutMs.result
+  const pollIntervalMs = optionalPositiveInteger(request.inputs, 'poll_interval_ms', 250, spec.id)
+  if (!pollIntervalMs.ok)
+    return pollIntervalMs.result
+
+  try {
+    const result = await invokeDriverOperation<AtomicWaitForTextResult>(driver, spec, {
+      query: query.value,
+      timeoutMs: timeoutMs.value,
+      pollIntervalMs: pollIntervalMs.value,
+    })
+    return {
+      commandId: spec.id,
+      status: 'completed',
+      summary: result.found
+        ? `Observed OCR text ${query.value} after ${result.pollCount} poll(s).`
+        : `Timed out waiting for OCR text ${query.value} after ${result.pollCount} poll(s).`,
+      output: result,
+      signals: [result.found ? 'text_wait_found' : 'text_wait_timed_out'],
+      artifacts: result.evidence,
+      knownLimits: uniqueStrings(['wait_for_text_self_contained_polling', ...result.knownLimits]),
+    }
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, 'waitForText', 'recognition', error)
   }
 }
 
@@ -583,6 +634,32 @@ function optionalInteger(
   return { ok: true, value: parsed }
 }
 
+function optionalPositiveInteger(
+  inputs: Record<string, unknown> | undefined,
+  key: string,
+  defaultValue: number,
+  commandId: string,
+): NumberValueInputResult {
+  const parsed = optionalInteger(inputs, key, defaultValue, commandId)
+  if (!parsed.ok)
+    return parsed
+  if (parsed.value <= 0) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: `${key} input is invalid.`,
+        failureClass: 'invalid_input',
+        code: `invalid_${key}`,
+        message: `${commandId} requires ${key} to be greater than 0 when provided.`,
+        signals: [`invalid_${key}`],
+        knownLimits: ['cli_flat_inputs_only'],
+      }),
+    }
+  }
+  return parsed
+}
+
 function optionalNumber(
   inputs: Record<string, unknown> | undefined,
   key: string,
@@ -724,24 +801,38 @@ function atomicFailureResult(
   error: unknown,
 ): ComputerUseInvokeResult {
   const code = errorCode(error) ?? `${actionType}_failed`
+  const message = safeErrorMessage(error)
   return handlerFailureResult({
     commandId,
     summary: `${actionType} failed.`,
-    failureClass: classifyAtomicFailure(code, failureClass),
+    failureClass: classifyAtomicFailure(code, message, failureClass),
     code,
-    message: safeErrorMessage(error),
+    message,
     signals: [`${actionType}_failed`],
+    artifacts: errorEvidence(error),
     knownLimits: ['atomic_cli_command_failed_without_sequence_state'],
   })
 }
 
 function classifyAtomicFailure(
   code: string,
+  message: string,
   fallback: ComputerUseFailureClass,
 ): ComputerUseFailureClass {
   if (code === 'recognition_not_found')
     return 'recognition'
   if (code === 'target_outside_window')
+    return 'safety_gate'
+  if (code === 'hard_stop_signal')
+    return 'hard_stop'
+  if ([
+    'profile_mismatch',
+    'chrome_not_foreground',
+    'check_safety_gate_failed',
+  ].includes(code)) {
+    return 'safety_gate'
+  }
+  if (/\b(?:profile|foreground|lease|managed Chrome context|Google Chrome must)\b/i.test(message))
     return 'safety_gate'
   return fallback
 }
@@ -751,6 +842,19 @@ function observationHardStopSignals(snapshot: ObservationSnapshot): string[] {
   if (!Array.isArray(signals))
     return []
   return signals.filter((item): item is string => typeof item === 'string')
+}
+
+function errorEvidence(error: unknown): ArtifactRef[] {
+  if (!isObjectLikeRecord(error) || !Array.isArray(error.evidence))
+    return []
+  return error.evidence.filter(isArtifactRef)
+}
+
+function isArtifactRef(value: unknown): value is ArtifactRef {
+  return isObjectLikeRecord(value)
+    && typeof value.run_id === 'string'
+    && typeof value.artifact_id === 'string'
+    && typeof value.span_id === 'string'
 }
 
 function handlerFailureResult(input: {

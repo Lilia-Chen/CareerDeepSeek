@@ -70,6 +70,7 @@ export async function invoke(
       command_id: request.commandId,
       failure_class: result.failure?.class,
       failure_code: result.failure?.code,
+      failure_message: result.failure?.message,
     })
     trace?.endSpan(spanId, 'error', result.summary)
     return result
@@ -99,6 +100,7 @@ export async function invoke(
       command_id: spec.id,
       failure_class: result.failure?.class,
       failure_code: result.failure?.code,
+      failure_message: result.failure?.message,
     })
     trace?.endSpan(spanId, 'error', result.summary)
     return result
@@ -117,6 +119,7 @@ export async function invoke(
       status: result.status,
       failure_class: result.failure?.class,
       failure_code: result.failure?.code,
+      failure_message: result.failure?.message,
     })
     trace?.endSpan(spanId, statusCode, result.summary)
     return result
@@ -127,7 +130,7 @@ export async function invoke(
       command_id: spec.id,
       failure_class: result.failure?.class,
       failure_code: result.failure?.code,
-      message: result.failure?.message,
+      failure_message: result.failure?.message,
     })
     trace?.endSpan(spanId, 'error', result.summary)
     return result

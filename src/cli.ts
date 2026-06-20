@@ -1,7 +1,9 @@
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
+import { resolveComputerUseConfig } from './computer-use/config.js'
 import { COMPUTER_USE_COMMAND_SPECS, getComputerUseCommandSpec } from './computer-use/macos-chrome-driver/invoke-catalog.js'
 import { createMacOSChromeInvokeEntry } from './computer-use/macos-chrome-driver/invoke-entry.js'
+import { inspectTraceRun, listTraceRuns } from './computer-use/macos-chrome-driver/inspect-report.js'
 import type { ComputerUseInvokeRequest } from './computer-use/macos-chrome-driver/invoke-types.js'
 
 export interface ParsedCliInvoke {
@@ -10,6 +12,25 @@ export interface ParsedCliInvoke {
   inputs: Record<string, string>
   dryRun: boolean
   help: boolean
+}
+
+export type ParsedCliCommand
+  = | { command: 'invoke', invoke: ParsedCliInvoke }
+    | { command: 'inspect', runId?: string }
+
+export function parseCliCommand(argv: string[]): ParsedCliCommand {
+  const normalizedArgv = argv[0] === '--' ? argv.slice(1) : argv
+  const [command, maybeRunId, ...rest] = normalizedArgv
+  if (command === 'invoke')
+    return { command: 'invoke', invoke: parseCliArgs(normalizedArgv) }
+
+  if (command === 'inspect') {
+    if (maybeRunId === '--help' || maybeRunId === '-h' || rest.length > 0)
+      throw new Error('Usage: cds inspect [run-id]')
+    return { command: 'inspect', runId: maybeRunId }
+  }
+
+  throw new Error('Usage: cds invoke <command-id> [--flag value] [--dry-run]\n       cds inspect [run-id]')
 }
 
 export function parseCliArgs(argv: string[]): ParsedCliInvoke {
@@ -77,7 +98,16 @@ export function parseCliArgs(argv: string[]): ParsedCliInvoke {
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  const parsed = parseCliArgs(argv)
+  const command = parseCliCommand(argv)
+  if (command.command === 'inspect') {
+    const config = resolveComputerUseConfig()
+    process.stdout.write(command.runId
+      ? inspectTraceRun(config.sessionRoot, command.runId)
+      : listTraceRuns(config.sessionRoot))
+    return
+  }
+
+  const parsed = command.invoke
   if (parsed.help) {
     process.stdout.write(helpText(parsed.commandId))
     return
