@@ -26,6 +26,16 @@ describe('single dispatch source shape', () => {
     expect(source).not.toContain('#atomicCommands')
   })
 
+  it('resolves atomic command Chrome context without per-poll DOM tab metadata', () => {
+    const source = readSource('src/computer-use/macos-chrome-driver/driver.ts')
+    const invokeOperationBody = source.slice(
+      source.indexOf('async invokeOperation('),
+      source.indexOf('async checkSafetyGate()'),
+    )
+
+    expect(invokeOperationBody).toContain('includeTabMetadata: false')
+  })
+
   it('does not retain the old driver workflow API or cross-call state', () => {
     const source = readSource('src/computer-use/macos-chrome-driver/driver.ts')
 
@@ -99,15 +109,24 @@ describe('single dispatch source shape', () => {
     expect(qaReport).not.toContain('candidate_provenance')
   })
 
-  it('does not re-project clickText OCR boxes in the action path', () => {
+  it('does not retain removed P2.0.1 command methods in the action path', () => {
     const source = readSource('src/computer-use/macos-chrome-driver/atomic-commands.ts')
-    const clickTextBody = source.slice(
-      source.indexOf('async clickText(input:'),
-      source.indexOf('async findRows(input:'),
-    )
 
-    expect(clickTextBody).toContain('const clicked = ocr.matches[matchIndex]')
-    expect(clickTextBody).not.toContain('projectPixelBoxToLogicalMatch')
+    for (const oldToken of [
+      'async clickText(',
+      'async findRows(',
+      'async clickRow(',
+      'async focusText(',
+      'async axFocusText(',
+      'async pressButton(',
+      'async axPressButton(',
+      'async typeText(',
+      'executeAXQueryAction',
+    ]) {
+      expect(source).not.toContain(oldToken)
+    }
+    expect(source).toContain('async clickTarget(')
+    expect(source).toContain('async typeInput(')
   })
 
   it('does not use the no-op-prone window-targeted scroll path for scrollRegion', () => {

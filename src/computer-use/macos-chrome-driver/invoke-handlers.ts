@@ -4,10 +4,11 @@ import type {
 } from './atomic-commands.js'
 import type {
   AtomicClickResult,
+  AtomicClickTargetKind,
   AtomicFindResult,
   AtomicKeyResult,
-  AtomicRowsResult,
   AtomicScrollRegionResult,
+  AtomicTargetHint,
   AtomicTypeTextResult,
   AtomicWaitForTextResult,
 } from './atomic-types.js'
@@ -55,30 +56,8 @@ export function createMacOSChromeHandlers(driver: MacOSChromeInvokeDriver): Comp
     'chrome.checkSafetyGate': async ({ spec }) => invokeCheckSafetyGate(spec, driver),
     'chrome.findText': async ({ request, spec }) => invokeAtomicFindText(request, spec, driver),
     'chrome.waitForText': async ({ request, spec }) => invokeAtomicWaitForText(request, spec, driver),
-    'chrome.clickText': async ({ request, spec }) => invokeAtomicClickText(request, spec, driver),
-    'chrome.findRows': async ({ request, spec }) => invokeAtomicFindRows(request, spec, driver),
-    'chrome.clickRow': async ({ request, spec }) => invokeAtomicClickRow(request, spec, driver),
-    'chrome.focusText': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
-      actionName: 'focusText',
-      completedSignal: 'text_input_focused',
-      missingCode: 'missing_query',
-    }),
-    'chrome.axFocusText': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
-      actionName: 'axFocusText',
-      completedSignal: 'text_input_ax_focused',
-      missingCode: 'missing_query',
-    }),
-    'chrome.pressButton': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
-      actionName: 'pressButton',
-      completedSignal: 'button_pressed',
-      missingCode: 'missing_query',
-    }),
-    'chrome.axPressButton': async ({ request, spec }) => invokeAtomicQueryAction(request, spec, driver, {
-      actionName: 'axPressButton',
-      completedSignal: 'button_ax_pressed',
-      missingCode: 'missing_query',
-    }),
-    'chrome.typeText': async ({ request, spec }) => invokeAtomicTypeText(request, spec, driver),
+    'chrome.clickTarget': async ({ request, spec }) => invokeAtomicClickTarget(request, spec, driver),
+    'chrome.typeInput': async ({ request, spec }) => invokeAtomicTypeInput(request, spec, driver),
     'chrome.key': async ({ request, spec }) => invokeAtomicKey(request, spec, driver),
     'chrome.scrollRegion': async ({ request, spec }) => invokeAtomicScrollRegion(request, spec, driver),
   })
@@ -126,7 +105,7 @@ async function invokeAtomicWaitForText(
       summary: 'waitForText does not accept match_index input.',
       failureClass: 'invalid_input',
       code: 'wait_for_text_match_index_not_accepted',
-      message: 'chrome.waitForText returns observed matches but does not select a match_index. Use chrome.clickText with match_index after waiting.',
+      message: 'chrome.waitForText returns observed matches but does not select a match_index. Use chrome.clickTarget with query/kind/hint after waiting.',
       signals: ['wait_for_text_match_index_not_accepted'],
       knownLimits: ['wait_for_text_observation_only'],
     })
@@ -161,7 +140,7 @@ async function invokeAtomicWaitForText(
   }
 }
 
-async function invokeAtomicClickText(
+async function invokeAtomicClickTarget(
   request: ComputerUseInvokeRequest,
   spec: Readonly<ComputerUseCommandSpec>,
   driver: MacOSChromeInvokeDriver,
@@ -169,169 +148,63 @@ async function invokeAtomicClickText(
   const query = requiredString(request.inputs, 'query', spec.id)
   if (!query.ok)
     return query.result
-  const matchIndex = optionalInteger(request.inputs, 'match_index', 0, spec.id)
-  if (!matchIndex.ok)
-    return matchIndex.result
-  if (matchIndex.value < 0) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'match_index input is invalid.',
-      failureClass: 'invalid_input',
-      code: 'invalid_match_index',
-      message: 'chrome.clickText requires match_index to be 0 or greater.',
-      signals: ['invalid_match_index'],
-      knownLimits: ['match_index_is_zero_based'],
-    })
-  }
-  const anchorOffsetX = optionalNumber(request.inputs, 'anchor_offset_x', 0, spec.id)
-  if (!anchorOffsetX.ok)
-    return anchorOffsetX.result
-  const anchorOffsetY = optionalNumber(request.inputs, 'anchor_offset_y', 0, spec.id)
-  if (!anchorOffsetY.ok)
-    return anchorOffsetY.result
+  const kind = parseClickTargetKind(request.inputs, spec.id)
+  if (!kind.ok)
+    return kind.result
+  const hint = optionalHint(request.inputs, spec.id)
+  if (!hint.ok)
+    return hint.result
 
   try {
     const result = await invokeDriverOperation<AtomicClickResult>(driver, spec, {
       query: query.value,
-      matchIndex: matchIndex.value,
-      anchorOffsetX: anchorOffsetX.value,
-      anchorOffsetY: anchorOffsetY.value,
+      kind: kind.value,
+      ...(hint.value === undefined ? {} : { hint: hint.value }),
     })
-    return completedAtomicActionResult(spec.id, 'Clicked OCR text match.', 'text_clicked', result)
+    return completedAtomicActionResult(spec.id, 'Clicked resolved foreground target.', 'target_clicked', result)
   }
   catch (error) {
-    return atomicFailureResult(spec.id, 'clickText', 'action_delivery', error)
+    return atomicFailureResult(spec.id, 'clickTarget', 'action_delivery', error)
   }
 }
 
-async function invokeAtomicFindRows(
+async function invokeAtomicTypeInput(
   request: ComputerUseInvokeRequest,
   spec: Readonly<ComputerUseCommandSpec>,
   driver: MacOSChromeInvokeDriver,
 ): Promise<ComputerUseInvokeResult> {
-  const query = optionalString(request.inputs, 'query', spec.id)
+  const query = requiredString(request.inputs, 'query', spec.id)
   if (!query.ok)
     return query.result
-
-  try {
-    const result = await invokeDriverOperation<AtomicRowsResult>(
-      driver,
-      spec,
-      query.value === undefined ? {} : { query: query.value },
-    )
-    return {
-      commandId: spec.id,
-      status: 'completed',
-      summary: `Detected ${result.rowCount} OCR row(s).`,
-      output: result,
-      signals: [result.found ? 'rows_found' : 'rows_not_found'],
-      artifacts: result.evidence,
-      knownLimits: result.knownLimits,
-    }
-  }
-  catch (error) {
-    return atomicFailureResult(spec.id, 'findRows', 'recognition', error)
-  }
-}
-
-async function invokeAtomicClickRow(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-): Promise<ComputerUseInvokeResult> {
-  const query = optionalString(request.inputs, 'query', spec.id)
-  if (!query.ok)
-    return query.result
-  const rowIndex = optionalInteger(request.inputs, 'row_index', 1, spec.id)
-  if (!rowIndex.ok)
-    return rowIndex.result
-  if (rowIndex.value < 1) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'row_index input is invalid.',
-      failureClass: 'invalid_input',
-      code: 'invalid_row_index',
-      message: 'chrome.clickRow requires row_index to be 1 or greater.',
-      signals: ['invalid_row_index'],
-      knownLimits: ['row_index_is_one_based'],
-    })
-  }
-
-  try {
-    const result = await invokeDriverOperation<AtomicClickResult>(driver, spec, {
-      ...(query.value === undefined ? {} : { query: query.value }),
-      rowIndex: rowIndex.value,
-    })
-    return completedAtomicActionResult(spec.id, 'Clicked OCR row.', 'row_clicked', result)
-  }
-  catch (error) {
-    return atomicFailureResult(spec.id, 'clickRow', 'action_delivery', error)
-  }
-}
-
-async function invokeAtomicQueryAction(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-  options: {
-    actionName: string
-    completedSignal: string
-    missingCode: string
-  },
-): Promise<ComputerUseInvokeResult> {
-  const query = requiredString(request.inputs, 'query', spec.id, options.missingCode)
-  if (!query.ok)
-    return query.result
-
-  try {
-    const result = await invokeDriverOperation<AtomicClickResult>(driver, spec, { query: query.value })
-    return completedAtomicActionResult(spec.id, `${options.actionName} completed.`, options.completedSignal, result)
-  }
-  catch (error) {
-    return atomicFailureResult(spec.id, options.actionName, 'action_delivery', error)
-  }
-}
-
-async function invokeAtomicTypeText(
-  request: ComputerUseInvokeRequest,
-  spec: Readonly<ComputerUseCommandSpec>,
-  driver: MacOSChromeInvokeDriver,
-): Promise<ComputerUseInvokeResult> {
-  if (request.inputs && Object.hasOwn(request.inputs, 'query')) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'typeText does not accept query input.',
-      failureClass: 'invalid_input',
-      code: 'type_text_query_not_accepted',
-      message: 'chrome.typeText types into the active control. Use chrome.focusText or chrome.axFocusText before typing when focus is needed.',
-      signals: ['type_text_query_not_accepted'],
-      knownLimits: ['type_text_active_control_only'],
-    })
-  }
   const text = requiredString(request.inputs, 'text', spec.id, 'missing_text')
   if (!text.ok)
     return text.result
   const submitKey = optionalString(request.inputs, 'submit_key', spec.id)
   if (!submitKey.ok)
     return submitKey.result
+  const hint = optionalHint(request.inputs, spec.id)
+  if (!hint.ok)
+    return hint.result
 
   try {
     const result = await invokeDriverOperation<AtomicTypeTextResult>(driver, spec, {
+      query: query.value,
       text: text.value,
       ...(submitKey.value === undefined ? {} : { submitKey: submitKey.value }),
+      ...(hint.value === undefined ? {} : { hint: hint.value }),
     })
     return {
       commandId: spec.id,
       status: 'completed',
-      summary: 'Typed text into active control.',
+      summary: 'Resolved input field and typed text.',
       output: result,
-      signals: ['text_typed'],
+      signals: ['input_typed'],
       artifacts: result.evidence,
-      knownLimits: uniqueStrings(['type_text_active_control_only', ...result.knownLimits]),
+      knownLimits: result.knownLimits,
     }
   }
   catch (error) {
-    return atomicFailureResult(spec.id, 'typeText', 'action_delivery', error)
+    return atomicFailureResult(spec.id, 'typeInput', 'action_delivery', error)
   }
 }
 
@@ -560,6 +433,14 @@ type RegionInputResult
   = | { ok: true, value: { left: number, top: number, right: number, bottom: number } }
     | { ok: false, result: ComputerUseInvokeResult }
 
+type ClickTargetKindInputResult
+  = | { ok: true, value: AtomicClickTargetKind }
+    | { ok: false, result: ComputerUseInvokeResult }
+
+type HintInputResult
+  = | { ok: true, value: AtomicTargetHint | undefined }
+    | { ok: false, result: ComputerUseInvokeResult }
+
 function requiredString(
   inputs: Record<string, unknown> | undefined,
   key: string,
@@ -608,6 +489,119 @@ function optionalString(
       knownLimits: ['cli_flat_inputs_only'],
     }),
   }
+}
+
+function parseClickTargetKind(
+  inputs: Record<string, unknown> | undefined,
+  commandId: string,
+): ClickTargetKindInputResult {
+  const value = inputs?.kind
+  if (typeof value !== 'string' || value.trim() === '') {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'kind input is required.',
+        failureClass: 'invalid_input',
+        code: 'missing_kind',
+        message: `${commandId} requires kind to be one of text, button, link, menuitem, any.`,
+        signals: ['missing_kind'],
+        knownLimits: ['cli_flat_inputs_only'],
+      }),
+    }
+  }
+
+  if (value === 'input') {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'input is not a click target kind.',
+        failureClass: 'invalid_input',
+        code: 'click_target_input_kind_not_supported',
+        message: 'Use chrome.typeInput for input fields.',
+        signals: ['click_target_input_kind_not_supported'],
+        knownLimits: ['input_intent_uses_type_input'],
+      }),
+    }
+  }
+
+  if (['text', 'button', 'link', 'menuitem', 'any'].includes(value))
+    return { ok: true, value: value as AtomicClickTargetKind }
+
+  return {
+    ok: false,
+    result: handlerFailureResult({
+      commandId,
+      summary: 'kind input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_kind',
+      message: `${commandId} kind must be one of text, button, link, menuitem, any.`,
+      signals: ['invalid_kind'],
+      knownLimits: ['cli_flat_inputs_only'],
+    }),
+  }
+}
+
+function optionalHint(
+  inputs: Record<string, unknown> | undefined,
+  commandId: string,
+): HintInputResult {
+  const keys = ['hint_left', 'hint_top', 'hint_right', 'hint_bottom'] as const
+  const present = keys.filter(key => inputs?.[key] !== undefined)
+  if (present.length === 0)
+    return { ok: true, value: undefined }
+  if (present.length !== keys.length) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'hint inputs are incomplete.',
+        failureClass: 'invalid_input',
+        code: 'incomplete_hint',
+        message: `${commandId} requires all hint_left, hint_top, hint_right, and hint_bottom when any hint is supplied.`,
+        signals: ['incomplete_hint'],
+        knownLimits: ['hint_coordinates_are_normalized_window_bounds'],
+      }),
+    }
+  }
+
+  const parsed = keys.map((key) => {
+    const value = inputs?.[key]
+    return typeof value === 'string' || typeof value === 'number' ? Number(value) : undefined
+  })
+  if (parsed.some(value => value === undefined || !Number.isFinite(value) || value < 0 || value > 1)) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'hint inputs are invalid.',
+        failureClass: 'invalid_input',
+        code: 'invalid_hint',
+        message: `${commandId} hint coordinates must be finite numbers in [0, 1].`,
+        signals: ['invalid_hint'],
+        knownLimits: ['hint_coordinates_are_normalized_window_bounds'],
+      }),
+    }
+  }
+
+  const [left, top, right, bottom] = parsed as [number, number, number, number]
+  if (left >= right || top >= bottom) {
+    return {
+      ok: false,
+      result: handlerFailureResult({
+        commandId,
+        summary: 'hint bounds are invalid.',
+        failureClass: 'invalid_input',
+        code: 'invalid_hint_bounds',
+        message: `${commandId} requires hint_left < hint_right and hint_top < hint_bottom.`,
+        signals: ['invalid_hint_bounds'],
+        knownLimits: ['hint_coordinates_are_normalized_window_bounds'],
+      }),
+    }
+  }
+
+  return { ok: true, value: { left, top, right, bottom } }
 }
 
 function optionalInteger(

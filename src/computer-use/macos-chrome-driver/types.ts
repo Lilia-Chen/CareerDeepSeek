@@ -49,6 +49,11 @@ export interface ChromeContextSnapshot {
   isFrontmost: boolean
   frontmostAppName?: string
   frontmostAppBundleId?: string
+  frontmostWindowTitle?: string | null
+  frontmostWindowNumber?: number
+  frontmostWindowOwnerPid?: number
+  frontmostWindowOwnerBundleId?: string
+  frontmostWindowBounds?: Bounds
   activeTabUrl: string | null
   activeTabTitle: string | null
   profile: {
@@ -311,6 +316,7 @@ export interface SafetyCheckResult {
   checks: {
     profile_verified: boolean
     chrome_foreground: boolean
+    leased_window_foreground: boolean
     no_hard_stop_signal: boolean
   }
   failures: SafetyFailure[]

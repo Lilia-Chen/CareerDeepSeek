@@ -206,6 +206,15 @@ function formatArtifacts(artifacts: ArtifactRecord[]): string[] {
 
 function collectKnownLimits(data: TraceRunData): string[] {
   const limits = new Set<string>()
+  for (const event of data.events) {
+    const value = event.attributes.known_limits ?? event.attributes.knownLimits
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === 'string')
+          limits.add(item)
+      }
+    }
+  }
   for (const artifact of data.artifacts) {
     const payload = readArtifactPayload(data.traceDir, artifact)
     for (const key of ['knownLimits', 'known_limits']) {

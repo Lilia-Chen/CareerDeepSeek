@@ -188,15 +188,15 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
 
   // DOM elements → SurfaceNode (AUXILIARY)
   if (input.domObservation) {
-    const vp = validBounds(input.viewportBounds) ? input.viewportBounds : { x: 0, y: 0, width: 0, height: 0 }
+    const domViewportBounds = resolveDomViewportBounds(input)
     for (const [index, element] of input.domObservation.elements.entries()) {
       if (!validBounds(element.bounds))
         continue
-      const projectedBox = projectViewportLocalToSourceGlobal(element.bounds, vp)
+      const projectedBox = projectViewportLocalToSourceGlobal(element.bounds, domViewportBounds.bounds)
       const projectedCenter = validPoint(element.center)
-        ? projectViewportLocalPointToSourceGlobal(element.center, vp)
+        ? projectViewportLocalPointToSourceGlobal(element.center, domViewportBounds.bounds)
         : undefined
-      const blockingLimits = domActionabilityBlockingLimits(element, input.viewportBounds)
+      const blockingLimits = domActionabilityBlockingLimits(element, domViewportBounds.bounds)
       const knownLimits = uniqueStrings(blockingLimits)
       nodes.push({
         node_ref: {
@@ -223,7 +223,7 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
           provider_actionable: element.actionable,
           provider_confidence: element.confidence,
           coordinate_spaces: domCoordinateSpaces(),
-          bounds: domBounds(element.bounds, vp, projectedBox),
+          bounds: domBounds(element.bounds, domViewportBounds.bounds, projectedBox, domViewportBounds.source),
           center: projectedCenter ? domCenter(element.center, projectedCenter) : undefined,
           source_artifacts: sourceArtifactDetail(input),
           known_limits: knownLimits,
@@ -312,10 +312,12 @@ function domBounds(
   domViewportLocal: Bounds,
   viewportBounds: Bounds,
   sourceGlobalLogical: RecognitionBox,
+  viewportSource: string,
 ) {
   return {
     dom_viewport_local_logical: domViewportLocal,
     viewport_offset_logical: { x: viewportBounds.x, y: viewportBounds.y },
+    viewport_offset_source: viewportSource,
     source_global_logical: sourceGlobalLogical,
   }
 }
@@ -353,6 +355,18 @@ function projectionDetail(contract: ChromeCaptureContract) {
     pixel_to_logical_scale: contract.pixelToLogicalScale,
     source_global_logical_bounds: contract.sourceGlobalLogicalBounds,
   }
+}
+
+function resolveDomViewportBounds(input: NormalizeInput): { bounds: Bounds, source: string } {
+  const axWebAreaBounds = input.axSnapshot ? collectAxWebAreaBounds(input.axSnapshot.root) : []
+  const firstWebArea = axWebAreaBounds.find(validBounds)
+  if (firstWebArea)
+    return { bounds: firstWebArea, source: 'ax_web_area' }
+
+  if (validBounds(input.viewportBounds))
+    return { bounds: input.viewportBounds, source: 'provided_viewport_bounds' }
+
+  return { bounds: { x: 0, y: 0, width: 0, height: 0 }, source: 'missing_viewport_bounds' }
 }
 
 function fragmentEvidence(fragment: OcrRowEvidence['textFragments'][number], contract: ChromeCaptureContract) {

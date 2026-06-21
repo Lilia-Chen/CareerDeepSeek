@@ -720,10 +720,10 @@ function pointFromObject(value: JsonObject, source: string): VisualPoint | undef
 }
 
 function actionTypeFromAtomicArtifactId(artifactId: string): string {
-  if (artifactId.startsWith('action_click_text_'))
-    return 'clickText'
-  if (artifactId.startsWith('action_type_text_'))
-    return 'typeText'
+  if (artifactId.startsWith('action_click_target_'))
+    return 'clickTarget'
+  if (artifactId.startsWith('action_type_input_'))
+    return 'typeInput'
   if (artifactId.startsWith('action_key_'))
     return 'key'
   if (artifactId.startsWith('action_scroll_region_'))
@@ -733,9 +733,9 @@ function actionTypeFromAtomicArtifactId(artifactId: string): string {
 
 function axActionType(action: string | undefined): string {
   if (action === 'focus')
-    return 'axFocusText'
+    return 'axActionFocus'
   if (action === 'press')
-    return 'axPressButton'
+    return 'axActionPress'
   return 'axAction'
 }
 

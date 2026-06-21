@@ -6,8 +6,10 @@ import type { ChromeContextSnapshot, ChromeWindowCapture, OcrTextSnapshot } from
 const mocks = vi.hoisted(() => ({
   captureChromeWindow: vi.fn(),
   captureAXTree: vi.fn(),
+  captureChromeDom: vi.fn(),
   executeMoveAndClick: vi.fn(),
-  produceOcrRows: vi.fn(),
+  executePressKeys: vi.fn(),
+  executeTypeText: vi.fn(),
   recognizeTextInImage: vi.fn(),
   unlink: vi.fn(),
 }))
@@ -22,18 +24,21 @@ vi.mock('../../src/computer-use/macos-chrome-driver/capture.js', () => ({
 
 vi.mock('../../src/computer-use/macos-chrome-driver/ocr.js', () => ({
   recognizeTextInImage: mocks.recognizeTextInImage,
-  produceOcrRows: mocks.produceOcrRows,
 }))
 
 vi.mock('../../src/computer-use/ax-tree.js', () => ({
   captureAXTree: mocks.captureAXTree,
 }))
 
+vi.mock('../../src/computer-use/chrome-dom.js', () => ({
+  captureChromeDom: mocks.captureChromeDom,
+}))
+
 vi.mock('../../src/computer-use/macos-actions.js', () => ({
   executeMoveAndClick: mocks.executeMoveAndClick,
-  executePressKeys: vi.fn(),
+  executePressKeys: mocks.executePressKeys,
   executeScroll: vi.fn(),
-  executeTypeText: vi.fn(),
+  executeTypeText: mocks.executeTypeText,
 }))
 
 const config: ComputerUseConfig = {
@@ -130,9 +135,30 @@ describe('atomic waitForText', () => {
     mocks.captureChromeWindow.mockImplementation(({ snapshotId }) => capture(snapshotId))
     mocks.executeMoveAndClick.mockReset()
     mocks.executeMoveAndClick.mockResolvedValue(undefined)
-    mocks.produceOcrRows.mockReset()
+    mocks.executePressKeys.mockReset()
+    mocks.executePressKeys.mockResolvedValue(undefined)
+    mocks.executeTypeText.mockReset()
+    mocks.executeTypeText.mockResolvedValue(undefined)
     mocks.recognizeTextInImage.mockReset()
     mocks.captureAXTree.mockReset()
+    mocks.captureAXTree.mockResolvedValue({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: { uid: 'root', role: 'AXWindow', bounds: context.window.bounds, children: [] },
+    })
+    mocks.captureChromeDom.mockReset()
+    mocks.captureChromeDom.mockResolvedValue({
+      url: 'https://example.test',
+      title: 'Example',
+      observedAt: '2026-06-20T00:00:00.000Z',
+      visibleText: '',
+      elements: [],
+      signals: [],
+    })
     mocks.unlink.mockReset()
     mocks.unlink.mockResolvedValue(undefined)
   })
@@ -168,6 +194,8 @@ describe('atomic waitForText', () => {
     })
     expect(mocks.captureChromeWindow).toHaveBeenCalledTimes(1)
     expect(mocks.recognizeTextInImage).toHaveBeenCalledWith(config, expect.objectContaining({ query: 'Results' }))
+    expect(mocks.captureAXTree).toHaveBeenCalledTimes(1)
+    expect(mocks.captureChromeDom).toHaveBeenCalledTimes(1)
   })
 
   it('returns completed timeout data with no best match', async () => {
@@ -188,11 +216,13 @@ describe('atomic waitForText', () => {
       elapsedMs: 1,
       pollCount: 1,
       matches: [],
-      knownLimits: ['vision_ocr_test'],
     })
+    expect(result.knownLimits).toEqual(expect.arrayContaining(['vision_ocr_test', 'wait_for_text_final_enrichment_only']))
     expect(result.best).toBeUndefined()
     expect(mocks.captureChromeWindow).toHaveBeenCalledTimes(1)
     expect(mocks.recognizeTextInImage).toHaveBeenCalledTimes(1)
+    expect(mocks.captureAXTree).toHaveBeenCalledTimes(1)
+    expect(mocks.captureChromeDom).toHaveBeenCalledTimes(1)
   })
 
   it('polls with fresh captures until text appears and removes intermediate screenshots only', async () => {
@@ -222,20 +252,43 @@ describe('atomic waitForText', () => {
     expect(result.evidence.map(ref => ref.artifact_id)).toContain('screenshot_atomic_2_wait-text-2_capture')
     expect(mocks.captureChromeWindow).toHaveBeenCalledTimes(2)
     expect(mocks.recognizeTextInImage).toHaveBeenCalledTimes(2)
+    expect(mocks.captureAXTree).toHaveBeenCalledTimes(1)
+    expect(mocks.captureChromeDom).toHaveBeenCalledTimes(1)
     expect(mocks.unlink).toHaveBeenCalledWith('/tmp/cds-test/atomic_1_wait-text-1_capture.png')
     expect(mocks.unlink).not.toHaveBeenCalledWith('/tmp/cds-test/atomic_2_wait-text-2_capture.png')
   })
 
-  it('returns same-command action-result evidence for clickText', async () => {
+  it('clickTarget kind=any prefers a unique interactive AX candidate over OCR-only text', async () => {
     const writtenRoles: string[] = []
     mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([
       {
         matchIndex: 0,
-        text: 'Results',
+        text: 'Submit',
         confidence: 0.93,
         bounds: { x: 20, y: 40, width: 100, height: 30 },
       },
     ]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        bounds: context.window.bounds,
+        children: [{
+          uid: 'button-1',
+          role: 'AXButton',
+          title: 'Submit',
+          bounds: { x: 110, y: 220, width: 80, height: 30 },
+          enabled: true,
+          children: [],
+        }],
+      },
+    })
     const command = new LiveMacOSChromeAtomicCommands({
       config,
       sessionId: 'test',
@@ -252,97 +305,242 @@ describe('atomic waitForText', () => {
       },
     })
 
-    const result = await command.clickText({ query: 'Results' })
+    const result = await command.clickTarget({ query: 'Submit', kind: 'any' })
 
     expect(writtenRoles).toContain('action-result')
-    expect(result.evidence.map(ref => ref.artifact_id)).toContain('action_click_text_atomic_1_click-text')
+    expect(result.clicked.kind).toBe('ax_button')
+    expect(result.evidence.map(ref => ref.artifact_id)).toContain('action_click_target_atomic_1_click-target')
   })
 
-  it('attaches same-command OCR evidence to clickText recognition failures', async () => {
+  it('clickTarget kind=any excludes candidate groups that contain input controls', async () => {
     mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([
       {
         matchIndex: 0,
-        text: 'Results',
+        text: 'Search',
         confidence: 0.93,
-        bounds: { x: 20, y: 40, width: 100, height: 30 },
+        bounds: { x: 80, y: 80, width: 240, height: 40 },
       },
     ]))
-    const command = new LiveMacOSChromeAtomicCommands({
-      config,
-      sessionId: 'test',
-      runId: 'run_test',
-      resolveChromeContext: async () => context,
-      traceSink: {
-        startSpan: () => {},
-        endSpan: () => {},
-        recordArtifact: () => {},
-        writeJsonArtifact: artifact => ({ artifact_id: artifact.artifact_id, span_id: artifact.span_id }),
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        bounds: context.window.bounds,
+        children: [{
+          uid: 'search-1',
+          role: 'AXTextField',
+          title: 'Search',
+          bounds: { x: 140, y: 240, width: 180, height: 30 },
+          enabled: true,
+          children: [],
+        }],
       },
     })
 
-    await expect(command.clickText({ query: 'Results', matchIndex: 2 })).rejects.toMatchObject({
-      code: 'recognition_not_found',
-      evidence: expect.arrayContaining([
-        expect.objectContaining({ artifact_id: 'ocr_text_atomic_1_click-text_capture' }),
-      ]),
+    await expect(commandsWithTrace().clickTarget({ query: 'Search', kind: 'any' })).rejects.toMatchObject({
+      code: 'ambiguous_target',
     })
+    expect(mocks.executeMoveAndClick).not.toHaveBeenCalled()
   })
 
-  it('attaches same-command OCR evidence to clickText delivery failures', async () => {
-    mocks.executeMoveAndClick.mockRejectedValueOnce(new Error('CGEvent click failed'))
+  it('clickTarget returns ambiguous_target when same-tier candidates remain', async () => {
     mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([
       {
         matchIndex: 0,
-        text: 'Results',
+        text: 'Submit',
         confidence: 0.93,
         bounds: { x: 20, y: 40, width: 100, height: 30 },
       },
+      {
+        matchIndex: 1,
+        text: 'Submit',
+        confidence: 0.91,
+        bounds: { x: 20, y: 140, width: 100, height: 30 },
+      },
     ]))
 
-    await expect(commandsWithTrace().clickText({ query: 'Results' })).rejects.toMatchObject({
-      code: 'click_delivery_failed',
-      message: 'CGEvent click failed',
-      evidence: expect.arrayContaining([
-        expect.objectContaining({ artifact_id: 'screenshot_atomic_1_click-text_capture' }),
-        expect.objectContaining({ artifact_id: 'ocr_text_atomic_1_click-text_capture' }),
-      ]),
+    await expect(commandsWithTrace().clickTarget({ query: 'Submit', kind: 'text' })).rejects.toMatchObject({
+      code: 'ambiguous_target',
     })
   })
 
-  it('attaches same-command row evidence to clickRow delivery failures', async () => {
-    mocks.executeMoveAndClick.mockRejectedValueOnce(new Error('CGEvent click failed'))
+  it('clickTarget returns ambiguous_target for non-any kind when multiple candidates remain', async () => {
     mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
-    mocks.produceOcrRows.mockResolvedValueOnce({
-      strategy: 'ocr-text',
-      imagePath: '/tmp/cds-test/image.png',
-      imageWidth: 1600,
-      imageHeight: 1200,
-      rawMatchCount: 1,
-      filteredMatchCount: 1,
-      rowCount: 1,
-      rows: [{
-        rowIndex: 0,
-        source: 'ocr_row',
-        bounds: { x: 20, y: 40, width: 100, height: 30 },
-        textFragments: [{ text: 'Results' }],
-        confidence: 0.93,
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        bounds: context.window.bounds,
+        children: [{
+          uid: 'button-1',
+          role: 'AXButton',
+          title: 'Submit',
+          bounds: { x: 140, y: 240, width: 100, height: 30 },
+          enabled: true,
+          children: [],
+        }],
+      },
+    })
+    mocks.captureChromeDom.mockResolvedValueOnce({
+      url: 'https://example.test',
+      title: 'Example',
+      observedAt: '2026-06-20T00:00:00.000Z',
+      visibleText: '',
+      elements: [{
+        id: 'dom-submit',
+        role: 'button',
+        tagName: 'button',
+        name: 'Submit',
+        text: 'Submit',
+        href: null,
+        bounds: { x: 320, y: 80, width: 100, height: 30 },
+        center: { x: 370, y: 95 },
+        confidence: 0.8,
+        actionable: true,
+        states: {},
       }],
-      providerDetail: {},
-      knownLimits: ['row_test'],
+      signals: [],
     })
 
-    await expect(commandsWithTrace().clickRow({ rowIndex: 1 })).rejects.toMatchObject({
-      code: 'click_delivery_failed',
-      message: 'CGEvent click failed',
-      evidence: expect.arrayContaining([
-        expect.objectContaining({ artifact_id: 'screenshot_atomic_1_click-row_capture' }),
-        expect.objectContaining({ artifact_id: 'ocr_rows_atomic_1_click-row_capture' }),
-      ]),
+    await expect(commandsWithTrace().clickTarget({ query: 'Submit', kind: 'button' })).rejects.toMatchObject({
+      code: 'ambiguous_target',
     })
+    expect(mocks.executeMoveAndClick).not.toHaveBeenCalled()
   })
 
-  it('attaches same-command AX evidence to pointer AX delivery failures', async () => {
-    mocks.executeMoveAndClick.mockRejectedValueOnce(new Error('CGEvent click failed'))
+  it('findText returns normalized AX/DOM surface matches when OCR has no match', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        bounds: context.window.bounds,
+        children: [{
+          uid: 'group-1',
+          role: 'AXGroup',
+          title: 'Loaded Results - Example - Google Chrome',
+          bounds: { x: 100, y: 200, width: 800, height: 600 },
+          enabled: true,
+          children: [],
+        }, {
+          uid: 'label-1',
+          role: 'AXStaticText',
+          title: 'Loaded Results',
+          bounds: { x: 180, y: 260, width: 160, height: 30 },
+          enabled: true,
+          children: [],
+        }],
+      },
+    })
+
+    const result = await commandsWithTrace().findText({ query: 'Loaded' })
+
+    expect(result.found).toBe(true)
+    expect(result.best).toMatchObject({
+      kind: 'ax_static_text',
+      text: 'Loaded Results',
+      normalizedBox: {
+        left: 0.1,
+        top: 0.1,
+        right: 0.3,
+        bottom: 0.15,
+      },
+    })
+    expect(result.nodes?.some(node => node.kind === 'ax_static_text')).toBe(true)
+  })
+
+  it('clickTarget kind=any does not treat structural AX containers as targets', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        bounds: context.window.bounds,
+        children: [{
+          uid: 'group-1',
+          role: 'AXGroup',
+          title: 'Loaded Results - Example - Google Chrome',
+          bounds: { x: 100, y: 200, width: 800, height: 600 },
+          enabled: true,
+          children: [],
+        }],
+      },
+    })
+
+    await expect(commandsWithTrace().clickTarget({ query: 'Loaded Results', kind: 'any' })).rejects.toMatchObject({
+      code: 'ambiguous_target',
+    })
+    expect(mocks.executeMoveAndClick).not.toHaveBeenCalled()
+  })
+
+  it('clickTarget kind=any uses a targetable child instead of a grouped structural container', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        bounds: context.window.bounds,
+        children: [{
+          uid: 'group-1',
+          role: 'AXGroup',
+          title: 'Loaded Results',
+          bounds: { x: 100, y: 200, width: 800, height: 600 },
+          enabled: true,
+          children: [],
+        }, {
+          uid: 'label-1',
+          role: 'AXStaticText',
+          title: 'Loaded Results',
+          bounds: { x: 180, y: 260, width: 160, height: 30 },
+          enabled: true,
+          children: [],
+        }],
+      },
+    })
+
+    const result = await commandsWithTrace().clickTarget({ query: 'Loaded Results', kind: 'any' })
+
+    expect(result.clicked).toMatchObject({
+      kind: 'ax_static_text',
+      logicalPoint: { x: 260, y: 275 },
+    })
+    expect(mocks.executeMoveAndClick).toHaveBeenCalledWith(config, expect.objectContaining({
+      pointerTrace: [expect.objectContaining({ x: 260, y: 275 })],
+    }))
+  })
+
+  it('typeInput focuses an input with foreground pointer and types text', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
     mocks.captureAXTree.mockResolvedValueOnce({
       snapshotId: 'ax_test',
       pid: 123,
@@ -354,20 +552,90 @@ describe('atomic waitForText', () => {
         uid: 'root',
         role: 'AXWindow',
         children: [{
-          uid: 'button-1',
-          role: 'AXButton',
-          title: 'Submit',
-          bounds: { x: 140, y: 240, width: 80, height: 30 },
+          uid: 'search-1',
+          role: 'AXTextField',
+          title: 'Search',
+          bounds: { x: 140, y: 240, width: 180, height: 30 },
+          enabled: true,
           children: [],
         }],
       },
     })
 
-    await expect(commandsWithTrace().pressButton({ query: 'Submit' })).rejects.toMatchObject({
+    const result = await commandsWithTrace().typeInput({ query: 'Search', text: 'AI agent', submitKey: 'return' })
+
+    expect(result.typed).toMatchObject({ textLength: 8, submitKey: 'return', inputMode: 'replace' })
+    expect(mocks.executeMoveAndClick).toHaveBeenCalledTimes(1)
+    expect(mocks.executeTypeText).toHaveBeenCalledWith(config, expect.objectContaining({ text: 'AI agent' }))
+    expect(mocks.executePressKeys).toHaveBeenNthCalledWith(1, config, { keys: ['a'], modifiers: ['command'] })
+    expect(mocks.executePressKeys).toHaveBeenNthCalledWith(2, config, { keys: ['return'], modifiers: [] })
+  })
+
+  it('typeInput replaces existing input text even without submit key', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: {
+        uid: 'root',
+        role: 'AXWindow',
+        children: [{
+          uid: 'search-1',
+          role: 'AXTextField',
+          title: 'Search',
+          value: 'Old query',
+          bounds: { x: 140, y: 240, width: 180, height: 30 },
+          enabled: true,
+          children: [],
+        }],
+      },
+    })
+
+    const result = await commandsWithTrace().typeInput({ query: 'Search', text: 'AI agent' })
+
+    expect(result.typed).toMatchObject({ textLength: 8, submitKey: null, inputMode: 'replace' })
+    expect(mocks.executeMoveAndClick).toHaveBeenCalledTimes(1)
+    expect(mocks.executePressKeys).toHaveBeenCalledTimes(1)
+    expect(mocks.executePressKeys).toHaveBeenCalledWith(config, { keys: ['a'], modifiers: ['command'] })
+    expect(mocks.executeTypeText).toHaveBeenCalledWith(config, expect.objectContaining({ text: 'AI agent' }))
+  })
+
+  it('clickTarget attaches same-command OCR evidence to delivery failures', async () => {
+    mocks.executeMoveAndClick.mockRejectedValueOnce(new Error('CGEvent click failed'))
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([
+      {
+        matchIndex: 0,
+        text: 'Results',
+        confidence: 0.93,
+        bounds: { x: 20, y: 40, width: 100, height: 30 },
+      },
+    ]))
+
+    await expect(commandsWithTrace().clickTarget({ query: 'Results', kind: 'text' })).rejects.toMatchObject({
       code: 'click_delivery_failed',
       message: 'CGEvent click failed',
       evidence: expect.arrayContaining([
-        expect.objectContaining({ artifact_id: 'ax_tree_atomic_1_press-button' }),
+        expect.objectContaining({ artifact_id: 'screenshot_atomic_1_click-target_capture' }),
+        expect.objectContaining({ artifact_id: 'ocr_text_atomic_1_click-target_capture' }),
+      ]),
+    })
+  })
+
+  it('clickTarget attaches same-command evidence to target resolution failures', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+
+    await expect(commandsWithTrace().clickTarget({ query: 'Missing Target', kind: 'any' })).rejects.toMatchObject({
+      code: 'ambiguous_target',
+      message: 'No matching target candidate found.',
+      evidence: expect.arrayContaining([
+        expect.objectContaining({ artifact_id: 'screenshot_atomic_1_click-target_capture' }),
+        expect.objectContaining({ artifact_id: 'ocr_text_atomic_1_click-target_capture' }),
+        expect.objectContaining({ artifact_id: 'ax_tree_atomic_1_click-target' }),
+        expect.objectContaining({ artifact_id: 'chrome_dom_atomic_1_click-target' }),
       ]),
     })
   })

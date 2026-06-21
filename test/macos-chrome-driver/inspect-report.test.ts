@@ -85,6 +85,7 @@ describe('trace inspection report', () => {
           failure_class: 'recognition',
           failure_code: 'ocr_failed',
           failure_message: 'Vision OCR crashed.',
+          known_limits: ['event level known limit'],
         },
         artifact_ids: [],
       },
@@ -163,6 +164,7 @@ describe('trace inspection report', () => {
     expect(report).toContain('ocr-text: 1')
     expect(report).toContain('action-result: 1')
     expect(report).toContain('ax-action: 1')
+    expect(report).toContain('event level known limit')
     expect(report).toContain('Artifacts:')
     expect(report).toContain('ocr_text_1 role=ocr-text path=artifacts/ocr_text_1.json')
     expect(report).toContain('action_1 role=action-result path=artifacts/action_1.json')

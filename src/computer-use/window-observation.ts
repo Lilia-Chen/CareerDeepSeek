@@ -41,13 +41,16 @@ let appFilter = ((input["app"] as? String) ?? "").lowercased().trimmingCharacter
 let frontmostApp = NSWorkspace.shared.frontmostApplication
 let frontmostAppName = frontmostApp?.localizedName
 let frontmostAppBundleId = frontmostApp?.bundleIdentifier
+let frontmostAppPid = frontmostApp?.processIdentifier
 
 let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
 let rawWindowInfo = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
 var windows: [[String: Any]] = []
+var zOrderIndex = 0
 for window in rawWindowInfo {
   let ownerName = (window[kCGWindowOwnerName as String] as? String) ?? "Unknown"
   if !appFilter.isEmpty && !ownerName.lowercased().contains(appFilter) {
+    zOrderIndex += 1
     continue
   }
 
@@ -60,6 +63,7 @@ for window in rawWindowInfo {
   let ownerBundleId = NSRunningApplication(processIdentifier: pid_t(ownerPid))?.bundleIdentifier
 
   if alpha <= 0 || (bounds?["width"] ?? 0) <= 1 || (bounds?["height"] ?? 0) <= 1 {
+    zOrderIndex += 1
     continue
   }
 
@@ -72,19 +76,26 @@ for window in rawWindowInfo {
     "bounds": bounds as Any,
     "ownerPid": ownerPid,
     "layer": layer,
+    "zOrderIndex": zOrderIndex,
     "isOnScreen": true,
   ])
+  zOrderIndex += 1
 
   if windows.count >= limit {
     break
   }
 }
 
-let frontmostWindowTitle = windows.first(where: { ($0["appName"] as? String) == frontmostAppName })?["title"]
+let frontmostWindow = windows.first(where: { ($0["ownerPid"] as? Int) == Int(frontmostAppPid ?? 0) })
+let frontmostWindowTitle = frontmostWindow?["title"]
 let payload: [String: Any] = [
   "frontmostAppName": frontmostAppName as Any,
   "frontmostAppBundleId": frontmostAppBundleId as Any,
   "frontmostWindowTitle": frontmostWindowTitle as Any,
+  "frontmostWindowNumber": frontmostWindow?["windowNumber"] as Any,
+  "frontmostWindowOwnerPid": frontmostWindow?["ownerPid"] as Any,
+  "frontmostWindowOwnerBundleId": frontmostWindow?["ownerBundleId"] as Any,
+  "frontmostWindowBounds": frontmostWindow?["bounds"] as Any,
   "windows": windows,
   "observedAt": ISO8601DateFormatter().string(from: Date()),
 ]
@@ -103,6 +114,7 @@ interface RawWindowEntry {
   bounds: { x: number, y: number, width: number, height: number }
   ownerPid: number
   layer: number
+  zOrderIndex?: number
   isOnScreen: boolean
 }
 
@@ -110,6 +122,10 @@ interface RawWindowOutput {
   frontmostAppName?: string
   frontmostAppBundleId?: string
   frontmostWindowTitle?: string | null
+  frontmostWindowNumber?: number
+  frontmostWindowOwnerPid?: number
+  frontmostWindowOwnerBundleId?: string
+  frontmostWindowBounds?: { x: number, y: number, width: number, height: number }
   windows: RawWindowEntry[]
   observedAt: string
 }
@@ -122,6 +138,10 @@ export async function observeWindows(
     return {
       frontmostAppName: undefined,
       frontmostWindowTitle: null,
+      frontmostWindowNumber: undefined,
+      frontmostWindowOwnerPid: undefined,
+      frontmostWindowOwnerBundleId: undefined,
+      frontmostWindowBounds: undefined,
       windows: [],
       observedAt: new Date().toISOString(),
     }
@@ -140,6 +160,10 @@ export async function observeWindows(
     frontmostAppName: raw.frontmostAppName,
     frontmostAppBundleId: raw.frontmostAppBundleId,
     frontmostWindowTitle: raw.frontmostWindowTitle,
+    frontmostWindowNumber: raw.frontmostWindowNumber,
+    frontmostWindowOwnerPid: raw.frontmostWindowOwnerPid,
+    frontmostWindowOwnerBundleId: raw.frontmostWindowOwnerBundleId,
+    frontmostWindowBounds: raw.frontmostWindowBounds,
     windows: raw.windows.map(w => ({
       id: w.id,
       windowNumber: w.windowNumber,
@@ -149,6 +173,7 @@ export async function observeWindows(
       bounds: w.bounds,
       ownerPid: w.ownerPid,
       layer: w.layer,
+      zOrderIndex: w.zOrderIndex,
       isOnScreen: w.isOnScreen,
     })),
     observedAt: raw.observedAt,

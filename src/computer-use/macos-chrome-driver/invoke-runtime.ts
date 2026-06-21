@@ -120,6 +120,8 @@ export async function invoke(
       failure_class: result.failure?.class,
       failure_code: result.failure?.code,
       failure_message: result.failure?.message,
+      signals: result.signals,
+      known_limits: result.knownLimits,
     })
     trace?.endSpan(spanId, statusCode, result.summary)
     return result

@@ -7,7 +7,7 @@ CareerDeepSeek separates deterministic engineering tests from agent-in-the-loop 
 Deterministic tests live under `test/` and verify code contracts. They may assert:
 
 - Type-level interfaces and exported APIs.
-- Single-command invoke contracts such as `findText`, `clickText`, `focusText`, `typeText`, `key`, and `scrollRegion`.
+- Single-command invoke contracts such as `findText`, `clickTarget`, `typeInput`, `key`, and `scrollRegion`.
 - Driver safety gates.
 - Coordinate projection and self-contained target resolution rules.
 - macOS event payload shape, including PID, window number, screen point, and window-local point.
@@ -21,8 +21,13 @@ Deterministic tests for computer-use should cover:
 - `ArtifactRef` records whose paths exist and parse.
 - Kebab-case artifact roles such as `screenshot`, `capture-contract`, and `observation-snapshot`.
 - Atomic command outputs for match count, selected match, coordinates, confidence, refusal code, and known limits.
+- `findText` outputs related `SurfaceNode` context and cross-source audit evidence when OCR/AX/DOM data is available.
 - Click/focus actions re-resolve their target from the current page in the same command invocation.
-- `typeText` and `key` operate on the currently active control and do not accept hidden target refs from prior calls.
+- Semantic foreground click tests cover OCR, AXTree, and Chrome DOM target evidence through `clickTarget`.
+- `clickTarget --kind any` tests cover source-tier behavior: interactive AX role over actionable DOM over OCR-only text, with ambiguity when the highest tier has multiple candidates.
+- `typeInput` resolves the input target, replaces the current field value, and types inside the same command invocation.
+- `waitForText` tests preserve lightweight polling: OCR-only inside the loop, with AX/DOM normalization and audit only for the final result.
+- `key` operates on the currently active control and does not accept hidden target refs from prior calls.
 - `scrollRegion` resolves the current Chrome region inside the same command invocation.
 - `ObservationSnapshot` and `SurfaceNode` shape and provenance.
 - Chrome lease/profile/foreground/hard-stop refusal.
@@ -49,7 +54,7 @@ Primitive QA is separate from research workflow QA.
 
 Live primitive QA should output:
 
-- command sequence, such as `chrome.observe -> chrome.clickText -> chrome.observe`
+- command sequence, such as `chrome.observe -> chrome.clickTarget -> chrome.observe`
 - trace root or run id
 - relevant trace/artifact refs
 - `visual_report` path, or an explicit reason when no report was generated
@@ -64,7 +69,7 @@ The primitive QA report contract is:
   "case_id": "primitive-click-text-delivery",
   "command_sequence": [
     "chrome.observe",
-    "chrome.clickText",
+    "chrome.clickTarget",
     "chrome.observe"
   ],
   "trace_root": "path-or-run-id",
@@ -84,9 +89,11 @@ The `visual_report` path is produced by the static visual trace report generator
 
 Action sequence expectations:
 
-- click commands re-resolve target text or row evidence atomically.
+- `findText` is observe-only but returns enough node/audit context for the caller to choose the next action.
+- click commands re-resolve target text and semantic target evidence atomically.
 - scroll resolves the current Chrome region atomically.
-- `typeText` and `key` operate on the active control.
+- `typeInput` resolves the input target, replaces the current field value, and types inside the same command invocation.
+- `key` operates on the active control.
 - caller post-action observation is explicit; action commands do not hide automatic post-observe.
 
 QA scripts must not encode a fixed Google, LinkedIn, `gov.uk`, civil-service, or company-research workflow and treat that as research quality.

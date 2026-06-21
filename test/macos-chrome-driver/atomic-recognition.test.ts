@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { atomicScrollDelta, findBestAXNodeForAtomicAction } from '../../src/computer-use/macos-chrome-driver/atomic-commands.js'
-import { matchAtomicItems, projectPixelBoxToLogicalMatch, projectPixelPointToLogical } from '../../src/computer-use/macos-chrome-driver/atomic-recognition.js'
-import type { AXNode } from '../../src/computer-use/types.js'
+import { atomicScrollDelta } from '../../src/computer-use/macos-chrome-driver/atomic-commands.js'
+import { auditSurfaceNodes, matchAtomicItems, projectPixelBoxToLogicalMatch, projectPixelPointToLogical } from '../../src/computer-use/macos-chrome-driver/atomic-recognition.js'
 import type { AtomicMatchItem } from '../../src/computer-use/macos-chrome-driver/atomic-recognition.js'
-import type { ChromeCaptureContract } from '../../src/computer-use/macos-chrome-driver/types.js'
+import type { ChromeCaptureContract, SurfaceNode } from '../../src/computer-use/macos-chrome-driver/types.js'
 
 const contract: ChromeCaptureContract = {
   coordinateContractVersion: 1,
@@ -63,42 +62,57 @@ describe('atomic recognition helpers', () => {
     expect(logicalPoint).toEqual({ x: 139, y: 234 })
   })
 
-  it('scopes AX matching to the resolved window bounds', () => {
-    const root: AXNode = {
-      uid: 'root',
-      role: 'AXApplication',
-      children: [
-        {
-          uid: 'wrong-window',
-          role: 'AXTextField',
-          title: 'Search',
-          bounds: { x: 900, y: 100, width: 80, height: 20 },
-          children: [],
-        },
-        {
-          uid: 'current-window',
-          role: 'AXTextField',
-          title: 'Search',
-          bounds: { x: 120, y: 220, width: 80, height: 20 },
-          children: [],
-        },
-      ],
-    }
-
-    const match = findBestAXNodeForAtomicAction(
-      root,
-      'Search',
-      new Set(['AXTextField']),
-      { x: 100, y: 200, width: 500, height: 300 },
-    )
-
-    expect(match?.uid).toBe('current-window')
-  })
-
   it('maps scroll directions with AUV-compatible signs', () => {
     expect(atomicScrollDelta('down', 4)).toEqual({ x: 0, y: -400 })
     expect(atomicScrollDelta('up', 4)).toEqual({ x: 0, y: 400 })
     expect(atomicScrollDelta('left', 4)).toEqual({ x: 400, y: 0 })
     expect(atomicScrollDelta('right', 4)).toEqual({ x: -400, y: 0 })
   })
+
+  it('audits overlapping OCR and AX nodes as agreement when text matches', () => {
+    const audit = auditSurfaceNodes([
+      surfaceNode('ocr_0', 'ocr_text', 'Submit', { x: 10, y: 10, width: 80, height: 20 }),
+      surfaceNode('ax_button_1', 'ax_button', 'Submit', { x: 8, y: 8, width: 90, height: 28 }),
+    ])
+
+    expect(audit.status).toBe('agreement')
+    expect(audit.sourceGroups).toEqual(expect.arrayContaining(['ocr_text', 'ax']))
+    expect(audit.comparedItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        itemId: 'ocr_0',
+        relation: 'same_object',
+        status: 'agreement',
+        reasons: expect.arrayContaining(['text_agreement']),
+      }),
+    ]))
+  })
+
+  it('audits overlapping OCR and DOM nodes as conflict when text disagrees', () => {
+    const audit = auditSurfaceNodes([
+      surfaceNode('ocr_0', 'ocr_text', 'Delete', { x: 10, y: 10, width: 80, height: 20 }),
+      surfaceNode('dom_1', 'dom_button', 'Submit', { x: 8, y: 8, width: 90, height: 28 }),
+    ])
+
+    expect(audit.status).toBe('conflict')
+    expect(audit.comparedItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        itemId: 'ocr_0',
+        status: 'conflict',
+        reasons: expect.arrayContaining(['text_conflict']),
+      }),
+    ]))
+  })
 })
+
+function surfaceNode(nodeId: string, kind: string, label: string, box: SurfaceNode['box']): SurfaceNode {
+  return {
+    node_ref: { run_id: 'run_test', span_id: 'span_test', node_id: nodeId },
+    kind,
+    label,
+    box,
+    source_artifacts: [],
+    recognition_source: kind.startsWith('dom_') ? 'chrome_dom' : kind.startsWith('ocr_') ? 'ocr_text' : 'custom',
+    provider_score: 0.9,
+    detail: { known_limits: [] },
+  }
+}

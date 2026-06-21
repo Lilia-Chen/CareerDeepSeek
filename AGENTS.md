@@ -10,6 +10,10 @@ This repository must remain safe to publish publicly.
 
 Never write real personal assets, job leads, contacts, recruiter messages, CVs, cover letters, screenshots, raw page text, or private CRM records inside this repo. Use a repo-external data directory configured by `CAREERDEEPSEEK_DATA_DIR`.
 
+## Session Memory
+
+Use Nowledge (`/save` slash command or `nmem` CLI) for persisting session context. Do NOT use the built-in Claude memory system (`.claude/projects/.../memory/`).
+
 ## Workflow Precedence
 
 1. User instructions override all reusable skills and project rules.

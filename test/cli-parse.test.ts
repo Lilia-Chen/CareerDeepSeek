@@ -4,19 +4,19 @@ import { COMPUTER_USE_COMMAND_SPECS } from '../src/computer-use/macos-chrome-dri
 
 describe('parseCliArgs', () => {
   it('parses flat invoke inputs', () => {
-    const parsed = parseCliArgs(['invoke', 'chrome.clickText', '--query', 'LangChain', '--match_index', '1'])
+    const parsed = parseCliArgs(['invoke', 'chrome.clickTarget', '--query', 'LangChain', '--kind', 'text'])
 
     expect(parsed).toEqual({
-      commandId: 'chrome.clickText',
+      commandId: 'chrome.clickTarget',
       target: undefined,
-      inputs: { query: 'LangChain', match_index: '1' },
+      inputs: { query: 'LangChain', kind: 'text' },
       dryRun: false,
       help: false,
     })
   })
 
   it('rejects dotted keys', () => {
-    expect(() => parseCliArgs(['invoke', 'chrome.clickText', '--target.query', 'x'])).toThrow(/dotted/i)
+    expect(() => parseCliArgs(['invoke', 'chrome.clickTarget', '--target.query', 'x'])).toThrow(/dotted/i)
   })
 
   it('parses dry-run and managed target', () => {

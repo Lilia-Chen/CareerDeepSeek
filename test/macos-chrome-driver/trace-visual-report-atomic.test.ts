@@ -44,7 +44,7 @@ describe('visual trace report atomic artifacts', () => {
       }),
       JSON.stringify({
         api_version: 'careerdeepseek.artifact.v1alpha1',
-        artifact_id: 'action_click_text_atomic_2',
+        artifact_id: 'action_click_target_atomic_2',
         span_id: 'atomic_2_click_text',
         role: 'action-result',
         mime_type: 'application/json',
@@ -67,7 +67,7 @@ describe('visual trace report atomic artifacts', () => {
     })
     expect(report.actions).toHaveLength(1)
     expect(report.actions[0]).toMatchObject({
-      actionType: 'clickText',
+      actionType: 'clickTarget',
       clickPoint: { x: 117.5, y: 223 },
       knownLimits: ['action_limit'],
     })

@@ -49,6 +49,26 @@ export function checkSafetyGate(
     })
   }
 
+  const leasedWindowForeground = chromeForeground
+    && chromeContext.frontmostWindowNumber === chromeContext.window.windowNumber
+    && chromeContext.frontmostWindowOwnerPid === chromeContext.window.ownerPid
+  if (!leasedWindowForeground) {
+    failures.push({
+      code: 'leased_window_not_foreground',
+      detail: `Managed Chrome window ${chromeContext.window.windowNumber} must be foreground; current foreground window: ${chromeContext.frontmostWindowNumber ?? 'unknown'}`,
+      observed: {
+        windowNumber: chromeContext.frontmostWindowNumber,
+        ownerPid: chromeContext.frontmostWindowOwnerPid,
+        title: chromeContext.frontmostWindowTitle,
+      },
+      expected: {
+        windowNumber: chromeContext.window.windowNumber,
+        ownerPid: chromeContext.window.ownerPid,
+        title: chromeContext.window.title,
+      },
+    })
+  }
+
   const hardStopSignals = detectHardStopSignals(visibleText)
   if (hardStopSignals.length > 0) {
     failures.push({
@@ -63,6 +83,7 @@ export function checkSafetyGate(
     checks: {
       profile_verified: profileVerified,
       chrome_foreground: chromeForeground,
+      leased_window_foreground: leasedWindowForeground,
       no_hard_stop_signal: hardStopSignals.length === 0,
     },
     failures,

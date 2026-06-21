@@ -1,13 +1,16 @@
 import type { ComputerUseConfig } from '../config.js'
-import type { AXNode } from '../types.js'
+import type { AXSnapshot, Bounds, ChromeDomObservation } from '../types.js'
 import { unlink } from 'node:fs/promises'
 import type {
   AtomicClickResult,
+  AtomicClickTargetKind,
+  AtomicCrossSourceAudit,
   AtomicFindResult,
   AtomicMatch,
   AtomicKeyResult,
-  AtomicRowsResult,
   AtomicScrollRegionResult,
+  AtomicTargetCandidate,
+  AtomicTargetHint,
   AtomicTypeTextResult,
   AtomicWaitForTextResult,
 } from './atomic-types.js'
@@ -15,11 +18,11 @@ import type {
   ArtifactRef,
   ChromeContextSnapshot,
   ChromeWindowCapture,
-  OcrRowEvidence,
   OcrTextSnapshot,
+  SurfaceNode,
 } from './types.js'
 import { captureAXTree } from '../ax-tree.js'
-import { executeAXQueryAction } from '../ax-actions.js'
+import { captureChromeDom } from '../chrome-dom.js'
 import {
   executeMoveAndClick,
   executePressKeys,
@@ -27,9 +30,10 @@ import {
   executeTypeText,
 } from '../macos-actions.js'
 import { captureChromeWindow } from './capture.js'
-import { produceOcrRows, recognizeTextInImage } from './ocr.js'
-import { centerOf, projectPixelBoxToLogical, projectPixelBoxToLogicalMatch, projectPixelPointToLogical } from './atomic-recognition.js'
+import { recognizeTextInImage } from './ocr.js'
+import { auditSurfaceNodes, centerOf, normalizeBoxToWindow, projectPixelBoxToLogicalMatch, relatedNodesForBox } from './atomic-recognition.js'
 import { safeErrorMessage, uniqueStrings } from './shared.js'
+import { normalizeToSurfaceNodes } from './surface-node.js'
 
 interface AtomicTraceSink {
   startSpan?: (spanId: string, parentSpanId: string | undefined, name: string) => unknown
@@ -68,14 +72,8 @@ export interface LiveMacOSChromeAtomicCommandInput {
 export interface MacOSChromeAtomicCommands {
   findText: (input: { query: string }) => Promise<AtomicFindResult>
   waitForText: (input: { query: string, timeoutMs?: number, pollIntervalMs?: number }) => Promise<AtomicWaitForTextResult>
-  clickText: (input: { query: string, matchIndex?: number, anchorOffsetX?: number, anchorOffsetY?: number }) => Promise<AtomicClickResult>
-  findRows: (input: { query?: string }) => Promise<AtomicRowsResult>
-  clickRow: (input: { query?: string, rowIndex: number }) => Promise<AtomicClickResult>
-  focusText: (input: { query: string }) => Promise<AtomicClickResult>
-  axFocusText: (input: { query: string }) => Promise<AtomicClickResult>
-  pressButton: (input: { query: string }) => Promise<AtomicClickResult>
-  axPressButton: (input: { query: string }) => Promise<AtomicClickResult>
-  typeText: (input: { text: string, submitKey?: string }) => Promise<AtomicTypeTextResult>
+  clickTarget: (input: { query: string, kind: AtomicClickTargetKind, hint?: AtomicTargetHint }) => Promise<AtomicClickResult>
+  typeInput: (input: { query: string, text: string, submitKey?: string, hint?: AtomicTargetHint }) => Promise<AtomicTypeTextResult>
   key: (input: { key: string, modifiers?: string[] }) => Promise<AtomicKeyResult>
   scrollRegion: (input: {
     direction?: string
@@ -94,6 +92,10 @@ interface CapturedWindowAtomicContext {
 interface AtomicOcrContext extends CapturedWindowAtomicContext {
   ocr: OcrTextSnapshot
   matches: AtomicMatch[]
+  nodes?: SurfaceNode[]
+  audit?: AtomicCrossSourceAudit
+  axSnapshot?: AXSnapshot
+  domObservation?: ChromeDomObservation | null
   knownLimits: string[]
 }
 
@@ -107,13 +109,23 @@ export type MacOSChromeOperationResponse
   = | AtomicFindResult
     | AtomicWaitForTextResult
     | AtomicClickResult
-    | AtomicRowsResult
     | AtomicTypeTextResult
     | AtomicKeyResult
     | AtomicScrollRegionResult
 
-const TEXT_INPUT_AX_ROLES = new Set(['AXTextField', 'AXTextArea', 'AXComboBox', 'AXSearchField'])
-const BUTTON_AX_ROLES = new Set(['AXButton', 'AXPopUpButton', 'AXMenuButton', 'AXMenuItem', 'AXLink'])
+const INPUT_NODE_KINDS = new Set(['ax_textfield', 'ax_textarea', 'ax_combobox', 'dom_textbox', 'dom_searchbox', 'dom_combobox'])
+const STATIC_TEXT_NODE_KINDS = new Set(['ocr_text', 'ocr_row', 'ax_static_text', 'dom_text', 'dom_heading', 'dom_listitem'])
+const INTERACTIVE_AX_KINDS = new Set([
+  'ax_button',
+  'ax_link',
+  'ax_menu_item',
+  'ax_menubutton',
+  'ax_checkbox',
+  'ax_radiobutton',
+  'ax_popupbutton',
+])
+const ACTIONABLE_DOM_KINDS = new Set(['dom_button', 'dom_link', 'dom_menuitem'])
+const CLICK_TARGET_KINDS = new Set<AtomicClickTargetKind>(['text', 'button', 'link', 'menuitem', 'any'])
 
 export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands {
   readonly #config: ComputerUseConfig
@@ -140,13 +152,16 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
   }
 
   async findText(input: { query: string }): Promise<AtomicFindResult> {
-    const ocr = await this.#captureAndRecognizeText(input.query, 'find-text')
+    const ocr = await this.#captureAndRecognizeText(input.query, 'find-text', { enrich: true })
+    const matches = surfaceNodeMatches(input.query, ocr.nodes ?? [], ocr.audit, ocr.context.window.bounds)
     return {
-      found: ocr.matches.length > 0,
+      found: matches.length > 0,
       recognitionId: this.#recognitionId('text'),
-      matchCount: ocr.matches.length,
-      best: ocr.matches[0],
-      matches: ocr.matches,
+      matchCount: matches.length,
+      best: matches[0],
+      matches,
+      nodes: ocr.nodes,
+      audit: ocr.audit,
       evidence: ocr.evidence,
       knownLimits: ocr.knownLimits,
     }
@@ -165,20 +180,23 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
 
     while (true) {
       pollCount += 1
-      const ocr = await this.#captureAndRecognizeText(input.query, `wait-text-${pollCount}`)
+      const ocr = await this.#captureAndRecognizeText(input.query, `wait-text-${pollCount}`, { enrich: false })
       const elapsedMs = Date.now() - startedAt
       const timedOut = elapsedMs >= timeoutMs
       if (ocr.matches.length > 0 || timedOut) {
         await removeIfPresent(previousScreenshotPath)
+        const enriched = await this.#enrichOcrContext(ocr)
         return {
-          found: ocr.matches.length > 0,
+          found: enriched.matches.length > 0,
           query: input.query,
           elapsedMs,
           pollCount,
-          best: ocr.matches[0],
-          matches: ocr.matches.length > 0 ? ocr.matches : [],
-          evidence: ocr.evidence,
-          knownLimits: ocr.knownLimits,
+          best: enriched.matches[0],
+          matches: enriched.matches.length > 0 ? enriched.matches : [],
+          nodes: enriched.nodes,
+          audit: enriched.audit,
+          evidence: enriched.evidence,
+          knownLimits: uniqueStrings(['wait_for_text_final_enrichment_only', ...enriched.knownLimits]),
         }
       }
 
@@ -188,115 +206,72 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     }
   }
 
-  async clickText(input: {
+  async clickTarget(input: {
     query: string
-    matchIndex?: number
-    anchorOffsetX?: number
-    anchorOffsetY?: number
+    kind: AtomicClickTargetKind
+    hint?: AtomicTargetHint
   }): Promise<AtomicClickResult> {
-    const ocr = await this.#captureAndRecognizeText(input.query, 'click-text')
-    const matchIndex = input.matchIndex ?? 0
-    const rawMatch = ocr.ocr.matches[matchIndex]
-    const clicked = ocr.matches[matchIndex]
-    if (!rawMatch || !clicked)
-      throw atomicError(`No OCR text match at index ${matchIndex} for query ${input.query}.`, 'recognition_not_found', ocr.evidence)
-
-    const anchorOffset = {
-      x: input.anchorOffsetX ?? 0,
-      y: input.anchorOffsetY ?? 0,
-    }
-    const pixelPoint = {
-      x: rawMatch.bounds.x + rawMatch.bounds.width / 2 + anchorOffset.x,
-      y: rawMatch.bounds.y + rawMatch.bounds.height / 2 + anchorOffset.y,
-    }
-    const logicalPoint = projectPixelPointToLogical(pixelPoint, ocr.capture.contract)
-    if (!pointInsideBounds(logicalPoint, ocr.context.window.bounds))
-      throw atomicError('Resolved OCR click point is outside the managed Chrome window.', 'target_outside_window', ocr.evidence)
-
-    await this.#clickLogicalPoint(logicalPoint, ocr.evidence)
-    const clickedWithPoint = { ...clicked, logicalPoint }
-
-    const actionRef = this.#recordJsonArtifact(ocr.spanId, `action_click_text_${ocr.spanId}`, 'action-result', {
+    if (!CLICK_TARGET_KINDS.has(input.kind))
+      throw Object.assign(new Error(`Unsupported clickTarget kind ${input.kind}.`), { code: 'invalid_kind' })
+    const observed = await this.#captureAndRecognizeText(input.query, 'click-target', { enrich: true })
+    const resolved = resolveWithEvidence(() => resolveClickTarget({
       query: input.query,
-      match_index: matchIndex,
-      clicked: clickedWithPoint,
+      kind: input.kind,
+      hint: input.hint,
+      nodes: observed.nodes ?? [],
+      windowBounds: observed.context.window.bounds,
+      evidence: observed.evidence,
+    }), observed.evidence)
+    const selected = resolved.selected
+    await this.#clickLogicalPoint(selected.match.logicalPoint, observed.evidence)
+
+    const actionRef = this.#recordJsonArtifact(observed.spanId, `action_click_target_${observed.spanId}`, 'action-result', {
+      query: input.query,
+      kind: input.kind,
+      hint: input.hint ?? null,
+      clicked: selected,
     })
 
     return {
-      clicked: { ...clickedWithPoint, anchorOffset },
-      evidence: compactArtifactRefs([...ocr.evidence, actionRef]),
-      knownLimits: ocr.knownLimits,
+      clicked: { ...selected.match, anchorOffset: { x: 0, y: 0 } },
+      candidates: resolved.candidates,
+      evidence: compactArtifactRefs([...observed.evidence, actionRef]),
+      knownLimits: uniqueStrings([...observed.knownLimits, ...resolved.knownLimits]),
     }
   }
 
-  async findRows(input: { query?: string }): Promise<AtomicRowsResult> {
-    const rows = await this.#captureAndRecognizeRows(input.query, 'find-rows')
-    return {
-      found: rows.matches.length > 0,
-      recognitionId: this.#recognitionId('rows'),
-      rowCount: rows.matches.length,
-      rows: rows.matches,
-      evidence: rows.evidence,
-      knownLimits: rows.knownLimits,
-    }
-  }
-
-  async clickRow(input: { query?: string, rowIndex: number }): Promise<AtomicClickResult> {
-    const rows = await this.#captureAndRecognizeRows(input.query, 'click-row')
-    const index = Math.max(1, input.rowIndex) - 1
-    const matched = rows.matches[index]
-    if (!matched)
-      throw atomicError(`No OCR row at 1-based index ${input.rowIndex}.`, 'recognition_not_found', rows.evidence)
-
-    await this.#clickLogicalPoint(matched.logicalPoint, rows.evidence)
-    const actionRef = this.#recordJsonArtifact(rows.spanId, `action_click_row_${rows.spanId}`, 'action-result', {
-      query: input.query ?? null,
-      row_index: input.rowIndex,
-      clicked: matched,
-    })
-    return {
-      clicked: { ...matched, anchorOffset: { x: 0, y: 0 } },
-      evidence: compactArtifactRefs([...rows.evidence, actionRef]),
-      knownLimits: rows.knownLimits,
-    }
-  }
-
-  async focusText(input: { query: string }): Promise<AtomicClickResult> {
-    return this.#pointerAXAction(input.query, TEXT_INPUT_AX_ROLES, 'focus-text')
-  }
-
-  async axFocusText(input: { query: string }): Promise<AtomicClickResult> {
-    return this.#axAttributeAction(input.query, [...TEXT_INPUT_AX_ROLES], 'focus', 'ax-focus-text')
-  }
-
-  async pressButton(input: { query: string }): Promise<AtomicClickResult> {
-    return this.#pointerAXAction(input.query, BUTTON_AX_ROLES, 'press-button')
-  }
-
-  async axPressButton(input: { query: string }): Promise<AtomicClickResult> {
-    return this.#axAttributeAction(input.query, [...BUTTON_AX_ROLES], 'press', 'ax-press-button')
-  }
-
-  async typeText(input: { text: string, submitKey?: string }): Promise<AtomicTypeTextResult> {
-    await this.#resolveChromeContext()
-    const spanId = this.#startSpan('type-text')
+  async typeInput(input: { query: string, text: string, submitKey?: string, hint?: AtomicTargetHint }): Promise<AtomicTypeTextResult> {
+    const observed = await this.#captureAndRecognizeText(input.query, 'type-input', { enrich: true })
+    const resolved = resolveWithEvidence(() => resolveTypeInputTarget({
+      query: input.query,
+      hint: input.hint,
+      nodes: observed.nodes ?? [],
+      windowBounds: observed.context.window.bounds,
+      evidence: observed.evidence,
+    }), observed.evidence)
+    await this.#clickLogicalPoint(resolved.selected.match.logicalPoint, observed.evidence)
+    await executePressKeys(this.#config, { keys: ['a'], modifiers: ['command'] })
     await executeTypeText(this.#config, { pointerTrace: [], text: input.text })
     if (input.submitKey)
       await executePressKeys(this.#config, { keys: [input.submitKey], modifiers: [] })
-    const evidence = compactArtifactRefs([
-      this.#recordJsonArtifact(spanId, `action_type_text_${spanId}`, 'action-result', {
-        text_length: input.text.length,
-        submit_key: input.submitKey ?? null,
-      }),
-    ])
-    this.#endSpan(spanId, 'ok', 'typed text')
+
+    const actionRef = this.#recordJsonArtifact(observed.spanId, `action_type_input_${observed.spanId}`, 'action-result', {
+      query: input.query,
+      target: resolved.selected,
+      input_mode: 'replace',
+      text_length: input.text.length,
+      submit_key: input.submitKey ?? null,
+    })
     return {
       typed: {
         textLength: input.text.length,
         submitKey: input.submitKey ?? null,
+        target: resolved.selected.match,
+        inputMode: 'replace',
       },
-      evidence,
-      knownLimits: ['type_text_active_control_only'],
+      candidates: resolved.candidates,
+      evidence: compactArtifactRefs([...observed.evidence, actionRef]),
+      knownLimits: uniqueStrings([...observed.knownLimits, ...resolved.knownLimits]),
     }
   }
 
@@ -390,7 +365,11 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     return { context, capture, spanId, evidence }
   }
 
-  async #captureAndRecognizeText(query: string, label: string): Promise<AtomicOcrContext> {
+  async #captureAndRecognizeText(
+    query: string,
+    label: string,
+    options: { enrich: boolean },
+  ): Promise<AtomicOcrContext> {
     const captured = await this.#captureWindow(label)
     const ocr = await recognizeTextInImage(this.#config, {
       imagePath: captured.capture.screenshot.path,
@@ -410,119 +389,67 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       }))
 
     this.#endSpan(captured.spanId, 'ok', `recognized ${matches.length} text match(es)`)
-    return {
+    const context: AtomicOcrContext = {
       ...captured,
       ocr,
       matches,
       evidence,
       knownLimits: ocr.knownLimits ?? [],
     }
+    return options.enrich ? await this.#enrichOcrContext(context) : context
   }
 
-  async #captureAndRecognizeRows(query: string | undefined, label: string): Promise<AtomicOcrContext> {
-    const captured = await this.#captureWindow(label)
-    const ocr = await recognizeTextInImage(this.#config, {
-      imagePath: captured.capture.screenshot.path,
-      query: '',
-    })
-    const rows = await produceOcrRows({ textSnapshot: ocr })
-    const normalizedQuery = query?.toLowerCase()
-    const rowMatches = rows.rows
-      .filter(row => !normalizedQuery || rowText(row).toLowerCase().includes(normalizedQuery))
-      .map(row => rowToAtomicMatch(row, captured.capture))
-    const rowRef = this.#recordJsonArtifact(captured.spanId, `ocr_rows_${captured.capture.snapshotId}`, 'ocr-rows', rows)
-    const evidence = compactArtifactRefs([...captured.evidence, rowRef])
-    this.#endSpan(captured.spanId, 'ok', `recognized ${rowMatches.length} row(s)`)
-    return {
-      ...captured,
-      ocr,
-      matches: rowMatches,
-      evidence,
-      knownLimits: uniqueStrings([
-        ...(ocr.knownLimits ?? []),
-        ...rows.knownLimits,
-        'row_detection_uses_cds_ocr_text_grouping',
-      ]),
-    }
-  }
-
-  async #pointerAXAction(
-    query: string,
-    roles: ReadonlySet<string>,
-    label: string,
-  ): Promise<AtomicClickResult> {
-    const context = await this.#resolveChromeContext()
-    const spanId = this.#startSpan(label)
-    const snapshot = await captureAXTree(this.#config, {
-      pid: context.window.ownerPid,
-      maxDepth: 15,
-      maxNodes: 3000,
-    })
-    const evidence = compactArtifactRefs([
-      this.#recordJsonArtifact(spanId, `ax_tree_${spanId}`, 'ax-tree', snapshot),
+  async #enrichOcrContext(context: AtomicOcrContext): Promise<AtomicOcrContext> {
+    const [axResult, domResult] = await Promise.allSettled([
+      captureAXTree(this.#config, {
+        pid: context.context.window.ownerPid,
+        maxDepth: 15,
+        maxNodes: 3000,
+      }),
+      captureChromeDom(this.#config, chromeDomTargetFromWindow(context.context.window)),
     ])
-    const node = findBestAXNodeForAtomicAction(snapshot.root, query, roles, context.window.bounds)
-    if (!node?.bounds)
-      throw atomicError(`No matching AX node found for ${query}.`, 'recognition_not_found', evidence)
-
-    const match = axNodeToAtomicMatch(node, query, label)
-    await this.#clickLogicalPoint(match.logicalPoint, evidence)
-    const actionRef = this.#recordJsonArtifact(spanId, `action_${sanitizeId(label)}_${spanId}`, 'action-result', {
-      query,
-      roles: [...roles],
-      clicked: match,
+    const axSnapshot = axResult.status === 'fulfilled' ? axResult.value : undefined
+    const domObservation = domResult.status === 'fulfilled' ? domResult.value : null
+    const axRef = axSnapshot
+      ? this.#recordJsonArtifact(context.spanId, `ax_tree_${context.spanId}`, 'ax-tree', axSnapshot)
+      : undefined
+    const domRef = domObservation
+      ? this.#recordJsonArtifact(context.spanId, `chrome_dom_${context.spanId}`, 'chrome-dom', domObservation)
+      : undefined
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: context.ocr.matches,
+      axSnapshot,
+      domObservation: domObservation ?? undefined,
+      contract: context.capture.contract,
+      runId: this.#runId,
+      spanId: context.spanId,
+      viewportBounds: context.context.window.bounds,
+      captureArtifact: context.evidence.find(ref => ref.artifact_id.startsWith('screenshot_')),
+      captureContractArtifact: context.evidence.find(ref => ref.artifact_id.startsWith('capture_contract_')),
     })
-    this.#endSpan(spanId, 'ok', `${label} completed`)
-    return {
-      clicked: { ...match, anchorOffset: { x: 0, y: 0 } },
-      evidence: compactArtifactRefs([...evidence, actionRef]),
-      knownLimits: ['ax_capture_once'],
-    }
-  }
-
-  async #axAttributeAction(
-    query: string,
-    roles: string[],
-    action: 'focus' | 'press',
-    label: string,
-  ): Promise<AtomicClickResult> {
-    const context = await this.#resolveChromeContext()
-    const spanId = this.#startSpan(label)
-    const result = await executeAXQueryAction(this.#config, {
-      pid: context.window.ownerPid,
-      query,
-      roles,
-      action,
-      actionName: 'AXPress',
-      windowBounds: context.window.bounds,
-    }).catch((error) => {
-      const code = action === 'press' ? 'ax_press_unavailable' : 'ax_focus_unavailable'
-      throw Object.assign(new Error(safeErrorMessage(error)), { code })
-    })
-    const box = result.bounds ?? { x: 0, y: 0, width: 0, height: 0 }
-    const match: AtomicMatch = {
-      kind: result.role,
-      text: result.text || query,
-      box,
-      confidence: 1,
-      logicalPoint: centerOf(box),
-      matchIndex: 0,
+    const audit = auditSurfaceNodes(nodes)
+    const matches = context.matches.map(match => ({
+      ...match,
       detail: {
-        source: 'ax',
-        action: result.action,
-        focusedBefore: result.focusedBefore,
+        ...match.detail,
+        relatedNodes: relatedNodesForBox(nodes, match.box),
+        crossSourceAudit: audit,
       },
-    }
-    const evidence = compactArtifactRefs([
-      this.#recordJsonArtifact(spanId, `ax_action_${spanId}`, 'ax-action', result),
-    ])
-    this.#endSpan(spanId, 'ok', `${label} completed`)
+    }))
     return {
-      clicked: { ...match, anchorOffset: { x: 0, y: 0 } },
-      evidence,
-      knownLimits: action === 'press'
-        ? ['ax_press_no_pointer_fallback']
-        : ['ax_focus_attribute_no_pointer_click'],
+      ...context,
+      matches,
+      nodes,
+      audit,
+      axSnapshot,
+      domObservation,
+      evidence: compactArtifactRefs([...context.evidence, axRef, domRef]),
+      knownLimits: uniqueStrings([
+        ...context.knownLimits,
+        ...(axResult.status === 'rejected' ? ['ax_tree_capture_unavailable_for_enrichment'] : []),
+        ...(domResult.status === 'rejected' || domObservation === null ? ['chrome_dom_capture_unavailable_for_enrichment'] : []),
+        ...audit.knownLimits,
+      ]),
     }
   }
 
@@ -608,34 +535,18 @@ export async function invokeMacOSChromeOperation(
         timeoutMs: optionalNumberInput(call, 'timeoutMs'),
         pollIntervalMs: optionalNumberInput(call, 'pollIntervalMs'),
       })
-    case 'clickText':
-      return commands.clickText({
+    case 'clickTarget':
+      return commands.clickTarget({
         query: stringInput(call, 'query'),
-        matchIndex: optionalNumberInput(call, 'matchIndex'),
-        anchorOffsetX: optionalNumberInput(call, 'anchorOffsetX'),
-        anchorOffsetY: optionalNumberInput(call, 'anchorOffsetY'),
+        kind: clickTargetKindInput(call, 'kind'),
+        hint: optionalTargetHintInput(call, 'hint'),
       })
-    case 'findRows': {
-      const query = optionalStringInput(call, 'query')
-      return commands.findRows(query === undefined ? {} : { query })
-    }
-    case 'clickRow':
-      return commands.clickRow({
-        query: optionalStringInput(call, 'query'),
-        rowIndex: numberInput(call, 'rowIndex'),
-      })
-    case 'focusText':
-      return commands.focusText({ query: stringInput(call, 'query') })
-    case 'axFocusText':
-      return commands.axFocusText({ query: stringInput(call, 'query') })
-    case 'pressButton':
-      return commands.pressButton({ query: stringInput(call, 'query') })
-    case 'axPressButton':
-      return commands.axPressButton({ query: stringInput(call, 'query') })
-    case 'typeTextAtomic':
-      return commands.typeText({
+    case 'typeInput':
+      return commands.typeInput({
+        query: stringInput(call, 'query'),
         text: stringInput(call, 'text'),
         submitKey: optionalStringInput(call, 'submitKey'),
+        hint: optionalTargetHintInput(call, 'hint'),
       })
     case 'key':
       return commands.key({
@@ -657,13 +568,6 @@ function stringInput(call: MacOSChromeOperationCall, key: string): string {
   const value = call.inputs[key]
   if (typeof value !== 'string')
     throw Object.assign(new Error(`${call.commandId} operation input ${key} must be a string.`), { code: `invalid_${key}` })
-  return value
-}
-
-function numberInput(call: MacOSChromeOperationCall, key: string): number {
-  const value = call.inputs[key]
-  if (typeof value !== 'number')
-    throw Object.assign(new Error(`${call.commandId} operation input ${key} must be a number.`), { code: `invalid_${key}` })
   return value
 }
 
@@ -716,80 +620,316 @@ function isAtomicRegionInput(value: unknown): value is { left: number, top: numb
     })
 }
 
-function rowToAtomicMatch(row: OcrRowEvidence, capture: ChromeWindowCapture): AtomicMatch {
-  const box = projectPixelBoxToLogical(row.bounds, capture.contract)
-  return {
-    kind: 'ocr_row',
-    text: rowText(row),
-    box,
-    confidence: row.confidence ?? 0,
-    logicalPoint: centerOf(box),
-    matchIndex: row.rowIndex,
-    detail: {
-      source: 'ocr_row',
-      rowIndex: row.rowIndex,
-      rawPixelBox: row.bounds,
-      fragments: row.textFragments,
-    },
-  }
-}
-
-function rowText(row: OcrRowEvidence): string {
-  return row.textFragments.map(fragment => fragment.text).join(' ').trim()
-}
-
-export function findBestAXNodeForAtomicAction(
-  root: AXNode,
-  query: string,
-  roles: ReadonlySet<string>,
-  windowBounds: { x: number, y: number, width: number, height: number },
-): AXNode | undefined {
-  const normalizedQuery = query.toLowerCase()
-  const matches: AXNode[] = []
-  const walk = (node: AXNode): void => {
-    if (node.bounds
-      && roles.has(node.role)
-      && pointInsideBounds(centerOf(node.bounds), windowBounds)
-      && axNodeText(node).toLowerCase().includes(normalizedQuery)) {
-      matches.push(node)
-    }
-    for (const child of node.children)
-      walk(child)
-  }
-  walk(root)
-  return matches
-    .sort((a, b) => (a.bounds?.y ?? 0) - (b.bounds?.y ?? 0) || (a.bounds?.x ?? 0) - (b.bounds?.x ?? 0))[0]
-}
-
-function axNodeToAtomicMatch(node: AXNode, query: string, source: string): AtomicMatch {
-  const box = node.bounds ?? { x: 0, y: 0, width: 0, height: 0 }
-  return {
-    kind: node.role,
-    text: axNodeText(node) || query,
-    box,
-    confidence: 1,
-    logicalPoint: centerOf(box),
-    matchIndex: 0,
-    detail: {
-      source,
-      uid: node.uid,
-      role: node.role,
-      focused: node.focused,
-    },
-  }
-}
-
-function axNodeText(node: AXNode): string {
-  return [node.title, node.value, node.description]
-    .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    .join(' ')
-}
-
 function pointInsideBounds(point: { x: number, y: number }, bounds: { x: number, y: number, width: number, height: number }): boolean {
   return point.x >= bounds.x
     && point.x <= bounds.x + bounds.width
     && point.y >= bounds.y
     && point.y <= bounds.y + bounds.height
+}
+
+function clickTargetKindInput(call: MacOSChromeOperationCall, key: string): AtomicClickTargetKind {
+  const value = call.inputs[key]
+  if (value === 'text' || value === 'button' || value === 'link' || value === 'menuitem' || value === 'any')
+    return value
+  throw Object.assign(new Error(`${call.commandId} operation input ${key} must be text, button, link, menuitem, or any.`), { code: `invalid_${key}` })
+}
+
+function optionalTargetHintInput(call: MacOSChromeOperationCall, key: string): AtomicTargetHint | undefined {
+  const value = call.inputs[key]
+  if (value === undefined)
+    return undefined
+  if (!isAtomicRegionInput(value))
+    throw Object.assign(new Error(`${call.commandId} operation input ${key} must be a normalized hint object.`), { code: `invalid_${key}` })
+  return value
+}
+
+function resolveClickTarget(input: {
+  query: string
+  kind: AtomicClickTargetKind
+  hint?: AtomicTargetHint
+  nodes: SurfaceNode[]
+  windowBounds: Bounds
+  evidence: ArtifactRef[]
+}): { selected: { match: AtomicMatch, candidate: AtomicTargetCandidate }, candidates: AtomicTargetCandidate[], knownLimits: string[] } {
+  const candidates = buildTargetCandidates(input.nodes, input.windowBounds, input.evidence)
+    .filter(candidate => candidateLabelMatches(candidate, input.query))
+    .filter(candidate => clickKindMatches(candidate, input.kind))
+    .filter(candidate => input.hint ? hintCompatible(candidate.normalizedBox, input.hint) : true)
+  return selectCandidate(candidates, input.hint, input.hint ? 'stale_target' : 'ambiguous_target', {
+    useSourceTierRanking: input.kind === 'any',
+  })
+}
+
+function resolveTypeInputTarget(input: {
+  query: string
+  hint?: AtomicTargetHint
+  nodes: SurfaceNode[]
+  windowBounds: Bounds
+  evidence: ArtifactRef[]
+}): { selected: { match: AtomicMatch, candidate: AtomicTargetCandidate }, candidates: AtomicTargetCandidate[], knownLimits: string[] } {
+  const candidates = buildTargetCandidates(input.nodes, input.windowBounds, input.evidence)
+    .filter(candidate => candidate.inputCapable)
+    .filter(candidate => candidateLabelMatches(candidate, input.query))
+    .filter(candidate => input.hint ? hintCompatible(candidate.normalizedBox, input.hint) : true)
+  return selectCandidate(candidates, input.hint, input.hint ? 'stale_target' : 'ambiguous_target', {
+    useSourceTierRanking: false,
+  })
+}
+
+function selectCandidate(
+  candidates: AtomicTargetCandidate[],
+  hint: AtomicTargetHint | undefined,
+  emptyCode: 'stale_target' | 'ambiguous_target',
+  options: { useSourceTierRanking: boolean },
+): { selected: { match: AtomicMatch, candidate: AtomicTargetCandidate }, candidates: AtomicTargetCandidate[], knownLimits: string[] } {
+  if (candidates.length === 0)
+    throw Object.assign(new Error(hint ? 'No fresh candidate matched the supplied hint.' : 'No matching target candidate found.'), { code: emptyCode, candidates })
+
+  const sorted = sortCandidates(candidates, hint, options.useSourceTierRanking)
+  if (!hint) {
+    const selectable = options.useSourceTierRanking
+      ? sorted.filter(candidate => candidate.sourceTier === sorted[0].sourceTier)
+      : sorted
+    if (selectable.length !== 1) {
+      const message = options.useSourceTierRanking
+        ? 'Multiple fresh candidates remain in the highest source tier.'
+        : 'Multiple fresh candidates remain.'
+      throw Object.assign(new Error(message), { code: 'ambiguous_target', candidates: selectable.slice(0, 8) })
+    }
+  }
+
+  const candidate = sorted[0]
+  return {
+    selected: { match: candidateToAtomicMatch(candidate, 0), candidate },
+    candidates: sorted.slice(0, 8),
+    knownLimits: ['foreground_pointer_delivery_only'],
+  }
+}
+
+function buildTargetCandidates(nodes: SurfaceNode[], windowBounds: Bounds, evidence: ArtifactRef[]): AtomicTargetCandidate[] {
+  const filtered = nodes
+    .filter(node => node.label && validBounds(node.box))
+  const groups: SurfaceNode[][] = []
+  for (const node of filtered) {
+    const group = groups.find(items => items.some(item => sameVisualTarget(item, node)))
+    if (group)
+      group.push(node)
+    else
+      groups.push([node])
+  }
+  return groups.map((group) => {
+    const primary = primaryNodeForGroup(group)
+    return {
+      kind: primary.kind,
+      label: primary.label ?? '',
+      box: primary.box,
+      normalizedBox: normalizeBox(primary.box, windowBounds),
+      sourceTier: sourceTierForGroup(group),
+      sourceSummary: uniqueStrings(group.map(node => `${sourceGroup(node)}:${node.kind}`)),
+      inputCapable: group.some(node => INPUT_NODE_KINDS.has(node.kind)),
+      targetable: group.some(node => findTextMatchableNode(node)),
+      providerScore: Math.max(...group.map(node => node.provider_score ?? 0)),
+      evidenceRefs: evidence,
+      detail: {
+        grouped_node_refs: group.map(node => node.node_ref),
+        grouped_kinds: group.map(node => node.kind),
+      },
+    }
+  })
+}
+
+function clickKindMatches(candidate: AtomicTargetCandidate, kind: AtomicClickTargetKind): boolean {
+  if (candidate.inputCapable)
+    return false
+  switch (kind) {
+    case 'any':
+      return candidate.targetable
+    case 'text':
+      return candidate.kind === 'ocr_text' || candidate.kind === 'ax_static_text' || candidate.kind === 'dom_text'
+    case 'button':
+      return candidate.kind === 'ax_button' || candidate.kind === 'dom_button'
+    case 'link':
+      return candidate.kind === 'ax_link' || candidate.kind === 'dom_link'
+    case 'menuitem':
+      return candidate.kind === 'ax_menu_item' || candidate.kind === 'dom_menuitem'
+  }
+}
+
+function sourceTierForGroup(group: SurfaceNode[]): AtomicTargetCandidate['sourceTier'] {
+  if (group.some(node => INTERACTIVE_AX_KINDS.has(node.kind)))
+    return 'interactive_ax'
+  if (group.some(node => ACTIONABLE_DOM_KINDS.has(node.kind)))
+    return 'actionable_dom'
+  return 'ocr_only'
+}
+
+function primaryNodeForGroup(group: SurfaceNode[]): SurfaceNode {
+  return [...group].sort((a, b) =>
+    nodePrimaryRank(a) - nodePrimaryRank(b)
+    || tierRank(sourceTierForGroup([a])) - tierRank(sourceTierForGroup([b]))
+    || (b.provider_score ?? 0) - (a.provider_score ?? 0))[0]
+}
+
+function nodePrimaryRank(node: SurfaceNode): number {
+  if (INPUT_NODE_KINDS.has(node.kind))
+    return 0
+  if (INTERACTIVE_AX_KINDS.has(node.kind) || ACTIONABLE_DOM_KINDS.has(node.kind))
+    return 1
+  if (STATIC_TEXT_NODE_KINDS.has(node.kind))
+    return 2
+  return 3
+}
+
+function sortCandidates(candidates: AtomicTargetCandidate[], hint: AtomicTargetHint | undefined, useSourceTierRanking: boolean): AtomicTargetCandidate[] {
+  return [...candidates].sort((a, b) =>
+    (useSourceTierRanking ? tierRank(a.sourceTier) - tierRank(b.sourceTier) : 0)
+    || (hint ? hintDistance(a.normalizedBox, hint) - hintDistance(b.normalizedBox, hint) : 0)
+    || (hint ? hintOverlapRatio(b.normalizedBox, hint) - hintOverlapRatio(a.normalizedBox, hint) : 0)
+    || b.providerScore - a.providerScore)
+}
+
+function tierRank(tier: AtomicTargetCandidate['sourceTier']): number {
+  return tier === 'interactive_ax' ? 0 : tier === 'actionable_dom' ? 1 : 2
+}
+
+function candidateToAtomicMatch(candidate: AtomicTargetCandidate, matchIndex: number): AtomicMatch {
+  return {
+    kind: candidate.kind,
+    text: candidate.label,
+    box: candidate.box,
+    normalizedBox: candidate.normalizedBox,
+    confidence: candidate.providerScore,
+    logicalPoint: centerOf(candidate.box),
+    matchIndex,
+    detail: candidate.detail,
+  }
+}
+
+function candidateLabelMatches(candidate: AtomicTargetCandidate, query: string): boolean {
+  return candidate.label.toLowerCase().includes(query.toLowerCase())
+}
+
+function sameVisualTarget(a: SurfaceNode, b: SurfaceNode): boolean {
+  if (!a.label || !b.label || a.label.toLowerCase() !== b.label.toLowerCase())
+    return false
+  return boundsOverlapRatio(a.box, b.box) >= 0.25 || pointInsideBounds(centerOf(a.box), b.box) || pointInsideBounds(centerOf(b.box), a.box)
+}
+
+function surfaceNodeMatches(
+  query: string,
+  nodes: SurfaceNode[],
+  audit: AtomicCrossSourceAudit | undefined,
+  windowBounds: Bounds,
+): AtomicMatch[] {
+  return nodes
+    .filter(node => node.label && validBounds(node.box))
+    .filter(node => findTextMatchableNode(node))
+    .filter(node => node.label!.toLowerCase().includes(query.toLowerCase()))
+    .sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x || (b.provider_score ?? 0) - (a.provider_score ?? 0))
+    .map((node, matchIndex) => ({
+      kind: node.kind,
+      text: node.label ?? '',
+      box: node.box,
+      normalizedBox: normalizeBoxToWindow(node.box, windowBounds),
+      confidence: node.provider_score ?? 0,
+      logicalPoint: centerOf(node.box),
+      matchIndex,
+      detail: {
+        nodeRef: node.node_ref,
+        sourceArtifacts: node.source_artifacts,
+        relatedNodes: relatedNodesForBox(nodes, node.box),
+        crossSourceAudit: audit,
+      },
+    }))
+}
+
+function findTextMatchableNode(node: SurfaceNode): boolean {
+  return STATIC_TEXT_NODE_KINDS.has(node.kind)
+    || INPUT_NODE_KINDS.has(node.kind)
+    || INTERACTIVE_AX_KINDS.has(node.kind)
+    || ACTIONABLE_DOM_KINDS.has(node.kind)
+}
+
+function hintCompatible(box: AtomicTargetHint, hint: AtomicTargetHint): boolean {
+  const expanded = expandHint(hint)
+  const center = { x: (box.left + box.right) / 2, y: (box.top + box.bottom) / 2 }
+  if (center.x >= expanded.left && center.x <= expanded.right && center.y >= expanded.top && center.y <= expanded.bottom)
+    return true
+  return hintOverlapRatio(box, expanded) >= 0.1
+}
+
+function hintDistance(box: AtomicTargetHint, hint: AtomicTargetHint): number {
+  const ax = (box.left + box.right) / 2
+  const ay = (box.top + box.bottom) / 2
+  const bx = (hint.left + hint.right) / 2
+  const by = (hint.top + hint.bottom) / 2
+  return Math.hypot(ax - bx, ay - by)
+}
+
+function expandHint(hint: AtomicTargetHint): AtomicTargetHint {
+  return {
+    left: Math.max(0, hint.left - 0.03),
+    top: Math.max(0, hint.top - 0.03),
+    right: Math.min(1, hint.right + 0.03),
+    bottom: Math.min(1, hint.bottom + 0.03),
+  }
+}
+
+function normalizeBox(box: Bounds, windowBounds: Bounds): AtomicTargetHint {
+  return normalizeBoxToWindow(box, windowBounds)
+}
+
+function sourceGroup(node: SurfaceNode): string {
+  if (node.kind.startsWith('ax_'))
+    return 'ax'
+  if (node.kind.startsWith('dom_'))
+    return 'chrome_dom'
+  if (node.kind.startsWith('ocr_'))
+    return 'ocr_text'
+  return node.recognition_source ?? 'unknown'
+}
+
+function boundsOverlapRatio(a: Bounds, b: Bounds): number {
+  const intersection = intersectionArea(a, b)
+  const smaller = Math.min(a.width * a.height, b.width * b.height)
+  return smaller > 0 ? intersection / smaller : 0
+}
+
+function hintOverlapRatio(a: AtomicTargetHint, b: AtomicTargetHint): number {
+  const left = Math.max(a.left, b.left)
+  const top = Math.max(a.top, b.top)
+  const right = Math.min(a.right, b.right)
+  const bottom = Math.min(a.bottom, b.bottom)
+  const intersection = Math.max(0, right - left) * Math.max(0, bottom - top)
+  const smaller = Math.min((a.right - a.left) * (a.bottom - a.top), (b.right - b.left) * (b.bottom - b.top))
+  return smaller > 0 ? intersection / smaller : 0
+}
+
+function intersectionArea(a: Bounds, b: Bounds): number {
+  const left = Math.max(a.x, b.x)
+  const top = Math.max(a.y, b.y)
+  const right = Math.min(a.x + a.width, b.x + b.width)
+  const bottom = Math.min(a.y + a.height, b.y + b.height)
+  return Math.max(0, right - left) * Math.max(0, bottom - top)
+}
+
+function validBounds(bounds: Bounds): boolean {
+  return Number.isFinite(bounds.x)
+    && Number.isFinite(bounds.y)
+    && Number.isFinite(bounds.width)
+    && Number.isFinite(bounds.height)
+    && bounds.width > 0
+    && bounds.height > 0
+}
+
+function chromeDomTargetFromWindow(window: ChromeContextSnapshot['window']) {
+  return {
+    windowNumber: window.windowNumber,
+    ownerPid: window.ownerPid,
+    ownerBundleId: window.ownerBundleId,
+    title: window.title,
+    bounds: window.bounds,
+  }
 }
 
 export function atomicScrollDelta(direction: string, amount: number): { x: number, y: number } {
@@ -810,6 +950,15 @@ export function atomicScrollDelta(direction: string, amount: number): { x: numbe
 
 function compactArtifactRefs(refs: Array<ArtifactRef | undefined>): ArtifactRef[] {
   return refs.filter((ref): ref is ArtifactRef => ref !== undefined)
+}
+
+function resolveWithEvidence<T>(resolver: () => T, evidence: ArtifactRef[]): T {
+  try {
+    return resolver()
+  }
+  catch (error) {
+    throw atomicError(safeErrorMessage(error), atomicErrorCode(error) ?? 'target_resolution_failed', evidence)
+  }
 }
 
 function atomicError(message: string, code: string, evidence: ArtifactRef[]): Error & { code: string, evidence: ArtifactRef[] } {

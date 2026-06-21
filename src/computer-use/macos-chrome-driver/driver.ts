@@ -26,6 +26,8 @@ import {
 } from '../macos-actions.js'
 import { observeWindows } from '../window-observation.js'
 import { captureChromeWindow } from './capture.js'
+import { foregroundDebugPayload, raiseChromeWindow, verifyChromeWindowForeground } from './chrome-window-foreground.js'
+import type { ChromeWindowForegroundVerification } from './chrome-window-foreground.js'
 import { produceOcrRows, recognizeTextInImage } from './ocr.js'
 import {
   stringifyThrownValue,
@@ -53,11 +55,17 @@ interface ManagedChromeProfileIdentity {
   localStatePath: string
 }
 
+interface ForegroundPreflightResult {
+  observation: WindowObservation
+  verification: ChromeWindowForegroundVerification
+}
+
 const NORMAL_CHROME_MIN_WIDTH = 480
 const NORMAL_CHROME_MIN_HEIGHT = 300
 const WINDOW_MATCH_TOLERANCE = 8
 const MIN_VIEWPORT_WIDTH = 100
 const MIN_VIEWPORT_HEIGHT = 100
+const FOREGROUND_SETTLE_MS = 300
 
 export class MacOSChromeDriver {
   readonly #sessionId: string
@@ -108,7 +116,7 @@ export class MacOSChromeDriver {
       traceSink: this.#traceStore,
       resolveChromeContext: async () => {
         await this.#ensureChromeContextLease()
-        return this.#requireLeasedChromeContext()
+        return this.#requireLeasedChromeContext({ includeTabMetadata: false })
       },
       getLastCursorPosition: () => this.#lastCursorPosition,
       setLastCursorPosition: (position) => {
@@ -292,6 +300,8 @@ export class MacOSChromeDriver {
     const chromeContext = await this.#resolveChromeContext({
       activateIfNeeded: true,
       profileIdentity,
+      ensureForeground: true,
+      includeTabMetadata: false,
     })
     const now = new Date().toISOString()
     this.#chromeContextLease = {
@@ -330,36 +340,31 @@ export class MacOSChromeDriver {
     })
   }
 
-  async #requireLeasedChromeContext(): Promise<ChromeContextSnapshot> {
+  async #requireLeasedChromeContext(options: { includeTabMetadata?: boolean } = {}): Promise<ChromeContextSnapshot> {
     const lease = this.#chromeContextLease
     if (!lease) {
       throw new Error('Chrome context lease has not been established. Run observe() to bootstrap the managed Chrome context.')
     }
 
-    let observation = await observeWindows(this.#config, { limit: 120 })
-    if (!isChromeApp(observation.frontmostAppName) && this.#foregroundPolicy === 'auto_focus_chrome') {
-      await executeOpenApp(this.#config, 'Google Chrome')
-      await sleep(500)
-      observation = await observeWindows(this.#config, { limit: 120 })
-    }
+    const observation = await observeWindows(this.#config, { limit: 120 })
 
     const chromeWindow = findLeasedChromeWindow(observation, lease)
     if (!chromeWindow) {
       throw new Error('Chrome context lease is no longer valid. Run observe() in a new driver session to bootstrap the managed Chrome context again.')
     }
-    if (!isChromeApp(observation.frontmostAppName)) {
-      throw new Error(
-        `Google Chrome must be the foreground app for the active lease; current frontmost app is ${observation.frontmostAppName ?? 'unknown'}.`,
-      )
-    }
 
+    const foreground = await this.#ensureTargetChromeWindowForeground(observation, chromeWindow, lease)
     lease.verifiedAt = new Date().toISOString()
-    return this.#chromeContextFromWindowObservation(observation, chromeWindow, lease)
+    return this.#chromeContextFromWindowObservation(foreground.observation, chromeWindow, lease, foreground.verification, {
+      includeTabMetadata: options.includeTabMetadata ?? true,
+    })
   }
 
   async #resolveChromeContext(options: {
     activateIfNeeded?: boolean
+    ensureForeground?: boolean
     profileIdentity?: ManagedChromeProfileIdentity
+    includeTabMetadata?: boolean
   } = {}): Promise<ChromeContextSnapshot> {
     let observation = await observeWindows(this.#config, { limit: 120 })
     let chromeWindow = await this.#findChromeWindow(observation, options.profileIdentity)
@@ -375,13 +380,106 @@ export class MacOSChromeDriver {
     if (!chromeWindow) {
       throw new Error('No visible Google Chrome window found for macOS Chrome driver.')
     }
-    if (!isChromeApp(observation.frontmostAppName)) {
-      throw new Error(
-        `Google Chrome must be the foreground app; current frontmost app is ${observation.frontmostAppName ?? 'unknown'}.`,
+
+    if (options.ensureForeground ?? true) {
+      const foreground = await this.#ensureTargetChromeWindowForeground(observation, chromeWindow)
+      observation = foreground.observation
+      const verifiedWindow = findChromeWindowByIdentity(observation, chromeWindow)
+      chromeWindow = verifiedWindow ?? chromeWindow
+      return this.#chromeContextFromWindowObservation(observation, chromeWindow, undefined, foreground.verification, {
+        includeTabMetadata: options.includeTabMetadata ?? true,
+      })
+    }
+    else if (!isChromeApp(observation.frontmostAppName)) {
+      throw new Error(`Google Chrome must be the foreground app; current frontmost app is ${observation.frontmostAppName ?? 'unknown'}.`)
+    }
+
+    return this.#chromeContextFromWindowObservation(observation, chromeWindow, undefined, undefined, {
+      includeTabMetadata: options.includeTabMetadata ?? true,
+    })
+  }
+
+  async #ensureTargetChromeWindowForeground(
+    observation: WindowObservation,
+    chromeWindow: WindowDescriptor,
+    lease?: ChromeContextLease,
+  ): Promise<ForegroundPreflightResult> {
+    const initialVerification = await verifyChromeWindowForeground(this.#config, observation, chromeWindow)
+    this.#recordForegroundPreflightEvent('chrome_foreground_preflight_started', chromeWindow, observation, lease, {}, initialVerification)
+
+    if (initialVerification.verified) {
+      this.#recordForegroundPreflightEvent('chrome_foreground_preflight_verified', chromeWindow, observation, lease, {
+        raise_requested: false,
+      }, initialVerification)
+      return { observation, verification: initialVerification }
+    }
+
+    this.#recordForegroundPreflightEvent('chrome_target_window_raise_requested', chromeWindow, observation, lease, {}, initialVerification)
+    try {
+      await raiseChromeWindow(this.#config, chromeWindow)
+    }
+    catch (error) {
+      this.#recordForegroundPreflightEvent('chrome_foreground_preflight_failed', chromeWindow, observation, lease, {
+        raise_requested: true,
+        failure_code: 'chrome_target_window_raise_failed',
+        failure_message: error instanceof Error ? error.message : String(error),
+      }, initialVerification)
+      throw Object.assign(
+        new Error(`Failed to raise managed Chrome window ${requireWindowNumber(chromeWindow)}: ${error instanceof Error ? error.message : String(error)}`),
+        { code: 'chrome_target_window_raise_failed' },
+      )
+    }
+    await sleep(FOREGROUND_SETTLE_MS)
+
+    const afterObservation = await observeWindows(this.#config, { limit: 120 })
+    const afterVerification = await verifyChromeWindowForeground(this.#config, afterObservation, chromeWindow)
+    if (!afterVerification.verified) {
+      this.#recordForegroundPreflightEvent('chrome_foreground_preflight_failed', chromeWindow, afterObservation, lease, {
+        raise_requested: true,
+        failure_code: 'chrome_target_window_not_foreground',
+      }, afterVerification)
+      throw Object.assign(
+        new Error(`Managed Chrome window ${requireWindowNumber(chromeWindow)} was not foreground after AppleScript raise.`),
+        { code: 'chrome_target_window_not_foreground' },
       )
     }
 
-    return this.#chromeContextFromWindowObservation(observation, chromeWindow)
+    this.#recordForegroundPreflightEvent('chrome_target_window_raise_completed', chromeWindow, afterObservation, lease, {
+      raise_requested: true,
+    }, afterVerification)
+    this.#recordForegroundPreflightEvent('chrome_foreground_preflight_verified', chromeWindow, afterObservation, lease, {
+      raise_requested: true,
+    }, afterVerification)
+    return { observation: afterObservation, verification: afterVerification }
+  }
+
+  #recordForegroundPreflightEvent(
+    name: string,
+    chromeWindow: WindowDescriptor,
+    observation: WindowObservation,
+    lease?: ChromeContextLease,
+    extra: Record<string, unknown> = {},
+    verification?: ChromeWindowForegroundVerification,
+  ): void {
+    this.#traceStore?.recordEvent({
+      event_id: `evt_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      span_id: this.#spanId,
+      name,
+      timestamp_millis: Date.now(),
+      attributes: {
+        lease_id: lease?.leaseId,
+        profile_path: lease?.profilePath ?? this.#profileConfig?.profile_path,
+        profile_name: lease?.profileName ?? this.#profileConfig?.profile_name,
+        target_window: chromeWindowEventPayload(chromeWindow),
+        observed_foreground: foregroundDebugPayload(observation),
+        verified: verification?.verified ?? false,
+        foreground_verification_method: verification?.method,
+        auxiliary_window: verification?.auxiliaryWindow,
+        ax_window: verification?.axWindow,
+        ...extra,
+      },
+      artifact_ids: [],
+    })
   }
 
   async #findChromeWindow(
@@ -415,14 +513,42 @@ export class MacOSChromeDriver {
     observation: WindowObservation,
     chromeWindow: WindowDescriptor,
     lease?: ChromeContextLease,
+    foregroundVerification?: ChromeWindowForegroundVerification,
+    options: { includeTabMetadata?: boolean } = {},
   ): Promise<ChromeContextSnapshot> {
     const window = chromeWindowRef(chromeWindow)
-    const tab = await captureChromeDom(this.#config, chromeDomTargetFromWindow(window)).catch(() => null)
+    const includeTabMetadata = options.includeTabMetadata ?? true
+    const tab = includeTabMetadata
+      ? await captureChromeDom(this.#config, chromeDomTargetFromWindow(window)).catch(() => null)
+      : null
+    const resolvedForeground = foregroundVerification?.verified
+      ? {
+          title: window.title,
+          windowNumber: window.windowNumber,
+          ownerPid: window.ownerPid,
+          ownerBundleId: window.ownerBundleId,
+          bounds: window.bounds,
+        }
+      : {
+          title: observation.frontmostWindowTitle,
+          windowNumber: observation.frontmostWindowNumber,
+          ownerPid: observation.frontmostWindowOwnerPid,
+          ownerBundleId: observation.frontmostWindowOwnerBundleId,
+          bounds: observation.frontmostWindowBounds,
+        }
     return {
       running: true,
-      isFrontmost: true,
+      isFrontmost: foregroundVerification?.verified
+        ?? (isChromeApp(observation.frontmostAppName)
+          && observation.frontmostWindowNumber === window.windowNumber
+          && observation.frontmostWindowOwnerPid === window.ownerPid),
       frontmostAppName: observation.frontmostAppName,
       frontmostAppBundleId: observation.frontmostAppBundleId,
+      frontmostWindowTitle: resolvedForeground.title,
+      frontmostWindowNumber: resolvedForeground.windowNumber,
+      frontmostWindowOwnerPid: resolvedForeground.ownerPid,
+      frontmostWindowOwnerBundleId: resolvedForeground.ownerBundleId,
+      frontmostWindowBounds: resolvedForeground.bounds,
       activeTabUrl: tab?.url ?? null,
       activeTabTitle: tab?.title ?? observation.frontmostWindowTitle ?? null,
       profile: {
@@ -538,6 +664,19 @@ function findLeasedChromeWindow(observation: WindowObservation, lease: ChromeCon
   )
 }
 
+function findChromeWindowByIdentity(observation: WindowObservation, target: WindowDescriptor): WindowDescriptor | undefined {
+  const targetWindowNumber = requireWindowNumber(target)
+  return observation.windows.find(window =>
+    window.isOnScreen
+    && isChromeApp(window.appName)
+    && requireWindowNumber(window) === targetWindowNumber
+    && window.ownerPid === target.ownerPid
+    && (!target.ownerBundleId || window.ownerBundleId === target.ownerBundleId)
+    && window.bounds.width >= NORMAL_CHROME_MIN_WIDTH
+    && window.bounds.height >= NORMAL_CHROME_MIN_HEIGHT,
+  )
+}
+
 function chromeWindowRef(window: WindowDescriptor): ChromeWindowRef {
   return {
     id: window.id,
@@ -548,6 +687,18 @@ function chromeWindowRef(window: WindowDescriptor): ChromeWindowRef {
     title: window.title,
     bounds: window.bounds,
     layer: window.layer,
+  }
+}
+
+function chromeWindowEventPayload(window: WindowDescriptor): Record<string, unknown> {
+  return {
+    window_number: requireWindowNumber(window),
+    owner_pid: window.ownerPid,
+    owner_bundle_id: window.ownerBundleId,
+    title: window.title,
+    bounds: window.bounds,
+    layer: window.layer,
+    z_order_index: window.zOrderIndex,
   }
 }
 

@@ -32,6 +32,7 @@ export interface WindowDescriptor {
   bounds: Bounds
   ownerPid: number
   layer: number
+  zOrderIndex?: number
   isOnScreen: boolean
 }
 
@@ -39,6 +40,10 @@ export interface WindowObservation {
   frontmostAppName?: string
   frontmostAppBundleId?: string
   frontmostWindowTitle?: string | null
+  frontmostWindowNumber?: number
+  frontmostWindowOwnerPid?: number
+  frontmostWindowOwnerBundleId?: string
+  frontmostWindowBounds?: Bounds
   windows: WindowDescriptor[]
   observedAt: string
 }
