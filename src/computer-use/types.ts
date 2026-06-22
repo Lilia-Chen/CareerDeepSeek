@@ -116,13 +116,27 @@ export interface ChromeDomElement {
   states: Record<string, unknown>
 }
 
+export interface ChromeDomViewportMetrics {
+  width: number
+  height: number
+  scrollX: number
+  scrollY: number
+  scrollWidth?: number
+  scrollHeight?: number
+  clientWidth?: number
+  clientHeight?: number
+  knownLimits?: string[]
+}
+
 export interface ChromeDomObservation {
   url: string
   title: string
   observedAt: string
+  viewport?: ChromeDomViewportMetrics
   visibleText: string
   elements: ChromeDomElement[]
   signals: string[]
+  knownLimits?: string[]
 }
 
 export type BrowserPageClass

@@ -32,6 +32,27 @@ describe('visual trace report atomic artifacts', () => {
       },
       knownLimits: ['action_limit'],
     })}\n`)
+    writeFileSync(join(traceDir, 'scroll-action.json'), `${JSON.stringify({
+      direction: 'down',
+      amount: 2,
+      logical_point: { x: 500, y: 500 },
+      scroll_boundary_before: {
+        scrollTop: 0,
+        canScrollDown: true,
+        knownLimits: ['before_limit'],
+      },
+      scroll_boundary_after: {
+        scrollTop: 300,
+        canScrollDown: true,
+        knownLimits: ['after_limit'],
+      },
+      scroll_progress: {
+        changed: true,
+        boundaryReached: false,
+        knownLimits: ['progress_limit'],
+      },
+      knownLimits: ['scroll_limit'],
+    })}\n`)
     writeFileSync(join(traceDir, 'artifacts.jsonl'), [
       JSON.stringify({
         api_version: 'careerdeepseek.artifact.v1alpha1',
@@ -51,12 +72,26 @@ describe('visual trace report atomic artifacts', () => {
         path: 'action.json',
         attributes: {},
       }),
+      JSON.stringify({
+        api_version: 'careerdeepseek.artifact.v1alpha1',
+        artifact_id: 'action_scroll_region_atomic_3',
+        span_id: 'atomic_3_scroll_region',
+        role: 'action-result',
+        mime_type: 'application/json',
+        path: 'scroll-action.json',
+        attributes: {},
+      }),
     ].join('\n'))
 
     const result = generateVisualTraceReport({ traceDir })
     const report = JSON.parse(readFileSync(result.jsonPath, 'utf-8')) as {
       recognitions: Array<{ bestText?: string, knownLimits: string[] }>
-      actions: Array<{ actionType?: string, clickPoint?: { x: number, y: number }, knownLimits: string[] }>
+      actions: Array<{
+        actionType?: string
+        clickPoint?: { x: number, y: number }
+        scrollProgress?: { changed?: boolean, boundaryReached?: boolean }
+        knownLimits: string[]
+      }>
       summary: { action_count: number, known_limit_count: number }
     }
 
@@ -65,13 +100,19 @@ describe('visual trace report atomic artifacts', () => {
       bestText: 'LangChain',
       knownLimits: ['ocr_limit'],
     })
-    expect(report.actions).toHaveLength(1)
+    expect(report.actions).toHaveLength(2)
     expect(report.actions[0]).toMatchObject({
       actionType: 'clickTarget',
       clickPoint: { x: 117.5, y: 223 },
       knownLimits: ['action_limit'],
     })
-    expect(report.summary.action_count).toBe(1)
-    expect(report.summary.known_limit_count).toBe(2)
+    expect(report.actions[1]).toMatchObject({
+      actionType: 'scrollRegion',
+      clickPoint: { x: 500, y: 500 },
+      scrollProgress: { changed: true, boundaryReached: false },
+      knownLimits: ['scroll_limit', 'progress_limit', 'before_limit', 'after_limit'],
+    })
+    expect(report.summary.action_count).toBe(2)
+    expect(report.summary.known_limit_count).toBe(6)
   })
 })

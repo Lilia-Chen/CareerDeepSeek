@@ -228,6 +228,7 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
           provider_confidence: element.confidence,
           coordinate_spaces: domCoordinateSpaces(),
           bounds: domBounds(element.bounds, domViewportBounds.bounds, projectedBox, domViewportBounds.source),
+          dom_viewport_metrics: input.domObservation?.viewport,
           center: projectedCenter ? domCenter(element.center, projectedCenter) : undefined,
           source_artifacts: sourceArtifactDetail(input),
           known_limits: knownLimits,

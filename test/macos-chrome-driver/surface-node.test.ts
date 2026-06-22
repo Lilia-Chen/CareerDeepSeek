@@ -39,6 +39,16 @@ describe('surface node normalization', () => {
       url: 'https://example.test',
       title: 'Example',
       observedAt: '2026-06-20T00:00:00.000Z',
+      viewport: {
+        width: 1000,
+        height: 500,
+        scrollX: 0,
+        scrollY: 240,
+        scrollWidth: 1000,
+        scrollHeight: 1800,
+        clientWidth: 1000,
+        clientHeight: 500,
+      },
       visibleText: '',
       signals: [],
       elements: [{
@@ -80,6 +90,11 @@ describe('surface node normalization', () => {
     expect(domButton?.detail.bounds).toMatchObject({
       viewport_offset_logical: { x: 0, y: 200 },
       viewport_offset_source: 'ax_web_area',
+    })
+    expect(domButton?.detail.dom_viewport_metrics).toMatchObject({
+      scrollY: 240,
+      scrollHeight: 1800,
+      clientHeight: 500,
     })
   })
 

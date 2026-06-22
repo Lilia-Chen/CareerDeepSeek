@@ -19,6 +19,7 @@ import type {
   ArtifactRef,
   ChromeContextSnapshot,
   ChromeWindowCapture,
+  ObservationSnapshot,
   OcrTextSnapshot,
   SurfaceNode,
 } from './types.js'
@@ -35,9 +36,11 @@ import { runChromeAppleEventsTabCommand } from './chrome-apple-events.js'
 import { recognizeTextInImage } from './ocr.js'
 import { auditSurfaceNodes, centerOf, normalizeBoxToWindow, projectPixelBoxToLogicalMatch, relatedNodesForBox } from './atomic-recognition.js'
 import { safeErrorMessage, uniqueStrings } from './shared.js'
-import { normalizeToSurfaceNodes } from './surface-node.js'
+import { inferObservationSource, normalizeToSurfaceNodes } from './surface-node.js'
 import type { ChromeWindowRegionMap } from './chrome-window-regions.js'
 import { buildChromeWindowRegionMap, requirePageViewport, viewportOcrRegionRatio } from './chrome-window-regions.js'
+import { buildChromeScrollBoundary, compareChromeScrollBoundaries } from './scroll-boundary.js'
+import type { ChromeScrollBoundary } from './scroll-boundary.js'
 
 interface AtomicTraceSink {
   startSpan?: (spanId: string, parentSpanId: string | undefined, name: string) => unknown
@@ -105,6 +108,7 @@ interface AtomicOcrContext extends CapturedWindowAtomicContext {
   axSnapshot?: AXSnapshot
   regionMap?: ChromeWindowRegionMap
   domObservation?: ChromeDomObservation | null
+  scrollBoundary?: ChromeScrollBoundary
   knownLimits: string[]
 }
 
@@ -173,8 +177,12 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       matches,
       nodes,
       audit: ocr.audit,
+      scrollBoundary: ocr.scrollBoundary,
       evidence: ocr.evidence,
-      knownLimits: ocr.knownLimits,
+      knownLimits: uniqueStrings([
+        ...ocr.knownLimits,
+        ...(matches.length === 0 ? textMissKnownLimits(ocr.scrollBoundary) : []),
+      ]),
     }
   }
 
@@ -213,6 +221,7 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
           matches: enriched.matches.length > 0 ? enriched.matches : [],
           nodes,
           audit: enriched.audit,
+          scrollBoundary: enriched.scrollBoundary,
           evidence: enriched.evidence,
           knownLimits: uniqueStrings(['wait_for_text_final_enrichment_only', ...enriched.knownLimits]),
         }
@@ -324,8 +333,14 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     if (!Number.isFinite(amount) || amount <= 0)
       throw new Error('chrome.scrollRegion amount must be greater than 0.')
     const region = input.region ?? { left: 0, top: 0, right: 1, bottom: 1 }
-    const regionMap = await this.#resolvePageViewportForCommand(context)
-    const viewport = requirePageViewport(regionMap.regionMap)
+    const viewportContext = await this.#resolvePageViewportForCommand(context)
+    const viewport = requirePageViewport(viewportContext.regionMap)
+    const beforeDom = await captureChromeDom(this.#config, chromeDomTargetFromWindow(context.window))
+    const scrollBoundaryBefore = buildChromeScrollBoundary({
+      axSnapshot: viewportContext.axSnapshot,
+      domObservation: beforeDom,
+      regionMap: viewportContext.regionMap,
+    })
     const windowLocalPoint = {
       x: viewport.width * ((region.left + region.right) / 2),
       y: viewport.height * ((region.top + region.bottom) / 2),
@@ -343,7 +358,15 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       settleMs: 250,
     })
 
+    const postObservation = await this.#captureViewportObservation('scroll-region-post', context)
+    const scrollBoundaryAfter = postObservation.scrollBoundary
+    const scrollProgress = compareChromeScrollBoundaries({
+      before: scrollBoundaryBefore,
+      after: scrollBoundaryAfter,
+      direction: direction === 'up' ? 'up' : 'down',
+    })
     const evidence = compactArtifactRefs([
+      ...postObservation.snapshot.evidence,
       this.#recordJsonArtifact(spanId, `action_scroll_region_${spanId}`, 'action-result', {
         direction,
         amount,
@@ -352,6 +375,9 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
         viewport_bounds: viewport,
         logical_point: logicalPoint,
         delta,
+        scroll_boundary_before: scrollBoundaryBefore,
+        scroll_boundary_after: scrollBoundaryAfter,
+        scroll_progress: scrollProgress,
       }),
     ])
     this.#endSpan(spanId, 'ok', 'scrolled region')
@@ -362,8 +388,19 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
         logicalPoint,
         region,
       },
+      scrollBoundaryBefore,
+      scrollBoundaryAfter,
+      scrollProgress,
+      postObservation: postObservation.snapshot,
       evidence,
-      knownLimits: uniqueStrings([...knownLimits, ...regionMap.regionMap.knownLimits]),
+      knownLimits: uniqueStrings([
+        ...knownLimits,
+        ...viewportContext.regionMap.knownLimits,
+        ...scrollBoundaryBefore.knownLimits,
+        ...scrollBoundaryAfter.knownLimits,
+        ...scrollProgress.knownLimits,
+        ...postObservation.snapshot.known_limits,
+      ]),
     }
   }
 
@@ -421,8 +458,8 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     }
   }
 
-  async #captureWindow(label: string): Promise<CapturedWindowAtomicContext> {
-    const context = await this.#resolveChromeContext()
+  async #captureWindow(label: string, resolvedContext?: ChromeContextSnapshot): Promise<CapturedWindowAtomicContext> {
+    const context = resolvedContext ?? await this.#resolveChromeContext()
     const spanId = this.#startSpan(label)
     const snapshotId = `${spanId}_capture`
     const capture = await captureChromeWindow({
@@ -486,6 +523,113 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
         ...appleEventsKnownLimits(appleEvents),
       ]),
     }
+  }
+
+  async #captureViewportObservation(
+    label: string,
+    resolvedContext?: ChromeContextSnapshot,
+  ): Promise<{
+    snapshot: ObservationSnapshot
+    scrollBoundary: ChromeScrollBoundary
+    axSnapshot?: AXSnapshot
+    regionMap: ChromeWindowRegionMap
+    domObservation?: ChromeDomObservation | null
+  }> {
+    const captured = await this.#captureWindow(label, resolvedContext)
+    const [axResult, domResult, ocrResult] = await Promise.allSettled([
+      captureAXTree(this.#config, {
+        pid: captured.context.window.ownerPid,
+        maxDepth: 15,
+        maxNodes: 3000,
+      }),
+      captureChromeDom(this.#config, chromeDomTargetFromWindow(captured.context.window)),
+      recognizeTextInImage(this.#config, {
+        imagePath: captured.capture.screenshot.path,
+        maxObservations: 256,
+      }),
+    ])
+    const axSnapshot = axResult.status === 'fulfilled' ? axResult.value : undefined
+    const domObservation = domResult.status === 'fulfilled' ? domResult.value : null
+    const ocr = ocrResult.status === 'fulfilled' && ocrResult.value
+      ? ocrResult.value
+      : emptyOcrTextSnapshot(captured.capture.screenshot.path, ocrResult.status === 'rejected' ? safeErrorMessage(ocrResult.reason) : 'ocr_unavailable')
+    const regionMap = buildChromeWindowRegionMap({
+      windowBounds: captured.context.window.bounds,
+      axRoot: axSnapshot?.root,
+    })
+    const axRef = axSnapshot
+      ? this.#recordJsonArtifact(captured.spanId, `ax_tree_${captured.spanId}`, 'ax-tree', axSnapshot)
+      : undefined
+    const domRef = domObservation
+      ? this.#recordJsonArtifact(captured.spanId, `chrome_dom_${captured.spanId}`, 'chrome-dom', domObservation)
+      : undefined
+    const scrollBoundary = buildChromeScrollBoundary({
+      axSnapshot,
+      domObservation,
+      regionMap,
+      sourceArtifacts: compactArtifactRefs([...captured.evidence, axRef, domRef]),
+    })
+    const boundaryRef = this.#recordJsonArtifact(
+      captured.spanId,
+      `scroll_boundary_${captured.spanId}`,
+      'scroll-boundary',
+      scrollBoundary,
+    )
+    const evidence = compactArtifactRefs([...captured.evidence, axRef, domRef, boundaryRef])
+    const nodes = normalizeToSurfaceNodes({
+      ocrMatches: ocr.matches,
+      axSnapshot,
+      domObservation: domObservation ?? undefined,
+      contract: captured.capture.contract,
+      runId: this.#runId,
+      spanId: captured.spanId,
+      viewportBounds: regionMap.pageViewport?.bounds,
+      regionMap,
+      captureArtifact: evidence.find(ref => ref.artifact_id.startsWith('screenshot_')),
+      captureContractArtifact: evidence.find(ref => ref.artifact_id.startsWith('capture_contract_')),
+    })
+    const viewportNodes = pageViewportNodes(nodes)
+    const snapshot: ObservationSnapshot = {
+      api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
+      snapshot_id: captured.capture.snapshotId,
+      run_id: this.#runId,
+      span_id: captured.spanId,
+      captured_at_millis: Date.now(),
+      source: inferObservationSource(viewportNodes),
+      scope: {
+        surface: 'window',
+        window_number: captured.context.window.windowNumber,
+        app_bundle_id: captured.context.window.ownerBundleId,
+        window_title: captured.context.window.title ?? undefined,
+        capture_artifact: evidence.find(ref => ref.artifact_id.startsWith('screenshot_')),
+      },
+      capture_contract_ref: evidence.find(ref => ref.artifact_id.startsWith('capture_contract_')),
+      evidence,
+      nodes: viewportNodes,
+      detail: {
+        chrome_context: {
+          active_tab_url: captured.context.activeTabUrl,
+          active_tab_title: captured.context.activeTabTitle,
+          lease: captured.context.lease,
+        },
+        chrome_window_regions: regionMap,
+        observation_scope: 'viewport',
+        scroll_boundary: scrollBoundary,
+        ocr_match_count: ocr.matches.length,
+        ocr_known_limits: ocr.knownLimits ?? [],
+        dom_viewport_metrics: domObservation?.viewport,
+      },
+      known_limits: uniqueStrings([
+        ...regionMap.knownLimits,
+        ...scrollBoundary.knownLimits,
+        ...(ocr.knownLimits ?? []),
+        ...(domObservation?.knownLimits ?? []),
+        ...(axResult.status === 'rejected' ? ['ax_tree_capture_unavailable_for_post_scroll_observation'] : []),
+        ...(domResult.status === 'rejected' || domObservation === null ? ['chrome_dom_capture_unavailable_for_post_scroll_observation'] : []),
+      ]),
+    }
+    this.#endSpan(captured.spanId, 'ok', `captured ${viewportNodes.length} post-scroll viewport node(s)`)
+    return { snapshot, scrollBoundary, axSnapshot, regionMap, domObservation }
   }
 
   async #captureAndRecognizeText(
@@ -571,6 +715,18 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     const domRef = domObservation
       ? this.#recordJsonArtifact(context.spanId, `chrome_dom_${context.spanId}`, 'chrome-dom', domObservation)
       : undefined
+    const scrollBoundary = buildChromeScrollBoundary({
+      axSnapshot,
+      domObservation,
+      regionMap,
+      sourceArtifacts: compactArtifactRefs([...context.evidence, axRef, domRef]),
+    })
+    const scrollBoundaryRef = this.#recordJsonArtifact(
+      context.spanId,
+      `scroll_boundary_${context.spanId}`,
+      'scroll-boundary',
+      scrollBoundary,
+    )
     const nodes = normalizeToSurfaceNodes({
       ocrMatches: context.ocr.matches,
       axSnapshot,
@@ -600,11 +756,14 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       axSnapshot,
       regionMap,
       domObservation,
-      evidence: compactArtifactRefs([...context.evidence, axRef, domRef]),
+      scrollBoundary,
+      evidence: compactArtifactRefs([...context.evidence, axRef, domRef, scrollBoundaryRef]),
       knownLimits: uniqueStrings([
         ...context.knownLimits,
         ...(axResult.status === 'rejected' ? ['ax_tree_capture_unavailable_for_enrichment'] : []),
         ...(domResult.status === 'rejected' || domObservation === null ? ['chrome_dom_capture_unavailable_for_enrichment'] : []),
+        ...(domObservation?.knownLimits ?? []),
+        ...scrollBoundary.knownLimits,
         ...regionMap.knownLimits,
         ...audit.knownLimits,
       ]),
@@ -1158,6 +1317,33 @@ function chromeDomTargetFromWindow(window: ChromeContextSnapshot['window']) {
     ownerBundleId: window.ownerBundleId,
     title: window.title,
     bounds: window.bounds,
+  }
+}
+
+function textMissKnownLimits(scrollBoundary: ChromeScrollBoundary | undefined): string[] {
+  return uniqueStrings([
+    'text_not_found_in_current_viewport',
+    ...(scrollBoundary?.canScrollDown === true || scrollBoundary?.canScrollDown === 'unknown'
+      ? ['text_may_be_below_viewport']
+      : []),
+  ])
+}
+
+function emptyOcrTextSnapshot(imagePath: string, reason: string): OcrTextSnapshot {
+  return {
+    recognizedAt: new Date().toISOString(),
+    imagePath,
+    imageWidth: 0,
+    imageHeight: 0,
+    query: '',
+    exact: false,
+    caseSensitive: false,
+    normalizedQuery: '',
+    ocrScaleFactor: 1,
+    matches: [],
+    rawMatchCount: 0,
+    filteredMatchCount: 0,
+    knownLimits: [reason],
   }
 }
 

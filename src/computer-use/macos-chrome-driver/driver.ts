@@ -42,6 +42,7 @@ import { checkSafetyGate, detectHardStopSignals, loadProfileConfig } from './saf
 import { TraceStore } from './trace-store.js'
 import type { ChromeObservationScope } from './chrome-window-regions.js'
 import { buildChromeWindowRegionMap, filterNodesByChromeObservationScope } from './chrome-window-regions.js'
+import { buildChromeScrollBoundary } from './scroll-boundary.js'
 
 export interface MacOSChromeDriverOptions {
   sessionId: string
@@ -217,6 +218,42 @@ export class MacOSChromeDriver {
       windowBounds: chromeContext.window.bounds,
       axRoot: axSnapshot?.root,
     })
+    const axArtifact = axSnapshot
+      ? this.#traceStore?.writeJsonArtifact({
+          artifact_id: `ax_tree_${snapshotId}`,
+          span_id: spanId,
+          role: 'ax-tree',
+          payload: axSnapshot,
+        })
+      : undefined
+    const axRef = axArtifact
+      ? { run_id: this.#runId, artifact_id: axArtifact.artifact_id, span_id: axArtifact.span_id }
+      : undefined
+    const domArtifact = chromeDomObservation
+      ? this.#traceStore?.writeJsonArtifact({
+          artifact_id: `chrome_dom_${snapshotId}`,
+          span_id: spanId,
+          role: 'chrome-dom',
+          payload: chromeDomObservation,
+        })
+      : undefined
+    const domRef = domArtifact
+      ? { run_id: this.#runId, artifact_id: domArtifact.artifact_id, span_id: domArtifact.span_id }
+      : undefined
+    const scrollBoundary = buildChromeScrollBoundary({
+      axSnapshot,
+      domObservation: chromeDomObservation,
+      regionMap,
+    })
+    const scrollBoundaryArtifact = this.#traceStore?.writeJsonArtifact({
+      artifact_id: `scroll_boundary_${snapshotId}`,
+      span_id: spanId,
+      role: 'scroll-boundary',
+      payload: scrollBoundary,
+    })
+    const scrollBoundaryRef = scrollBoundaryArtifact
+      ? { run_id: this.#runId, artifact_id: scrollBoundaryArtifact.artifact_id, span_id: scrollBoundaryArtifact.span_id }
+      : undefined
 
     // Normalize ALL sources → SurfaceNode[]
     const allNodes = normalizeToSurfaceNodes({
@@ -257,7 +294,10 @@ export class MacOSChromeDriver {
       evidence: [
         captureArtifact,
         captureContractArtifact,
+        ...(axRef ? [axRef] : []),
+        ...(domRef ? [domRef] : []),
         ...(ocrRowReportRef ? [ocrRowReportRef] : []),
+        ...(scrollBoundaryRef ? [scrollBoundaryRef] : []),
       ],
       nodes,
       detail: {
@@ -272,12 +312,16 @@ export class MacOSChromeDriver {
         ocr_rows: ocrRowSummary(ocrRows),
         chrome_window_regions: regionMap,
         observation_scope: observationScope,
+        scroll_boundary: scrollBoundary,
+        dom_viewport_metrics: chromeDomObservation?.viewport,
       },
       known_limits: uniqueStrings([
         this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked',
         ...regionMap.knownLimits,
+        ...scrollBoundary.knownLimits,
         ...(ocr.knownLimits ?? []),
         ...ocrRows.knownLimits,
+        ...(chromeDomObservation?.knownLimits ?? []),
       ]),
     }
 

@@ -10,8 +10,8 @@ export interface ChromeWindowRegionMap {
   windowBounds: Bounds
   pageViewport?: {
     bounds: Bounds
-    confidence: 'verified' | 'inferred'
-    source: 'ax_web_area' | 'fallback'
+    confidence: 'verified'
+    source: 'ax_web_area'
     reasons: string[]
   }
   regions: Array<{
@@ -115,21 +115,32 @@ export function classifyChromeWindowRegion(input: {
     }
   }
 
-  const center = centerOf(input.box)
-  if (pointInsideBounds(center, pageViewport.bounds)) {
+  const viewportIntersection = intersectBounds(input.box, pageViewport.bounds)
+  if (!viewportIntersection) {
+    return {
+      region: 'browser_chrome',
+      confidence: 'inferred',
+      source: 'geometry',
+      reasons: ['Evidence intersects the Chrome window and does not intersect the verified AXWebArea viewport.'],
+    }
+  }
+
+  if (boundsContainedBy(input.box, pageViewport.bounds)) {
     return {
       region: 'page_viewport',
       confidence: pageViewport.confidence,
       source: 'ax_structure',
-      reasons: ['Evidence center is inside the verified AXWebArea viewport.'],
+      reasons: ['Evidence bounds are contained by the verified AXWebArea viewport.'],
     }
   }
 
   return {
-    region: 'browser_chrome',
-    confidence: 'inferred',
-    source: 'geometry',
-    reasons: ['Evidence intersects the Chrome window but its center is outside the verified AXWebArea viewport.'],
+    region: 'unknown',
+    confidence: 'unknown',
+    source: 'mixed',
+    reasons: [
+      'Evidence bounds cross the verified AXWebArea viewport boundary; refusing to classify cross-region evidence as page_viewport.',
+    ],
   }
 }
 
@@ -292,15 +303,12 @@ function boundsIntersect(a: Bounds, b: Bounds): boolean {
     && a.y + a.height > b.y
 }
 
-function pointInsideBounds(point: { x: number, y: number }, bounds: Bounds): boolean {
-  return point.x >= bounds.x
-    && point.x <= bounds.x + bounds.width
-    && point.y >= bounds.y
-    && point.y <= bounds.y + bounds.height
-}
-
-function centerOf(bounds: Bounds): { x: number, y: number } {
-  return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+function boundsContainedBy(inner: Bounds, outer: Bounds): boolean {
+  const tolerance = 1
+  return inner.x >= outer.x - tolerance
+    && inner.y >= outer.y - tolerance
+    && inner.x + inner.width <= outer.x + outer.width + tolerance
+    && inner.y + inner.height <= outer.y + outer.height + tolerance
 }
 
 function areaOfBounds(bounds: Bounds): number {

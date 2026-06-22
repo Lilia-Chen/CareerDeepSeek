@@ -20,6 +20,73 @@ import type {
 import { runProcess } from './process.js'
 import { runSwiftScript } from './swift-runner.js'
 
+const PRESS_KEYS = new Set([
+  'a',
+  'b',
+  'c',
+  'd',
+  'e',
+  'f',
+  'g',
+  'h',
+  'i',
+  'j',
+  'k',
+  'l',
+  'm',
+  'n',
+  'o',
+  'p',
+  'q',
+  'r',
+  's',
+  't',
+  'u',
+  'v',
+  'w',
+  'x',
+  'y',
+  'z',
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+  'enter',
+  'return',
+  'tab',
+  'space',
+  'escape',
+  'esc',
+  'delete',
+  'backspace',
+  '[',
+  ']',
+  'up',
+  'down',
+  'left',
+  'right',
+  'home',
+  'end',
+  'pageup',
+  'pagedown',
+])
+
+const PRESS_KEY_MODIFIERS = new Set([
+  'command',
+  'cmd',
+  'shift',
+  'control',
+  'ctrl',
+  'option',
+  'alt',
+])
+
 // ---------------------------------------------------------------------------
 // Swift script builders
 // ---------------------------------------------------------------------------
@@ -255,7 +322,8 @@ let keyCodeMap: [String: UInt16] = [
   "enter": 36, "return": 36, "tab": 48, "space": 49, "escape": 53,
   "esc": 53, "delete": 51, "backspace": 51,
   "[": 33, "]": 30,
-  "up": 126, "down": 125, "left": 123, "right": 124
+  "up": 126, "down": 125, "left": 123, "right": 124,
+  "home": 115, "end": 119, "pageup": 116, "pagedown": 121
 ]
 
 let modifierFlags: [String: CGEventFlags] = [
@@ -278,7 +346,10 @@ for mod in modifiers {
 
 let source = CGEventSource(stateID: .combinedSessionState)
 for key in keys {
-  guard let keyCode = keyCodeMap[key.lowercased()] else { continue }
+  guard let keyCode = keyCodeMap[key.lowercased()] else {
+    fputs("Unsupported key: \\(key)\\n", stderr)
+    exit(2)
+  }
   if let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
      let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) {
     down.flags = flags
@@ -381,6 +452,14 @@ export async function executePressKeys(
   config: ComputerUseConfig,
   input: PressKeysInput,
 ): Promise<void> {
+  for (const key of input.keys) {
+    if (!PRESS_KEYS.has(key.toLowerCase()))
+      throw new Error(`Unsupported key: ${key}`)
+  }
+  for (const modifier of input.modifiers ?? []) {
+    if (!PRESS_KEY_MODIFIERS.has(modifier.toLowerCase()))
+      throw new Error(`Unsupported key modifier: ${modifier}`)
+  }
   await runSwiftScript({
     swiftBinary: config.binaries.swift,
     timeoutMs: config.timeoutMs,

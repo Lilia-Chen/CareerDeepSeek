@@ -1,4 +1,5 @@
-import type { ArtifactRef, RecognitionBox, SurfaceNode } from './types.js'
+import type { ArtifactRef, ObservationSnapshot, RecognitionBox, SurfaceNode } from './types.js'
+import type { ChromeScrollBoundary, ChromeScrollProgress } from './scroll-boundary.js'
 
 export interface AtomicCrossSourceAudit {
   status: 'agreement' | 'conflict' | 'unknown'
@@ -34,6 +35,7 @@ export interface AtomicFindResult {
   matches: AtomicMatch[]
   nodes?: SurfaceNode[]
   audit?: AtomicCrossSourceAudit
+  scrollBoundary?: ChromeScrollBoundary
   evidence: ArtifactRef[]
   knownLimits: string[]
 }
@@ -47,6 +49,7 @@ export interface AtomicWaitForTextResult {
   matches: AtomicMatch[]
   nodes?: SurfaceNode[]
   audit?: AtomicCrossSourceAudit
+  scrollBoundary?: ChromeScrollBoundary
   evidence: ArtifactRef[]
   knownLimits: string[]
 }
@@ -111,6 +114,10 @@ export interface AtomicScrollRegionResult {
     logicalPoint: { x: number, y: number }
     region: { left: number, top: number, right: number, bottom: number }
   }
+  scrollBoundaryBefore?: ChromeScrollBoundary
+  scrollBoundaryAfter?: ChromeScrollBoundary
+  scrollProgress?: ChromeScrollProgress
+  postObservation?: ObservationSnapshot
   evidence: ArtifactRef[]
   knownLimits: string[]
 }

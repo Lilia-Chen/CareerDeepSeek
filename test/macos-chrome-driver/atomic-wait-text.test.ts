@@ -176,6 +176,16 @@ describe('atomic waitForText', () => {
       url: 'https://example.test',
       title: 'Example',
       observedAt: '2026-06-20T00:00:00.000Z',
+      viewport: {
+        width: 800,
+        height: 580,
+        scrollX: 0,
+        scrollY: 0,
+        scrollWidth: 800,
+        scrollHeight: 1200,
+        clientWidth: 800,
+        clientHeight: 580,
+      },
       visibleText: '',
       elements: [],
       signals: [],
@@ -501,6 +511,49 @@ describe('atomic waitForText', () => {
     expect(result.nodes?.every(node => node.region === 'page_viewport')).toBe(true)
   })
 
+  it('findText miss reports current viewport absence when page can scroll further', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: axWindow([]),
+    })
+    mocks.captureChromeDom.mockResolvedValueOnce({
+      url: 'https://example.test',
+      title: 'Example',
+      observedAt: '2026-06-20T00:00:00.000Z',
+      viewport: {
+        width: 800,
+        height: 580,
+        scrollX: 0,
+        scrollY: 100,
+        scrollWidth: 800,
+        scrollHeight: 1500,
+        clientWidth: 800,
+        clientHeight: 580,
+      },
+      visibleText: '',
+      elements: [],
+      signals: [],
+    })
+
+    const result = await commandsWithTrace().findText({ query: 'Missing Target' })
+
+    expect(result.found).toBe(false)
+    expect(result.knownLimits).toEqual(expect.arrayContaining([
+      'text_not_found_in_current_viewport',
+      'text_may_be_below_viewport',
+    ]))
+    expect(result.scrollBoundary).toMatchObject({
+      canScrollDown: true,
+      atBottom: false,
+    })
+  })
+
   it('clickTarget kind=any does not treat structural AX containers as targets', async () => {
     mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
     mocks.captureAXTree.mockResolvedValueOnce({
@@ -698,5 +751,61 @@ describe('atomic waitForText', () => {
       pointerTrace: [{ x: 500, y: 510, delayMs: 0 }],
     }))
     expect(mocks.executeMoveAndClick).not.toHaveBeenCalled()
+  })
+
+  it('scrollRegion observes after delivery and reports before/after scroll boundary', async () => {
+    mocks.captureChromeDom
+      .mockResolvedValueOnce({
+        url: 'https://example.test',
+        title: 'Example',
+        observedAt: '2026-06-20T00:00:00.000Z',
+        viewport: {
+          width: 800,
+          height: 580,
+          scrollX: 0,
+          scrollY: 0,
+          scrollWidth: 800,
+          scrollHeight: 1400,
+          clientWidth: 800,
+          clientHeight: 580,
+        },
+        visibleText: 'Top content',
+        elements: [],
+        signals: [],
+      })
+      .mockResolvedValueOnce({
+        url: 'https://example.test',
+        title: 'Example',
+        observedAt: '2026-06-20T00:00:01.000Z',
+        viewport: {
+          width: 800,
+          height: 580,
+          scrollX: 0,
+          scrollY: 300,
+          scrollWidth: 800,
+          scrollHeight: 1400,
+          clientWidth: 800,
+          clientHeight: 580,
+        },
+        visibleText: 'Lower content',
+        elements: [],
+        signals: [],
+      })
+
+    const result = await commandsWithTrace().scrollRegion({
+      direction: 'down',
+      amount: 2,
+      region: { left: 0, top: 0, right: 1, bottom: 1 },
+    })
+
+    expect(result.scrollBoundaryBefore).toMatchObject({ scrollTop: 0, canScrollDown: true })
+    expect(result.scrollBoundaryAfter).toMatchObject({ scrollTop: 300, canScrollDown: true })
+    expect(result.scrollProgress).toMatchObject({ changed: true, boundaryReached: false })
+    expect(result.postObservation).toMatchObject({
+      detail: expect.objectContaining({
+        scroll_boundary: expect.objectContaining({ scrollTop: 300 }),
+      }),
+    })
+    expect(mocks.captureChromeDom).toHaveBeenCalledTimes(2)
   })
 })

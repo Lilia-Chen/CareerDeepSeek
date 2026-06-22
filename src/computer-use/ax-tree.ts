@@ -105,7 +105,7 @@ func normalizeOrientation(_ raw: String?) -> String {
 }
 
 func getScrollEvidence(_ element: AXUIElement, _ role: String, _ bounds: BoundsJSON?) -> AXScrollEvidenceJSON? {
-  guard role == "AXScrollBar" || role == "AXScrollArea" || role == "AXWebArea" else { return nil }
+  guard role == "AXScrollBar" || role == "AXScrollArea" else { return nil }
 
   var knownLimits: [String] = []
   let (numericValue, valueLimit) = getNumericAttr(element, kAXValueAttribute as String, "AXValue")

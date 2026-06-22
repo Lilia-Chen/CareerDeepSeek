@@ -41,7 +41,9 @@ function domObserverJs(): string {
   // Build as a single expression to avoid JXA return-type issues.
   return `(function(){
   var MAX=300, MAXTEXT=30000;
-  var vp={w:window.innerWidth,h:window.innerHeight,sx:window.scrollX,sy:window.scrollY};
+  var se=document.scrollingElement||document.documentElement||document.body;
+  var de=document.documentElement||document.body||se;
+  var vp={w:window.innerWidth,h:window.innerHeight,sx:window.scrollX,sy:window.scrollY,sw:se?se.scrollWidth:0,sh:se?se.scrollHeight:0,cw:de?de.clientWidth:window.innerWidth,ch:de?de.clientHeight:window.innerHeight};
   var texts=[];
 
   function text(el){if(!el)return'';var v=el.innerText;return typeof v==='string'?v.replace(/\\s+/g,' ').trim():(el.textContent||'').replace(/\\s+/g,' ').trim();}
@@ -329,7 +331,16 @@ interface RawDomData {
   url: string
   title: string
   oat: string
-  vp?: { w: number, h: number, sx: number, sy: number } | null
+  vp?: {
+    w: number
+    h: number
+    sx: number
+    sy: number
+    sw?: number
+    sh?: number
+    cw?: number
+    ch?: number
+  } | null
   vt: string
   el: Array<{
     id: string
@@ -425,10 +436,29 @@ async function captureChromeDirectTab(
 }
 
 function rawDomToObservation(raw: RawDomData): ChromeDomObservation {
+  const knownLimits = [
+    ...(raw.te ? ['chrome_dom_element_limit_reached'] : []),
+    ...(raw.tv ? ['chrome_dom_visible_text_truncated'] : []),
+  ]
   return {
     url: raw.url,
     title: raw.title,
     observedAt: raw.oat,
+    viewport: raw.vp
+      ? {
+          width: raw.vp.w,
+          height: raw.vp.h,
+          scrollX: raw.vp.sx,
+          scrollY: raw.vp.sy,
+          scrollWidth: raw.vp.sw,
+          scrollHeight: raw.vp.sh,
+          clientWidth: raw.vp.cw,
+          clientHeight: raw.vp.ch,
+          knownLimits: !Number.isFinite(raw.vp.sw) || !Number.isFinite(raw.vp.sh)
+            ? ['dom_scroll_document_metrics_unavailable']
+            : [],
+        }
+      : undefined,
     visibleText: raw.vt,
     elements: (raw.el || []).map(el => ({
       id: el.id,
@@ -444,5 +474,6 @@ function rawDomToObservation(raw: RawDomData): ChromeDomObservation {
       states: el.st,
     })),
     signals: raw.sg || [],
+    knownLimits,
   }
 }

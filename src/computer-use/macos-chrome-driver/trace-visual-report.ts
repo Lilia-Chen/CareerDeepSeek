@@ -130,6 +130,7 @@ interface VisualActionSummary {
   candidateBox?: RecognitionBoxLike
   livenessFreshBox?: RecognitionBoxLike
   clickPoint?: VisualPoint
+  scrollProgress?: JsonObject
   freshScreenshotPath?: string
   failures: VisualFailureSummary[]
   knownLimits: string[]
@@ -502,6 +503,10 @@ function atomicActionSummary(artifact: LoadedArtifact): VisualActionSummary {
   const payload = asObject(artifact.payload)
   const clicked = asObject(payload.clicked)
   const logicalPoint = asObject(clicked.logicalPoint)
+  const scrollLogicalPoint = asObject(payload.logical_point)
+  const scrollProgress = asObject(payload.scroll_progress)
+  const scrollBoundaryBefore = asObject(payload.scroll_boundary_before)
+  const scrollBoundaryAfter = asObject(payload.scroll_boundary_after)
   const action = stringField(payload, 'action')
   const actionType = artifact.record.role === 'ax-action'
     ? axActionType(action)
@@ -517,10 +522,17 @@ function atomicActionSummary(artifact: LoadedArtifact): VisualActionSummary {
     grounding: stringField(clicked, 'kind') ?? stringField(payload, 'role'),
     candidateBox: recognitionBox(clicked.box),
     livenessFreshBox: undefined,
-    clickPoint: pointFromObject(logicalPoint, 'atomic_logical_point'),
+    clickPoint: pointFromObject(logicalPoint, 'atomic_logical_point')
+      ?? pointFromObject(scrollLogicalPoint, 'scroll_delivery_point'),
+    scrollProgress: Object.keys(scrollProgress).length > 0 ? scrollProgress : undefined,
     freshScreenshotPath: undefined,
     failures: [],
-    knownLimits: knownLimitsFromObject(payload),
+    knownLimits: uniqueStrings([
+      ...knownLimitsFromObject(payload),
+      ...knownLimitsFromObject(scrollProgress),
+      ...knownLimitsFromObject(scrollBoundaryBefore),
+      ...knownLimitsFromObject(scrollBoundaryAfter),
+    ]),
   }
 }
 
@@ -905,12 +917,13 @@ function renderActionSection(report: VisualTraceReport): string {
     <td>${escapeHtml(String(action.executed))}</td>
     <td>${escapeHtml(String(action.refused))}</td>
     <td><pre>${escapeHtml(JSON.stringify(action.clickPoint ?? null, null, 2))}</pre></td>
+    <td><pre>${escapeHtml(JSON.stringify(action.scrollProgress ?? null, null, 2))}</pre></td>
     <td><pre>${escapeHtml(JSON.stringify(action.livenessFreshBox ?? null, null, 2))}</pre></td>
     <td>${escapeHtml(action.refusalReasons.join(', '))}</td>
   </tr>`).join('')
   return `<section>
   <h2>Actions</h2>
-  <table><thead><tr><th>Artifact</th><th>Type</th><th>Grounding</th><th>Executed</th><th>Refused</th><th>Click Point</th><th>Fresh Box</th><th>Refusal Reasons</th></tr></thead><tbody>${rows}</tbody></table>
+  <table><thead><tr><th>Artifact</th><th>Type</th><th>Grounding</th><th>Executed</th><th>Refused</th><th>Delivery Point</th><th>Scroll Progress</th><th>Fresh Box</th><th>Refusal Reasons</th></tr></thead><tbody>${rows}</tbody></table>
 </section>`
 }
 

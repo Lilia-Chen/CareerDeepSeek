@@ -56,6 +56,27 @@ describe('chrome window regions', () => {
     })).toMatchObject({ region: 'unknown', confidence: 'unknown' })
   })
 
+  it('does not classify cross-region ancestor bounds as page_viewport by center point', () => {
+    const regionMap = buildChromeWindowRegionMap({
+      windowBounds,
+      axRoot: axRoot([{
+        uid: 'web',
+        role: 'AXWebArea',
+        bounds: { x: 100, y: 260, width: 800, height: 540 },
+        children: [],
+      }]),
+    })
+
+    expect(classifyChromeWindowRegion({
+      regionMap,
+      box: windowBounds,
+    })).toMatchObject({
+      region: 'unknown',
+      confidence: 'unknown',
+      source: 'mixed',
+    })
+  })
+
   it('converts viewport bounds into capture-relative OCR region ratios', () => {
     expect(viewportOcrRegionRatio({
       viewportBounds: { x: 100, y: 260, width: 800, height: 540 },
