@@ -5,6 +5,7 @@ import type {
   AtomicClickResult,
   AtomicClickTargetKind,
   AtomicCrossSourceAudit,
+  BrowserChromeDomainCommandResult,
   AtomicFindResult,
   AtomicMatch,
   AtomicKeyResult,
@@ -30,10 +31,13 @@ import {
   executeTypeText,
 } from '../macos-actions.js'
 import { captureChromeWindow } from './capture.js'
+import { runChromeAppleEventsTabCommand } from './chrome-apple-events.js'
 import { recognizeTextInImage } from './ocr.js'
 import { auditSurfaceNodes, centerOf, normalizeBoxToWindow, projectPixelBoxToLogicalMatch, relatedNodesForBox } from './atomic-recognition.js'
 import { safeErrorMessage, uniqueStrings } from './shared.js'
 import { normalizeToSurfaceNodes } from './surface-node.js'
+import type { ChromeWindowRegionMap } from './chrome-window-regions.js'
+import { buildChromeWindowRegionMap, requirePageViewport, viewportOcrRegionRatio } from './chrome-window-regions.js'
 
 interface AtomicTraceSink {
   startSpan?: (spanId: string, parentSpanId: string | undefined, name: string) => unknown
@@ -80,6 +84,10 @@ export interface MacOSChromeAtomicCommands {
     amount?: number
     region?: { left: number, top: number, right: number, bottom: number }
   }) => Promise<AtomicScrollRegionResult>
+  back: () => Promise<BrowserChromeDomainCommandResult>
+  forward: () => Promise<BrowserChromeDomainCommandResult>
+  reload: () => Promise<BrowserChromeDomainCommandResult>
+  addressBarSubmit: (input: { text: string }) => Promise<BrowserChromeDomainCommandResult>
 }
 
 interface CapturedWindowAtomicContext {
@@ -95,6 +103,7 @@ interface AtomicOcrContext extends CapturedWindowAtomicContext {
   nodes?: SurfaceNode[]
   audit?: AtomicCrossSourceAudit
   axSnapshot?: AXSnapshot
+  regionMap?: ChromeWindowRegionMap
   domObservation?: ChromeDomObservation | null
   knownLimits: string[]
 }
@@ -112,6 +121,7 @@ export type MacOSChromeOperationResponse
     | AtomicTypeTextResult
     | AtomicKeyResult
     | AtomicScrollRegionResult
+    | BrowserChromeDomainCommandResult
 
 const INPUT_NODE_KINDS = new Set(['ax_textfield', 'ax_textarea', 'ax_combobox', 'dom_textbox', 'dom_searchbox', 'dom_combobox'])
 const STATIC_TEXT_NODE_KINDS = new Set(['ocr_text', 'ocr_row', 'ax_static_text', 'dom_text', 'dom_heading', 'dom_listitem'])
@@ -152,15 +162,16 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
   }
 
   async findText(input: { query: string }): Promise<AtomicFindResult> {
-    const ocr = await this.#captureAndRecognizeText(input.query, 'find-text', { enrich: true })
-    const matches = surfaceNodeMatches(input.query, ocr.nodes ?? [], ocr.audit, ocr.context.window.bounds)
+    const ocr = await this.#captureAndRecognizeText(input.query, 'find-text', { enrich: true, pageViewportOnly: true })
+    const nodes = pageViewportNodes(ocr.nodes ?? [])
+    const matches = surfaceNodeMatches(input.query, nodes, ocr.audit, pageViewportBounds(ocr))
     return {
       found: matches.length > 0,
       recognitionId: this.#recognitionId('text'),
       matchCount: matches.length,
       best: matches[0],
       matches,
-      nodes: ocr.nodes,
+      nodes,
       audit: ocr.audit,
       evidence: ocr.evidence,
       knownLimits: ocr.knownLimits,
@@ -177,15 +188,22 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     const startedAt = Date.now()
     let pollCount = 0
     let previousScreenshotPath: string | undefined
+    const viewport = await this.#resolvePageViewportForCommand()
 
     while (true) {
       pollCount += 1
-      const ocr = await this.#captureAndRecognizeText(input.query, `wait-text-${pollCount}`, { enrich: false })
+      const ocr = await this.#captureAndRecognizeText(input.query, `wait-text-${pollCount}`, {
+        enrich: false,
+        pageViewportOnly: true,
+        regionMap: viewport.regionMap,
+        axSnapshot: viewport.axSnapshot,
+      })
       const elapsedMs = Date.now() - startedAt
       const timedOut = elapsedMs >= timeoutMs
       if (ocr.matches.length > 0 || timedOut) {
         await removeIfPresent(previousScreenshotPath)
         const enriched = await this.#enrichOcrContext(ocr)
+        const nodes = pageViewportNodes(enriched.nodes ?? [])
         return {
           found: enriched.matches.length > 0,
           query: input.query,
@@ -193,7 +211,7 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
           pollCount,
           best: enriched.matches[0],
           matches: enriched.matches.length > 0 ? enriched.matches : [],
-          nodes: enriched.nodes,
+          nodes,
           audit: enriched.audit,
           evidence: enriched.evidence,
           knownLimits: uniqueStrings(['wait_for_text_final_enrichment_only', ...enriched.knownLimits]),
@@ -213,13 +231,13 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
   }): Promise<AtomicClickResult> {
     if (!CLICK_TARGET_KINDS.has(input.kind))
       throw Object.assign(new Error(`Unsupported clickTarget kind ${input.kind}.`), { code: 'invalid_kind' })
-    const observed = await this.#captureAndRecognizeText(input.query, 'click-target', { enrich: true })
+    const observed = await this.#captureAndRecognizeText(input.query, 'click-target', { enrich: true, pageViewportOnly: true })
     const resolved = resolveWithEvidence(() => resolveClickTarget({
       query: input.query,
       kind: input.kind,
       hint: input.hint,
-      nodes: observed.nodes ?? [],
-      windowBounds: observed.context.window.bounds,
+      nodes: pageViewportNodes(observed.nodes ?? []),
+      viewportBounds: pageViewportBounds(observed),
       evidence: observed.evidence,
     }), observed.evidence)
     const selected = resolved.selected
@@ -241,12 +259,12 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
   }
 
   async typeInput(input: { query: string, text: string, submitKey?: string, hint?: AtomicTargetHint }): Promise<AtomicTypeTextResult> {
-    const observed = await this.#captureAndRecognizeText(input.query, 'type-input', { enrich: true })
+    const observed = await this.#captureAndRecognizeText(input.query, 'type-input', { enrich: true, pageViewportOnly: true })
     const resolved = resolveWithEvidence(() => resolveTypeInputTarget({
       query: input.query,
       hint: input.hint,
-      nodes: observed.nodes ?? [],
-      windowBounds: observed.context.window.bounds,
+      nodes: pageViewportNodes(observed.nodes ?? []),
+      viewportBounds: pageViewportBounds(observed),
       evidence: observed.evidence,
     }), observed.evidence)
     await this.#clickLogicalPoint(resolved.selected.match.logicalPoint, observed.evidence)
@@ -306,14 +324,15 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     if (!Number.isFinite(amount) || amount <= 0)
       throw new Error('chrome.scrollRegion amount must be greater than 0.')
     const region = input.region ?? { left: 0, top: 0, right: 1, bottom: 1 }
-    const window = context.window
+    const regionMap = await this.#resolvePageViewportForCommand(context)
+    const viewport = requirePageViewport(regionMap.regionMap)
     const windowLocalPoint = {
-      x: window.bounds.width * ((region.left + region.right) / 2),
-      y: window.bounds.height * ((region.top + region.bottom) / 2),
+      x: viewport.width * ((region.left + region.right) / 2),
+      y: viewport.height * ((region.top + region.bottom) / 2),
     }
     const logicalPoint = {
-      x: window.bounds.x + windowLocalPoint.x,
-      y: window.bounds.y + windowLocalPoint.y,
+      x: viewport.x + windowLocalPoint.x,
+      y: viewport.y + windowLocalPoint.y,
     }
     const delta = atomicScrollDelta(direction, amount)
     const knownLimits: string[] = ['scroll_region_self_contained', 'foreground_hid_scroll_delivery']
@@ -329,6 +348,8 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
         direction,
         amount,
         region,
+        chrome_window_region: 'page_viewport',
+        viewport_bounds: viewport,
         logical_point: logicalPoint,
         delta,
       }),
@@ -342,7 +363,61 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
         region,
       },
       evidence,
-      knownLimits: uniqueStrings(knownLimits),
+      knownLimits: uniqueStrings([...knownLimits, ...regionMap.regionMap.knownLimits]),
+    }
+  }
+
+  async back(): Promise<BrowserChromeDomainCommandResult> {
+    return await this.#browserChromeTabCommand('back')
+  }
+
+  async forward(): Promise<BrowserChromeDomainCommandResult> {
+    return await this.#browserChromeTabCommand('forward')
+  }
+
+  async reload(): Promise<BrowserChromeDomainCommandResult> {
+    return await this.#browserChromeTabCommand('reload')
+  }
+
+  async addressBarSubmit(input: { text: string }): Promise<BrowserChromeDomainCommandResult> {
+    const context = await this.#resolveChromeContext()
+    const spanId = this.#startSpan('address-bar-submit')
+    const before = await runChromeAppleEventsTabCommand({
+      config: this.#config,
+      targetWindow: context.window,
+      command: 'inspect',
+    })
+    await executePressKeys(this.#config, { keys: ['l'], modifiers: ['command'] })
+    await executeTypeText(this.#config, { pointerTrace: [], text: input.text })
+    await executePressKeys(this.#config, { keys: ['return'], modifiers: [] })
+    const after = await runChromeAppleEventsTabCommand({
+      config: this.#config,
+      targetWindow: context.window,
+      command: 'inspect',
+    })
+    const actionRef = this.#recordJsonArtifact(spanId, `action_address_bar_submit_${spanId}`, 'action-result', {
+      command: 'addressBarSubmit',
+      delivery_path: 'foreground_keyboard',
+      text_length: input.text.length,
+      before_active_tab: before.ok ? before.before : undefined,
+      after_active_tab: after.ok ? after.before : undefined,
+      apple_events_binding_before: summarizeAppleEvents(before),
+      apple_events_binding_after: summarizeAppleEvents(after),
+    })
+    this.#endSpan(spanId, 'ok', 'submitted omnibox text')
+    return {
+      command: 'addressBarSubmit',
+      delivered: true,
+      deliveryPath: 'foreground_keyboard',
+      textLength: input.text.length,
+      appleEvents: summarizeAppleEvents(after),
+      evidence: compactArtifactRefs([actionRef]),
+      knownLimits: uniqueStrings([
+        'address_bar_submit_uses_foreground_keyboard',
+        'omnibox_autocomplete_history_navigation_behavior_not_deterministic',
+        ...appleEventsKnownLimits(before),
+        ...appleEventsKnownLimits(after),
+      ]),
     }
   }
 
@@ -365,20 +440,92 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
     return { context, capture, spanId, evidence }
   }
 
+  async #browserChromeTabCommand(command: 'back' | 'forward' | 'reload'): Promise<BrowserChromeDomainCommandResult> {
+    const context = await this.#resolveChromeContext()
+    const spanId = this.#startSpan(command)
+    const appleEvents = await runChromeAppleEventsTabCommand({
+      config: this.#config,
+      targetWindow: context.window,
+      command,
+    })
+    let delivered = appleEvents.ok
+    let deliveryPath: BrowserChromeDomainCommandResult['deliveryPath'] = 'apple_events'
+    let keyboardFallback: BrowserChromeDomainCommandResult['keyboardFallback'] | undefined
+
+    if (!appleEvents.ok) {
+      const shortcut = browserChromeShortcut(command)
+      await executePressKeys(this.#config, { keys: shortcut.keys, modifiers: shortcut.modifiers })
+      delivered = true
+      deliveryPath = 'apple_events_then_keyboard_fallback'
+      keyboardFallback = {
+        attempted: true,
+        keys: shortcut.keys,
+        modifiers: shortcut.modifiers,
+        reason: appleEvents.reason,
+      }
+    }
+
+    const actionRef = this.#recordJsonArtifact(spanId, `action_browser_chrome_${command}_${spanId}`, 'action-result', {
+      command,
+      delivered,
+      delivery_path: deliveryPath,
+      apple_events: summarizeAppleEvents(appleEvents),
+      keyboard_fallback: keyboardFallback,
+    })
+    this.#endSpan(spanId, 'ok', `${command} delivered`)
+    return {
+      command,
+      delivered,
+      deliveryPath,
+      appleEvents: summarizeAppleEvents(appleEvents),
+      keyboardFallback,
+      evidence: compactArtifactRefs([actionRef]),
+      knownLimits: uniqueStrings([
+        'browser_chrome_command_requires_same_invocation_profile_window_tab_preflight',
+        ...(!appleEvents.ok ? ['apple_events_binding_unavailable_keyboard_fallback_used'] : []),
+        ...appleEventsKnownLimits(appleEvents),
+      ]),
+    }
+  }
+
   async #captureAndRecognizeText(
     query: string,
     label: string,
-    options: { enrich: boolean },
+    options: { enrich: boolean, pageViewportOnly?: boolean, regionMap?: ChromeWindowRegionMap, axSnapshot?: AXSnapshot },
   ): Promise<AtomicOcrContext> {
     const captured = await this.#captureWindow(label)
+    let axSnapshot = options.axSnapshot
+    let regionMap = options.regionMap
+    const knownLimits: string[] = []
+    if (options.pageViewportOnly) {
+      if (!axSnapshot) {
+        axSnapshot = await captureAXTree(this.#config, {
+          pid: captured.context.window.ownerPid,
+          maxDepth: 15,
+          maxNodes: 3000,
+        })
+      }
+      regionMap = regionMap ?? buildChromeWindowRegionMap({
+        windowBounds: captured.context.window.bounds,
+        axRoot: axSnapshot.root,
+      })
+      requirePageViewport(regionMap)
+      knownLimits.push(...regionMap.knownLimits)
+    }
     const ocr = await recognizeTextInImage(this.#config, {
       imagePath: captured.capture.screenshot.path,
       query,
+      ...(options.pageViewportOnly && regionMap?.pageViewport
+        ? { region: viewportOcrRegionRatio({
+            viewportBounds: regionMap.pageViewport.bounds,
+            sourceGlobalLogicalBounds: captured.capture.contract.sourceGlobalLogicalBounds,
+          }) }
+        : {}),
     })
     const ocrRef = this.#recordJsonArtifact(captured.spanId, `ocr_text_${captured.capture.snapshotId}`, 'ocr-text', ocr)
     const evidence = compactArtifactRefs([...captured.evidence, ocrRef])
     const matches = ocr.matches.map((match, matchIndex) =>
-      projectPixelBoxToLogicalMatch({
+      normalizeMatchForRegion(projectPixelBoxToLogicalMatch({
         kind: 'ocr_text',
         text: match.text,
         confidence: match.confidence,
@@ -386,7 +533,7 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
         pixelBox: match.bounds,
         contract: captured.capture.contract,
         detail: { source: 'ocr_text', matchIndex: match.matchIndex },
-      }))
+      }), regionMap))
 
     this.#endSpan(captured.spanId, 'ok', `recognized ${matches.length} text match(es)`)
     const context: AtomicOcrContext = {
@@ -394,21 +541,29 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       ocr,
       matches,
       evidence,
-      knownLimits: ocr.knownLimits ?? [],
+      axSnapshot,
+      regionMap,
+      knownLimits: uniqueStrings([...(ocr.knownLimits ?? []), ...knownLimits]),
     }
     return options.enrich ? await this.#enrichOcrContext(context) : context
   }
 
   async #enrichOcrContext(context: AtomicOcrContext): Promise<AtomicOcrContext> {
     const [axResult, domResult] = await Promise.allSettled([
-      captureAXTree(this.#config, {
-        pid: context.context.window.ownerPid,
-        maxDepth: 15,
-        maxNodes: 3000,
-      }),
+      context.axSnapshot
+        ? Promise.resolve(context.axSnapshot)
+        : captureAXTree(this.#config, {
+            pid: context.context.window.ownerPid,
+            maxDepth: 15,
+            maxNodes: 3000,
+          }),
       captureChromeDom(this.#config, chromeDomTargetFromWindow(context.context.window)),
     ])
     const axSnapshot = axResult.status === 'fulfilled' ? axResult.value : undefined
+    const regionMap = context.regionMap ?? buildChromeWindowRegionMap({
+      windowBounds: context.context.window.bounds,
+      axRoot: axSnapshot?.root,
+    })
     const domObservation = domResult.status === 'fulfilled' ? domResult.value : null
     const axRef = axSnapshot
       ? this.#recordJsonArtifact(context.spanId, `ax_tree_${context.spanId}`, 'ax-tree', axSnapshot)
@@ -423,7 +578,8 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       contract: context.capture.contract,
       runId: this.#runId,
       spanId: context.spanId,
-      viewportBounds: context.context.window.bounds,
+      viewportBounds: regionMap.pageViewport?.bounds,
+      regionMap,
       captureArtifact: context.evidence.find(ref => ref.artifact_id.startsWith('screenshot_')),
       captureContractArtifact: context.evidence.find(ref => ref.artifact_id.startsWith('capture_contract_')),
     })
@@ -442,15 +598,32 @@ export class LiveMacOSChromeAtomicCommands implements MacOSChromeAtomicCommands 
       nodes,
       audit,
       axSnapshot,
+      regionMap,
       domObservation,
       evidence: compactArtifactRefs([...context.evidence, axRef, domRef]),
       knownLimits: uniqueStrings([
         ...context.knownLimits,
         ...(axResult.status === 'rejected' ? ['ax_tree_capture_unavailable_for_enrichment'] : []),
         ...(domResult.status === 'rejected' || domObservation === null ? ['chrome_dom_capture_unavailable_for_enrichment'] : []),
+        ...regionMap.knownLimits,
         ...audit.knownLimits,
       ]),
     }
+  }
+
+  async #resolvePageViewportForCommand(context?: ChromeContextSnapshot): Promise<{ axSnapshot: AXSnapshot, regionMap: ChromeWindowRegionMap }> {
+    const chromeContext = context ?? await this.#resolveChromeContext()
+    const axSnapshot = await captureAXTree(this.#config, {
+      pid: chromeContext.window.ownerPid,
+      maxDepth: 15,
+      maxNodes: 3000,
+    })
+    const regionMap = buildChromeWindowRegionMap({
+      windowBounds: chromeContext.window.bounds,
+      axRoot: axSnapshot.root,
+    })
+    requirePageViewport(regionMap)
+    return { axSnapshot, regionMap }
   }
 
   async #clickLogicalPoint(point: { x: number, y: number }, evidence: ArtifactRef[]): Promise<void> {
@@ -559,9 +732,46 @@ export async function invokeMacOSChromeOperation(
         amount: optionalNumberInput(call, 'amount'),
         region: optionalRegionInput(call, 'region'),
       })
+    case 'back':
+      return commands.back()
+    case 'forward':
+      return commands.forward()
+    case 'reload':
+      return commands.reload()
+    case 'addressBarSubmit':
+      return commands.addressBarSubmit({ text: stringInput(call, 'text') })
     default:
       throw Object.assign(new Error(`Unsupported macOS Chrome operation ${call.operation}.`), { code: 'unsupported_operation' })
   }
+}
+
+function browserChromeShortcut(command: 'back' | 'forward' | 'reload'): { keys: string[], modifiers: string[] } {
+  switch (command) {
+    case 'back':
+      return { keys: ['['], modifiers: ['command'] }
+    case 'forward':
+      return { keys: [']'], modifiers: ['command'] }
+    case 'reload':
+      return { keys: ['r'], modifiers: ['command'] }
+  }
+}
+
+function summarizeAppleEvents(result: Awaited<ReturnType<typeof runChromeAppleEventsTabCommand>>): BrowserChromeDomainCommandResult['appleEvents'] {
+  return {
+    ok: result.ok,
+    reason: result.reason,
+    candidateCount: result.candidateCount,
+    matchingCandidateCount: result.matchingCandidateCount,
+    selectedWindow: result.selectedWindow,
+    before: result.before,
+    after: result.after,
+  }
+}
+
+function appleEventsKnownLimits(result: Awaited<ReturnType<typeof runChromeAppleEventsTabCommand>>): string[] {
+  return result.ok
+    ? []
+    : [`apple_events_${result.reason ?? 'unavailable'}`]
 }
 
 function stringInput(call: MacOSChromeOperationCall, key: string): string {
@@ -648,10 +858,10 @@ function resolveClickTarget(input: {
   kind: AtomicClickTargetKind
   hint?: AtomicTargetHint
   nodes: SurfaceNode[]
-  windowBounds: Bounds
+  viewportBounds: Bounds
   evidence: ArtifactRef[]
 }): { selected: { match: AtomicMatch, candidate: AtomicTargetCandidate }, candidates: AtomicTargetCandidate[], knownLimits: string[] } {
-  const candidates = buildTargetCandidates(input.nodes, input.windowBounds, input.evidence)
+  const candidates = buildTargetCandidates(input.nodes, input.viewportBounds, input.evidence)
     .filter(candidate => candidateLabelMatches(candidate, input.query))
     .filter(candidate => clickKindMatches(candidate, input.kind))
     .filter(candidate => input.hint ? hintCompatible(candidate.normalizedBox, input.hint) : true)
@@ -664,10 +874,10 @@ function resolveTypeInputTarget(input: {
   query: string
   hint?: AtomicTargetHint
   nodes: SurfaceNode[]
-  windowBounds: Bounds
+  viewportBounds: Bounds
   evidence: ArtifactRef[]
 }): { selected: { match: AtomicMatch, candidate: AtomicTargetCandidate }, candidates: AtomicTargetCandidate[], knownLimits: string[] } {
-  const candidates = buildTargetCandidates(input.nodes, input.windowBounds, input.evidence)
+  const candidates = buildTargetCandidates(input.nodes, input.viewportBounds, input.evidence)
     .filter(candidate => candidate.inputCapable)
     .filter(candidate => candidateLabelMatches(candidate, input.query))
     .filter(candidate => input.hint ? hintCompatible(candidate.normalizedBox, input.hint) : true)
@@ -706,7 +916,7 @@ function selectCandidate(
   }
 }
 
-function buildTargetCandidates(nodes: SurfaceNode[], windowBounds: Bounds, evidence: ArtifactRef[]): AtomicTargetCandidate[] {
+function buildTargetCandidates(nodes: SurfaceNode[], normalizationBounds: Bounds, evidence: ArtifactRef[]): AtomicTargetCandidate[] {
   const filtered = nodes
     .filter(node => node.label && validBounds(node.box))
   const groups: SurfaceNode[][] = []
@@ -723,7 +933,7 @@ function buildTargetCandidates(nodes: SurfaceNode[], windowBounds: Bounds, evide
       kind: primary.kind,
       label: primary.label ?? '',
       box: primary.box,
-      normalizedBox: normalizeBox(primary.box, windowBounds),
+      normalizedBox: normalizeBox(primary.box, normalizationBounds),
       sourceTier: sourceTierForGroup(group),
       sourceSummary: uniqueStrings(group.map(node => `${sourceGroup(node)}:${node.kind}`)),
       inputCapable: group.some(node => INPUT_NODE_KINDS.has(node.kind)),
@@ -848,6 +1058,25 @@ function findTextMatchableNode(node: SurfaceNode): boolean {
     || INPUT_NODE_KINDS.has(node.kind)
     || INTERACTIVE_AX_KINDS.has(node.kind)
     || ACTIONABLE_DOM_KINDS.has(node.kind)
+}
+
+function pageViewportNodes(nodes: SurfaceNode[]): SurfaceNode[] {
+  return nodes.filter(node => node.region === 'page_viewport')
+}
+
+function pageViewportBounds(context: AtomicOcrContext): Bounds {
+  if (!context.regionMap)
+    throw Object.assign(new Error('Verified page viewport is unavailable for normalized page command coordinates.'), { code: 'page_viewport_unavailable' })
+  return requirePageViewport(context.regionMap)
+}
+
+function normalizeMatchForRegion(match: AtomicMatch, regionMap: ChromeWindowRegionMap | undefined): AtomicMatch {
+  if (!regionMap?.pageViewport)
+    return match
+  return {
+    ...match,
+    normalizedBox: normalizeBoxToWindow(match.box, regionMap.pageViewport.bounds),
+  }
 }
 
 function hintCompatible(box: AtomicTargetHint, hint: AtomicTargetHint): boolean {

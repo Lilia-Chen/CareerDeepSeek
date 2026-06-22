@@ -114,3 +114,27 @@ export interface AtomicScrollRegionResult {
   evidence: ArtifactRef[]
   knownLimits: string[]
 }
+
+export interface BrowserChromeDomainCommandResult {
+  command: 'back' | 'forward' | 'reload' | 'addressBarSubmit'
+  delivered: boolean
+  deliveryPath: 'apple_events' | 'foreground_keyboard' | 'apple_events_then_keyboard_fallback'
+  textLength?: number
+  appleEvents?: {
+    ok: boolean
+    reason?: string
+    candidateCount: number
+    matchingCandidateCount: number
+    selectedWindow?: unknown
+    before?: unknown
+    after?: unknown
+  }
+  keyboardFallback?: {
+    attempted: boolean
+    keys: string[]
+    modifiers: string[]
+    reason?: string
+  }
+  evidence: ArtifactRef[]
+  knownLimits: string[]
+}

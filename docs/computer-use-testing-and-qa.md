@@ -7,7 +7,7 @@ CareerDeepSeek separates deterministic engineering tests from agent-in-the-loop 
 Deterministic tests live under `test/` and verify code contracts. They may assert:
 
 - Type-level interfaces and exported APIs.
-- Single-command invoke contracts such as `findText`, `clickTarget`, `typeInput`, `key`, and `scrollRegion`.
+- Single-command invoke contracts such as `observe`, `findText`, `waitForText`, `clickTarget`, `typeInput`, `key`, `scrollRegion`, and browser-chrome domain commands.
 - Driver safety gates.
 - Coordinate projection and self-contained target resolution rules.
 - macOS event payload shape, including PID, window number, screen point, and window-local point.
@@ -20,15 +20,21 @@ Deterministic tests for computer-use should cover:
 - Chrome window capture contract payloads.
 - `ArtifactRef` records whose paths exist and parse.
 - Kebab-case artifact roles such as `screenshot`, `capture-contract`, and `observation-snapshot`.
-- Atomic command outputs for match count, selected match, coordinates, confidence, refusal code, and known limits.
-- `findText` outputs related `SurfaceNode` context and cross-source audit evidence when OCR/AX/DOM data is available.
-- Click/focus actions re-resolve their target from the current page in the same command invocation.
-- Semantic foreground click tests cover OCR, AXTree, and Chrome DOM target evidence through `clickTarget`.
+- Command outputs for match count, selected match, coordinates, confidence, refusal code, and known limits.
+- `observe` outputs region-tagged evidence and supports `--scope all|viewport|browser_chrome`.
+- `observe --scope browser_chrome` includes coarse Chrome-owned UI evidence outside the webpage viewport; P2.1 does not assert finer address-bar, toolbar, tab-strip, menu-bar, or bookmarks-bar tags.
+- `findText` outputs related `SurfaceNode` context and cross-source audit evidence when OCR/AX/DOM data is available, scoped to `page_viewport`.
+- Click actions re-resolve their target from the current page viewport in the same command invocation.
+- Semantic foreground click tests cover OCR, AXTree, and Chrome DOM target evidence through viewport-only `clickTarget`.
 - `clickTarget --kind any` tests cover source-tier behavior: interactive AX role over actionable DOM over OCR-only text, with ambiguity when the highest tier has multiple candidates.
-- `typeInput` resolves the input target, replaces the current field value, and types inside the same command invocation.
-- `waitForText` tests preserve lightweight polling: OCR-only inside the loop, with AX/DOM normalization and audit only for the final result.
+- `typeInput` resolves the viewport input target, replaces the current field value, and types inside the same command invocation.
+- `waitForText` tests preserve lightweight polling: viewport geometry is resolved once before polling, OCR-only runs inside the loop, and AX/DOM normalization and audit apply only to the final result.
 - `key` operates on the currently active control and does not accept hidden target refs from prior calls.
-- `scrollRegion` resolves the current Chrome region inside the same command invocation.
+- `scrollRegion` resolves viewport-relative scroll coordinates inside the same command invocation and does not perform a default pre-click.
+- `chrome.back`, `chrome.forward`, and `chrome.reload` perform profile + window + tab preflight, bind Apple Events to the leased Chrome window, record before/after active-tab metadata when available, and use `Cmd+[` / `Cmd+]` / `Cmd+R` keyboard fallback only after foreground verification.
+- back/forward keyboard fallback tests require bracket key mapping or an explicit fallback-unavailable refusal.
+- `chrome.addressBarSubmit` performs profile + window + tab preflight, uses foreground `Cmd+L -> text -> Return`, records text length rather than full text in trace summaries, and records before/after active-tab metadata when available.
+- `chrome.checkSafetyGate` is unknown through public invoke while driver-level safety-gate tests still pass.
 - `ObservationSnapshot` and `SurfaceNode` shape and provenance.
 - Chrome lease/profile/foreground/hard-stop refusal.
 - Harness sequencing: one command per process invocation; post-action observation is explicit.
@@ -91,9 +97,11 @@ Action sequence expectations:
 
 - `findText` is observe-only but returns enough node/audit context for the caller to choose the next action.
 - click commands re-resolve target text and semantic target evidence atomically.
-- scroll resolves the current Chrome region atomically.
-- `typeInput` resolves the input target, replaces the current field value, and types inside the same command invocation.
+- scroll resolves the current viewport region atomically.
+- `typeInput` resolves the viewport input target, replaces the current field value, and types inside the same command invocation.
 - `key` operates on the active control.
+- browser-chrome domain actions do not require a preceding `chrome.observe`; they still perform same-invocation profile + window + tab checks.
+- address-bar submission uses `chrome.addressBarSubmit`, not `chrome.typeInput`.
 - caller post-action observation is explicit; action commands do not hide automatic post-observe.
 
 QA scripts must not encode a fixed Google, LinkedIn, `gov.uk`, civil-service, or company-research workflow and treat that as research quality.

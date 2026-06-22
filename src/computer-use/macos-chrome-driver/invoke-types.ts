@@ -5,6 +5,7 @@ export type ComputerUseCommandNamespace
     | 'verify'
     | 'prepare'
     | 'action'
+    | 'domain'
     | 'test'
 
 export type ComputerUseDisturbanceClass

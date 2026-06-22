@@ -7,16 +7,20 @@ import type { ComputerUseInvokeTraceSink } from '../../src/computer-use/macos-ch
 
 const expectedCommandIds = [
   'chrome.observe',
-  'chrome.checkSafetyGate',
   'chrome.findText',
   'chrome.waitForText',
   'chrome.clickTarget',
   'chrome.typeInput',
   'chrome.key',
   'chrome.scrollRegion',
+  'chrome.back',
+  'chrome.forward',
+  'chrome.reload',
+  'chrome.addressBarSubmit',
 ]
 
 const removedCommandIds = [
+  'chrome.checkSafetyGate',
   'chrome.clickText',
   'chrome.findRows',
   'chrome.clickRow',
@@ -55,8 +59,8 @@ describe('invoke runtime single surface', () => {
     }
   })
 
-  it('dry-runs observe and safety commands on the single command surface', async () => {
-    for (const commandId of ['chrome.observe', 'chrome.checkSafetyGate']) {
+  it('dry-runs observe and browser-chrome domain commands on the single command surface', async () => {
+    for (const commandId of ['chrome.observe', 'chrome.back', 'chrome.forward', 'chrome.reload', 'chrome.addressBarSubmit']) {
       const result = await invoke({ commandId, dryRun: true })
 
       expect(result.status).toBe('completed')

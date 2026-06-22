@@ -1,10 +1,11 @@
 import type {
   MacOSChromeOperationCall,
   MacOSChromeOperationResponse,
-} from './atomic-commands.js'
+} from './chrome-command-sub-workflow.js'
 import type {
   AtomicClickResult,
   AtomicClickTargetKind,
+  BrowserChromeDomainCommandResult,
   AtomicFindResult,
   AtomicKeyResult,
   AtomicScrollRegionResult,
@@ -22,7 +23,6 @@ import type {
 import type {
   ArtifactRef,
   ObservationSnapshot,
-  SafetyCheckResult,
 } from './types.js'
 import {
   isObjectLikeRecord,
@@ -45,21 +45,23 @@ export type ComputerUseCommandHandlerRegistry = Readonly<Partial<Record<string, 
 export const EMPTY_COMPUTER_USE_COMMAND_HANDLERS: ComputerUseCommandHandlerRegistry = Object.freeze({})
 
 export interface MacOSChromeInvokeDriver {
-  observe: () => Promise<ObservationSnapshot>
-  checkSafetyGate: () => Promise<SafetyCheckResult>
+  observe: (input?: { scope?: 'all' | 'viewport' | 'browser_chrome' }) => Promise<ObservationSnapshot>
   invokeOperation: (call: MacOSChromeOperationCall) => Promise<MacOSChromeOperationResponse>
 }
 
 export function createMacOSChromeHandlers(driver: MacOSChromeInvokeDriver): ComputerUseCommandHandlerRegistry {
   return Object.freeze({
-    'chrome.observe': async ({ spec }) => invokeObserve(spec, driver),
-    'chrome.checkSafetyGate': async ({ spec }) => invokeCheckSafetyGate(spec, driver),
+    'chrome.observe': async ({ request, spec }) => invokeObserve(request, spec, driver),
     'chrome.findText': async ({ request, spec }) => invokeAtomicFindText(request, spec, driver),
     'chrome.waitForText': async ({ request, spec }) => invokeAtomicWaitForText(request, spec, driver),
     'chrome.clickTarget': async ({ request, spec }) => invokeAtomicClickTarget(request, spec, driver),
     'chrome.typeInput': async ({ request, spec }) => invokeAtomicTypeInput(request, spec, driver),
     'chrome.key': async ({ request, spec }) => invokeAtomicKey(request, spec, driver),
     'chrome.scrollRegion': async ({ request, spec }) => invokeAtomicScrollRegion(request, spec, driver),
+    'chrome.back': async ({ spec }) => invokeBrowserChromeDomainCommand(spec, driver),
+    'chrome.forward': async ({ spec }) => invokeBrowserChromeDomainCommand(spec, driver),
+    'chrome.reload': async ({ spec }) => invokeBrowserChromeDomainCommand(spec, driver),
+    'chrome.addressBarSubmit': async ({ request, spec }) => invokeAddressBarSubmit(request, spec, driver),
   })
 }
 
@@ -309,11 +311,15 @@ async function invokeDriverOperation<T extends MacOSChromeOperationResponse>(
 }
 
 async function invokeObserve(
+  request: ComputerUseInvokeRequest,
   spec: Readonly<ComputerUseCommandSpec>,
   driver: MacOSChromeInvokeDriver,
 ): Promise<ComputerUseInvokeResult> {
+  const scope = parseObservationScope(request.inputs?.scope, spec.id)
+  if (!scope.ok)
+    return scope.result
   try {
-    const snapshot = await driver.observe()
+    const snapshot = await driver.observe({ scope: scope.value })
     const artifacts = uniqueArtifactRefs([
       observationArtifactRef(snapshot),
       ...snapshot.evidence,
@@ -324,7 +330,7 @@ async function invokeObserve(
     return {
       commandId: spec.id,
       status: 'completed',
-      summary: `Observed Chrome window snapshot ${snapshot.snapshot_id}.`,
+      summary: `Observed Chrome window snapshot ${snapshot.snapshot_id} (${scope.value}).`,
       output: snapshot,
       signals: [
         'observe_completed',
@@ -350,58 +356,53 @@ async function invokeObserve(
   }
 }
 
-async function invokeCheckSafetyGate(
+async function invokeBrowserChromeDomainCommand(
   spec: Readonly<ComputerUseCommandSpec>,
   driver: MacOSChromeInvokeDriver,
 ): Promise<ComputerUseInvokeResult> {
   try {
-    const result = await driver.checkSafetyGate()
-    if (result.passed) {
-      return {
-        commandId: spec.id,
-        status: 'completed',
-        summary: 'Chrome safety gate passed.',
-        output: result,
-        signals: ['safety_gate_passed'],
-        artifacts: [],
-        knownLimits: ['read_only_safety_check_only'],
-      }
-    }
+    const result = await invokeDriverOperation<BrowserChromeDomainCommandResult>(driver, spec, {})
+    return completedBrowserChromeResult(spec.id, result)
+  }
+  catch (error) {
+    return atomicFailureResult(spec.id, spec.operation, 'action_delivery', error)
+  }
+}
 
-    const failure = result.failures[0]
-    const hardStop = result.failures.some(item => item.code === 'hard_stop_signal')
-    const failureCode = hardStop ? 'hard_stop_signal' : (failure?.code ?? 'safety_gate_failed')
-
+async function invokeAddressBarSubmit(
+  request: ComputerUseInvokeRequest,
+  spec: Readonly<ComputerUseCommandSpec>,
+  driver: MacOSChromeInvokeDriver,
+): Promise<ComputerUseInvokeResult> {
+  const text = requiredString(request.inputs, 'text', spec.id, 'missing_text')
+  if (!text.ok)
+    return text.result
+  try {
+    const result = await invokeDriverOperation<BrowserChromeDomainCommandResult>(driver, spec, { text: text.value })
     return {
-      commandId: spec.id,
-      status: 'refused',
-      summary: `Chrome safety gate refused: ${failureCode}.`,
-      output: result,
-      signals: uniqueStrings([
-        'safety_gate_failed',
-        ...result.failures.map(item => item.code),
-      ]),
-      artifacts: [],
-      failure: {
-        class: hardStop ? 'hard_stop' : 'safety_gate',
-        code: failureCode,
-        message: failure?.detail ?? 'Chrome safety gate refused the current context.',
-      },
-      knownLimits: [
-        hardStop ? 'hard_stop_exposed_without_overlay_dismissal' : 'read_only_safety_check_only',
-      ],
+      ...completedBrowserChromeResult(spec.id, result),
+      summary: `Submitted ${text.value.length} character(s) through the Chrome address bar.`,
     }
   }
   catch (error) {
-    return handlerFailureResult({
-      commandId: spec.id,
-      summary: 'Chrome safety gate check failed.',
-      failureClass: 'safety_gate',
-      code: 'check_safety_gate_failed',
-      message: safeErrorMessage(error),
-      signals: ['safety_gate_check_failed'],
-      knownLimits: ['read_only_safety_check_only'],
-    })
+    return atomicFailureResult(spec.id, spec.operation, 'action_delivery', error)
+  }
+}
+
+function completedBrowserChromeResult(commandId: string, result: BrowserChromeDomainCommandResult): ComputerUseInvokeResult {
+  return {
+    commandId,
+    status: result.delivered ? 'completed' : 'failed',
+    summary: result.delivered
+      ? `Delivered browser-chrome command ${result.command}.`
+      : `Browser-chrome command ${result.command} was not delivered.`,
+    output: result,
+    signals: uniqueStrings([
+      result.delivered ? 'browser_chrome_command_delivered' : 'browser_chrome_command_not_delivered',
+      `delivery_path_${result.deliveryPath}`,
+    ]),
+    artifacts: result.evidence,
+    knownLimits: result.knownLimits,
   }
 }
 
@@ -441,6 +442,10 @@ type HintInputResult
   = | { ok: true, value: AtomicTargetHint | undefined }
     | { ok: false, result: ComputerUseInvokeResult }
 
+type ObservationScopeInputResult
+  = | { ok: true, value: 'all' | 'viewport' | 'browser_chrome' }
+    | { ok: false, result: ComputerUseInvokeResult }
+
 function requiredString(
   inputs: Record<string, unknown> | undefined,
   key: string,
@@ -461,6 +466,25 @@ function requiredString(
       message: `${commandId} requires ${key} as a non-empty string.`,
       signals: [missingCode],
       knownLimits: ['cli_flat_inputs_only'],
+    }),
+  }
+}
+
+function parseObservationScope(value: unknown, commandId: string): ObservationScopeInputResult {
+  if (value === undefined)
+    return { ok: true, value: 'all' }
+  if (value === 'all' || value === 'viewport' || value === 'browser_chrome')
+    return { ok: true, value }
+  return {
+    ok: false,
+    result: handlerFailureResult({
+      commandId,
+      summary: 'scope input is invalid.',
+      failureClass: 'invalid_input',
+      code: 'invalid_scope',
+      message: `${commandId} scope must be one of all, viewport, browser_chrome.`,
+      signals: ['invalid_scope'],
+      knownLimits: ['observe_scope_all_viewport_browser_chrome'],
     }),
   }
 }
@@ -561,7 +585,7 @@ function optionalHint(
         code: 'incomplete_hint',
         message: `${commandId} requires all hint_left, hint_top, hint_right, and hint_bottom when any hint is supplied.`,
         signals: ['incomplete_hint'],
-        knownLimits: ['hint_coordinates_are_normalized_window_bounds'],
+        knownLimits: ['hint_coordinates_are_normalized_viewport_bounds'],
       }),
     }
   }
@@ -580,7 +604,7 @@ function optionalHint(
         code: 'invalid_hint',
         message: `${commandId} hint coordinates must be finite numbers in [0, 1].`,
         signals: ['invalid_hint'],
-        knownLimits: ['hint_coordinates_are_normalized_window_bounds'],
+        knownLimits: ['hint_coordinates_are_normalized_viewport_bounds'],
       }),
     }
   }
@@ -596,7 +620,7 @@ function optionalHint(
         code: 'invalid_hint_bounds',
         message: `${commandId} requires hint_left < hint_right and hint_top < hint_bottom.`,
         signals: ['invalid_hint_bounds'],
-        knownLimits: ['hint_coordinates_are_normalized_window_bounds'],
+        knownLimits: ['hint_coordinates_are_normalized_viewport_bounds'],
       }),
     }
   }

@@ -3,22 +3,15 @@ import { createMacOSChromeInvokeEntryForTest } from '../../src/computer-use/maco
 import { createMacOSChromeHandlers } from '../../src/computer-use/macos-chrome-driver/invoke-handlers.js'
 import { invoke } from '../../src/computer-use/macos-chrome-driver/invoke-runtime.js'
 import type { MacOSChromeInvokeDriver } from '../../src/computer-use/macos-chrome-driver/invoke-handlers.js'
-import type { MacOSChromeAtomicCommands, MacOSChromeOperationCall } from '../../src/computer-use/macos-chrome-driver/atomic-commands.js'
+import type { MacOSChromeAtomicCommands, MacOSChromeOperationCall } from '../../src/computer-use/macos-chrome-driver/chrome-command-sub-workflow.js'
 
-function fakeDriver(atomicCommands: Partial<MacOSChromeAtomicCommands>): MacOSChromeInvokeDriver {
+function fakeDriver(
+  atomicCommands: Partial<MacOSChromeAtomicCommands>,
+  options: { observe?: MacOSChromeInvokeDriver['observe'] } = {},
+): MacOSChromeInvokeDriver {
   return {
-    observe: async () => {
+    observe: options.observe ?? (async () => {
       throw new Error('observe should not be called by CLI atomic handlers')
-    },
-    checkSafetyGate: async () => ({
-      passed: true,
-      checks: {
-        profile_verified: true,
-        chrome_foreground: true,
-        leased_window_foreground: true,
-        no_hard_stop_signal: true,
-      },
-      failures: [],
     }),
     invokeOperation: async call => invokeFakeOperation(atomicCommands, call),
   } as MacOSChromeInvokeDriver
@@ -61,6 +54,14 @@ async function invokeFakeOperation(
         amount: call.inputs.amount as number | undefined,
         region: call.inputs.region as { left: number, top: number, right: number, bottom: number } | undefined,
       })
+    case 'back':
+      return requiredFakeCommand(atomicCommands.back, call.operation)()
+    case 'forward':
+      return requiredFakeCommand(atomicCommands.forward, call.operation)()
+    case 'reload':
+      return requiredFakeCommand(atomicCommands.reload, call.operation)()
+    case 'addressBarSubmit':
+      return requiredFakeCommand(atomicCommands.addressBarSubmit, call.operation)({ text: call.inputs.text as string })
     default:
       throw new Error(`No fake operation for ${call.operation}`)
   }
@@ -73,6 +74,55 @@ function requiredFakeCommand<T extends (...args: never[]) => unknown>(command: T
 }
 
 describe('macOS Chrome CLI invoke handlers', () => {
+  it('passes chrome.observe scope to the driver', async () => {
+    let received: unknown
+    const handlers = createMacOSChromeHandlers(fakeDriver({}, {
+      observe: async (input) => {
+        received = input
+        return {
+          api_version: 'careerdeepseek.observation_snapshot.v1alpha1',
+          snapshot_id: 'snapshot_test',
+          run_id: 'run_test',
+          span_id: 'span_test',
+          captured_at_millis: 1,
+          source: 'merged',
+          scope: { surface: 'window' },
+          evidence: [],
+          nodes: [],
+          detail: {},
+          known_limits: [],
+        }
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.observe', inputs: { scope: 'browser_chrome' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('completed')
+    expect(received).toEqual({ scope: 'browser_chrome' })
+  })
+
+  it('rejects invalid chrome.observe scope before invoking the driver', async () => {
+    const handlers = createMacOSChromeHandlers(fakeDriver({}, {
+      observe: async () => {
+        throw new Error('observe should not run for invalid scope')
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.observe', inputs: { scope: 'chrome_address_bar' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('failed')
+    expect(result.failure).toMatchObject({
+      class: 'invalid_input',
+      code: 'invalid_scope',
+    })
+  })
+
   it('returns completed when chrome.findText finds no matches', async () => {
     const handlers = createMacOSChromeHandlers(fakeDriver({
       findText: async () => ({
@@ -240,6 +290,7 @@ describe('macOS Chrome CLI invoke handlers', () => {
       class: 'invalid_input',
       code: 'invalid_hint',
     })
+    expect(result.knownLimits).toContain('hint_coordinates_are_normalized_viewport_bounds')
   })
 
   it('parses chrome.typeInput target, text, submit key, and hint', async () => {
@@ -293,5 +344,57 @@ describe('macOS Chrome CLI invoke handlers', () => {
       id: 'chrome.typeInput',
       operation: 'typeInput',
     })
+  })
+
+  it('dispatches browser-chrome navigation commands through invokeOperation', async () => {
+    let receivedOperation: string | undefined
+    const handlers = createMacOSChromeHandlers({
+      observe: async () => {
+        throw new Error('observe should not be called')
+      },
+      invokeOperation: async (call) => {
+        receivedOperation = call.operation
+        return {
+          command: call.operation as 'back',
+          delivered: true,
+          deliveryPath: 'apple_events',
+          evidence: [],
+          knownLimits: [],
+        }
+      },
+    })
+
+    const result = await invoke({ commandId: 'chrome.back' }, { handlers })
+
+    expect(result.status).toBe('completed')
+    expect(receivedOperation).toBe('back')
+    expect(result.signals).toContain('delivery_path_apple_events')
+  })
+
+  it('parses addressBarSubmit text without leaking it into summary', async () => {
+    let received: unknown
+    const handlers = createMacOSChromeHandlers(fakeDriver({
+      addressBarSubmit: async (input) => {
+        received = input
+        return {
+          command: 'addressBarSubmit',
+          delivered: true,
+          deliveryPath: 'foreground_keyboard',
+          textLength: input.text.length,
+          evidence: [],
+          knownLimits: [],
+        }
+      },
+    }))
+
+    const result = await invoke(
+      { commandId: 'chrome.addressBarSubmit', inputs: { text: 'sensitive query text' } },
+      { handlers },
+    )
+
+    expect(result.status).toBe('completed')
+    expect(received).toEqual({ text: 'sensitive query text' })
+    expect(result.summary).toContain('20 character')
+    expect(result.summary).not.toContain('sensitive query text')
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { atomicScrollDelta } from '../../src/computer-use/macos-chrome-driver/atomic-commands.js'
+import { atomicScrollDelta } from '../../src/computer-use/macos-chrome-driver/chrome-command-sub-workflow.js'
 import { auditSurfaceNodes, matchAtomicItems, projectPixelBoxToLogicalMatch, projectPixelPointToLogical } from '../../src/computer-use/macos-chrome-driver/atomic-recognition.js'
 import type { AtomicMatchItem } from '../../src/computer-use/macos-chrome-driver/atomic-recognition.js'
 import type { ChromeCaptureContract, SurfaceNode } from '../../src/computer-use/macos-chrome-driver/types.js'

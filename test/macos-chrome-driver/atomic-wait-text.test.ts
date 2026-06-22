@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LiveMacOSChromeAtomicCommands } from '../../src/computer-use/macos-chrome-driver/atomic-commands.js'
+import { LiveMacOSChromeAtomicCommands } from '../../src/computer-use/macos-chrome-driver/chrome-command-sub-workflow.js'
 import type { ComputerUseConfig } from '../../src/computer-use/config.js'
 import type { ChromeContextSnapshot, ChromeWindowCapture, OcrTextSnapshot } from '../../src/computer-use/macos-chrome-driver/types.js'
+import type { AXNode } from '../../src/computer-use/types.js'
 
 const mocks = vi.hoisted(() => ({
   captureChromeWindow: vi.fn(),
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   captureChromeDom: vi.fn(),
   executeMoveAndClick: vi.fn(),
   executePressKeys: vi.fn(),
+  executeScroll: vi.fn(),
   executeTypeText: vi.fn(),
   recognizeTextInImage: vi.fn(),
   unlink: vi.fn(),
@@ -37,7 +39,7 @@ vi.mock('../../src/computer-use/chrome-dom.js', () => ({
 vi.mock('../../src/computer-use/macos-actions.js', () => ({
   executeMoveAndClick: mocks.executeMoveAndClick,
   executePressKeys: mocks.executePressKeys,
-  executeScroll: vi.fn(),
+  executeScroll: mocks.executeScroll,
   executeTypeText: mocks.executeTypeText,
 }))
 
@@ -128,6 +130,23 @@ function commandsWithTrace(): LiveMacOSChromeAtomicCommands {
   })
 }
 
+function axWindow(children: AXNode[]): AXNode {
+  return {
+    uid: 'root',
+    role: 'AXWindow',
+    bounds: context.window.bounds,
+    children: [
+      {
+        uid: 'web-area',
+        role: 'AXWebArea',
+        bounds: { x: 100, y: 220, width: 800, height: 580 },
+        children: [],
+      },
+      ...children,
+    ],
+  }
+}
+
 describe('atomic waitForText', () => {
   beforeEach(() => {
     vi.spyOn(Date, 'now').mockReturnValue(1000)
@@ -137,6 +156,8 @@ describe('atomic waitForText', () => {
     mocks.executeMoveAndClick.mockResolvedValue(undefined)
     mocks.executePressKeys.mockReset()
     mocks.executePressKeys.mockResolvedValue(undefined)
+    mocks.executeScroll.mockReset()
+    mocks.executeScroll.mockResolvedValue(undefined)
     mocks.executeTypeText.mockReset()
     mocks.executeTypeText.mockResolvedValue(undefined)
     mocks.recognizeTextInImage.mockReset()
@@ -148,7 +169,7 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: { uid: 'root', role: 'AXWindow', bounds: context.window.bounds, children: [] },
+      root: axWindow([]),
     })
     mocks.captureChromeDom.mockReset()
     mocks.captureChromeDom.mockResolvedValue({
@@ -275,19 +296,14 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        bounds: context.window.bounds,
-        children: [{
-          uid: 'button-1',
-          role: 'AXButton',
-          title: 'Submit',
-          bounds: { x: 110, y: 220, width: 80, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'button-1',
+        role: 'AXButton',
+        title: 'Submit',
+        bounds: { x: 110, y: 220, width: 80, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
     const command = new LiveMacOSChromeAtomicCommands({
       config,
@@ -328,19 +344,14 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        bounds: context.window.bounds,
-        children: [{
-          uid: 'search-1',
-          role: 'AXTextField',
-          title: 'Search',
-          bounds: { x: 140, y: 240, width: 180, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'search-1',
+        role: 'AXTextField',
+        title: 'Search',
+        bounds: { x: 140, y: 240, width: 180, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
 
     await expect(commandsWithTrace().clickTarget({ query: 'Search', kind: 'any' })).rejects.toMatchObject({
@@ -379,19 +390,14 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        bounds: context.window.bounds,
-        children: [{
-          uid: 'button-1',
-          role: 'AXButton',
-          title: 'Submit',
-          bounds: { x: 140, y: 240, width: 100, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'button-1',
+        role: 'AXButton',
+        title: 'Submit',
+        bounds: { x: 140, y: 240, width: 100, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
     mocks.captureChromeDom.mockResolvedValueOnce({
       url: 'https://example.test',
@@ -429,26 +435,21 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        bounds: context.window.bounds,
-        children: [{
-          uid: 'group-1',
-          role: 'AXGroup',
-          title: 'Loaded Results - Example - Google Chrome',
-          bounds: { x: 100, y: 200, width: 800, height: 600 },
-          enabled: true,
-          children: [],
-        }, {
-          uid: 'label-1',
-          role: 'AXStaticText',
-          title: 'Loaded Results',
-          bounds: { x: 180, y: 260, width: 160, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'group-1',
+        role: 'AXGroup',
+        title: 'Loaded Results - Example - Google Chrome',
+        bounds: { x: 100, y: 200, width: 800, height: 600 },
+        enabled: true,
+        children: [],
+      }, {
+        uid: 'label-1',
+        role: 'AXStaticText',
+        title: 'Loaded Results',
+        bounds: { x: 180, y: 260, width: 160, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
 
     const result = await commandsWithTrace().findText({ query: 'Loaded' })
@@ -459,12 +460,45 @@ describe('atomic waitForText', () => {
       text: 'Loaded Results',
       normalizedBox: {
         left: 0.1,
-        top: 0.1,
+        top: 0.06896551724137931,
         right: 0.3,
-        bottom: 0.15,
+        bottom: 0.1206896551724138,
       },
     })
     expect(result.nodes?.some(node => node.kind === 'ax_static_text')).toBe(true)
+  })
+
+  it('findText does not return browser chrome text outside the page viewport', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([
+      {
+        matchIndex: 0,
+        text: 'Back',
+        confidence: 0.93,
+        bounds: { x: 20, y: 0, width: 80, height: 30 },
+      },
+    ]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: axWindow([{
+        uid: 'back-1',
+        role: 'AXButton',
+        title: 'Back',
+        bounds: { x: 120, y: 205, width: 60, height: 25 },
+        enabled: true,
+        children: [],
+      }]),
+    })
+
+    const result = await commandsWithTrace().findText({ query: 'Back' })
+
+    expect(result.found).toBe(false)
+    expect(result.matches).toEqual([])
+    expect(result.nodes?.every(node => node.region === 'page_viewport')).toBe(true)
   })
 
   it('clickTarget kind=any does not treat structural AX containers as targets', async () => {
@@ -476,19 +510,14 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        bounds: context.window.bounds,
-        children: [{
-          uid: 'group-1',
-          role: 'AXGroup',
-          title: 'Loaded Results - Example - Google Chrome',
-          bounds: { x: 100, y: 200, width: 800, height: 600 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'group-1',
+        role: 'AXGroup',
+        title: 'Loaded Results - Example - Google Chrome',
+        bounds: { x: 100, y: 200, width: 800, height: 600 },
+        enabled: true,
+        children: [],
+      }]),
     })
 
     await expect(commandsWithTrace().clickTarget({ query: 'Loaded Results', kind: 'any' })).rejects.toMatchObject({
@@ -506,26 +535,21 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        bounds: context.window.bounds,
-        children: [{
-          uid: 'group-1',
-          role: 'AXGroup',
-          title: 'Loaded Results',
-          bounds: { x: 100, y: 200, width: 800, height: 600 },
-          enabled: true,
-          children: [],
-        }, {
-          uid: 'label-1',
-          role: 'AXStaticText',
-          title: 'Loaded Results',
-          bounds: { x: 180, y: 260, width: 160, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'group-1',
+        role: 'AXGroup',
+        title: 'Loaded Results',
+        bounds: { x: 100, y: 200, width: 800, height: 600 },
+        enabled: true,
+        children: [],
+      }, {
+        uid: 'label-1',
+        role: 'AXStaticText',
+        title: 'Loaded Results',
+        bounds: { x: 180, y: 260, width: 160, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
 
     const result = await commandsWithTrace().clickTarget({ query: 'Loaded Results', kind: 'any' })
@@ -539,6 +563,36 @@ describe('atomic waitForText', () => {
     }))
   })
 
+  it('clickTarget kind=menuitem can target AXMenuItem inside the page viewport', async () => {
+    mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
+    mocks.captureAXTree.mockResolvedValueOnce({
+      snapshotId: 'ax_test',
+      pid: 123,
+      appName: 'Google Chrome',
+      capturedAt: '2026-06-20T00:00:00.000Z',
+      maxDepth: 15,
+      truncated: false,
+      root: axWindow([{
+        uid: 'menu-item-1',
+        role: 'AXMenuItem',
+        title: 'Archive',
+        bounds: { x: 180, y: 300, width: 120, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
+    })
+
+    const result = await commandsWithTrace().clickTarget({ query: 'Archive', kind: 'menuitem' })
+
+    expect(result.clicked).toMatchObject({
+      kind: 'ax_menu_item',
+      logicalPoint: { x: 240, y: 315 },
+    })
+    expect(mocks.executeMoveAndClick).toHaveBeenCalledWith(config, expect.objectContaining({
+      pointerTrace: [expect.objectContaining({ x: 240, y: 315 })],
+    }))
+  })
+
   it('typeInput focuses an input with foreground pointer and types text', async () => {
     mocks.recognizeTextInImage.mockResolvedValueOnce(ocr([]))
     mocks.captureAXTree.mockResolvedValueOnce({
@@ -548,18 +602,14 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        children: [{
-          uid: 'search-1',
-          role: 'AXTextField',
-          title: 'Search',
-          bounds: { x: 140, y: 240, width: 180, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'search-1',
+        role: 'AXTextField',
+        title: 'Search',
+        bounds: { x: 140, y: 240, width: 180, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
 
     const result = await commandsWithTrace().typeInput({ query: 'Search', text: 'AI agent', submitKey: 'return' })
@@ -580,19 +630,15 @@ describe('atomic waitForText', () => {
       capturedAt: '2026-06-20T00:00:00.000Z',
       maxDepth: 15,
       truncated: false,
-      root: {
-        uid: 'root',
-        role: 'AXWindow',
-        children: [{
-          uid: 'search-1',
-          role: 'AXTextField',
-          title: 'Search',
-          value: 'Old query',
-          bounds: { x: 140, y: 240, width: 180, height: 30 },
-          enabled: true,
-          children: [],
-        }],
-      },
+      root: axWindow([{
+        uid: 'search-1',
+        role: 'AXTextField',
+        title: 'Search',
+        value: 'Old query',
+        bounds: { x: 140, y: 240, width: 180, height: 30 },
+        enabled: true,
+        children: [],
+      }]),
     })
 
     const result = await commandsWithTrace().typeInput({ query: 'Search', text: 'AI agent' })
@@ -638,5 +684,19 @@ describe('atomic waitForText', () => {
         expect.objectContaining({ artifact_id: 'chrome_dom_atomic_1_click-target' }),
       ]),
     })
+  })
+
+  it('scrollRegion computes the delivery point from page viewport ratios', async () => {
+    const result = await commandsWithTrace().scrollRegion({
+      direction: 'down',
+      amount: 2,
+      region: { left: 0, top: 0, right: 1, bottom: 1 },
+    })
+
+    expect(result.scrolled.logicalPoint).toEqual({ x: 500, y: 510 })
+    expect(mocks.executeScroll).toHaveBeenCalledWith(config, expect.objectContaining({
+      pointerTrace: [{ x: 500, y: 510, delayMs: 0 }],
+    }))
+    expect(mocks.executeMoveAndClick).not.toHaveBeenCalled()
   })
 })

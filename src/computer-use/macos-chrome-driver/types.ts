@@ -208,6 +208,10 @@ export interface SurfaceNode {
   kind: string
   label?: string
   box: RecognitionBox
+  region?: 'page_viewport' | 'browser_chrome' | 'unknown'
+  region_confidence?: 'verified' | 'inferred' | 'fallback' | 'unknown'
+  region_source?: 'ax_structure' | 'geometry' | 'mixed' | 'fallback'
+  region_reasons?: string[]
   source_artifacts: string[]
   recognition_id?: string
   recognition_source?: RecognitionSource

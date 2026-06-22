@@ -254,6 +254,7 @@ let keyCodeMap: [String: UInt16] = [
   "7": 26, "8": 28, "9": 25,
   "enter": 36, "return": 36, "tab": 48, "space": 49, "escape": 53,
   "esc": 53, "delete": 51, "backspace": 51,
+  "[": 33, "]": 30,
   "up": 126, "down": 125, "left": 123, "right": 124
 ]
 

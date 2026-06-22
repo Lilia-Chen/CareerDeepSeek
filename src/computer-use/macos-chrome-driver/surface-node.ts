@@ -8,7 +8,9 @@ import type {
   RecognitionBox,
   SurfaceNode,
 } from './types.js'
+import type { ChromeWindowRegionMap } from './chrome-window-regions.js'
 import { pointInsideBounds, uniqueStrings, validConfidence } from './shared.js'
+import { classifyChromeWindowRegion } from './chrome-window-regions.js'
 
 export interface NormalizeInput {
   ocrMatches: OcrTextMatch[]
@@ -19,6 +21,7 @@ export interface NormalizeInput {
   runId: string
   spanId: string
   viewportBounds?: { x: number, y: number, width: number, height: number }
+  regionMap?: ChromeWindowRegionMap
   captureArtifact?: ArtifactRef
   captureContractArtifact?: ArtifactRef
 }
@@ -94,8 +97,9 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   // AX nodes → SurfaceNode (AUXILIARY)
   if (input.axSnapshot) {
     const axSnapshot = input.axSnapshot
-    const axWebAreaBounds = collectAxWebAreaBounds(axSnapshot.root)
-    walkAxTree(axSnapshot.root, (axNode) => {
+    const axRoot = selectAxWindowRoot(axSnapshot.root, input.contract.sourceGlobalLogicalBounds)
+    const axWebAreaBounds = collectAxWebAreaBounds(axRoot)
+    walkAxTree(axRoot, (axNode) => {
       const browserChromeReason = browserChromeEvidenceReason(axNode, axWebAreaBounds)
       if (browserChromeReason) {
         const text = axNode.title || axNode.description || axNode.value || axNode.role
@@ -234,12 +238,32 @@ export function normalizeToSurfaceNodes(input: NormalizeInput): SurfaceNode[] {
   }
 
   // Sort by y, then x
+  if (input.regionMap) {
+    for (const node of nodes)
+      attachRegionMetadata(node, input.regionMap)
+  }
+
   nodes.sort((a, b) => {
     const dy = a.box.y - b.box.y
     return dy !== 0 ? dy : a.box.x - b.box.x
   })
 
   return nodes
+}
+
+function attachRegionMetadata(node: SurfaceNode, regionMap: ChromeWindowRegionMap): void {
+  const classification = classifyChromeWindowRegion({ regionMap, box: node.box })
+  node.region = classification.region
+  node.region_confidence = classification.confidence
+  node.region_source = classification.source
+  node.region_reasons = classification.reasons
+  node.detail = {
+    ...node.detail,
+    region: classification.region,
+    region_confidence: classification.confidence,
+    region_source: classification.source,
+    region_reasons: classification.reasons,
+  }
 }
 
 export function inferObservationSource(nodes: SurfaceNode[]): ObservationSource {
@@ -479,6 +503,13 @@ function boundsIntersect(a: Bounds, b: Bounds): boolean {
     && a.y + a.height > b.y
 }
 
+function centerOfBounds(bounds: Bounds): { x: number, y: number } {
+  return {
+    x: bounds.x + bounds.width / 2,
+    y: bounds.y + bounds.height / 2,
+  }
+}
+
 function truthyState(value: unknown): boolean {
   return value === true || value === 'true'
 }
@@ -538,19 +569,35 @@ function collectAxWebAreaBounds(root: { role: string, bounds?: Bounds, children:
   return bounds
 }
 
+function selectAxWindowRoot(root: AXSnapshot['root'], targetBounds: Bounds): AXSnapshot['root'] {
+  const windows: AXSnapshot['root'][] = []
+  walkAxTree(root as Parameters<typeof walkAxTree>[0], (node) => {
+    if (node.role === 'AXWindow')
+      windows.push(node as AXSnapshot['root'])
+  })
+  return windows.find(window => validBounds(window.bounds) && boundsNear(window.bounds, targetBounds))
+    ?? root
+}
+
+function boundsNear(a: Bounds, b: Bounds): boolean {
+  const tolerance = 8
+  return Math.abs(a.x - b.x) <= tolerance
+    && Math.abs(a.y - b.y) <= tolerance
+    && Math.abs(a.width - b.width) <= tolerance
+    && Math.abs(a.height - b.height) <= tolerance
+}
+
 function browserChromeEvidenceReason(
   node: { role: string, bounds?: Bounds },
   axWebAreaBounds: Bounds[],
 ): 'browser_chrome_role' | 'outside_ax_web_area' | undefined {
-  if (isBrowserChromeRole(node.role))
-    return 'browser_chrome_role'
   if (node.role === 'AXWindow' || node.role === 'AXWebArea')
     return undefined
   if (axWebAreaBounds.length === 0 || !validBounds(node.bounds))
     return undefined
-  return axWebAreaBounds.some(webArea => boundsIntersect(node.bounds!, webArea))
-    ? undefined
-    : 'outside_ax_web_area'
+  if (axWebAreaBounds.some(webArea => pointInsideBounds(centerOfBounds(node.bounds!), webArea)))
+    return undefined
+  return isBrowserChromeRole(node.role) ? 'browser_chrome_role' : 'outside_ax_web_area'
 }
 
 /**
@@ -570,7 +617,6 @@ function isBrowserChromeRole(role: string): boolean {
     'AXTabGroup',
     'AXRadioGroup', // Chrome tab strip renders as radio group
     'AXSplitGroup',
-    'AXScrollArea', // empty scroll areas are browser viewport chrome
   ])
   return chromeRoles.has(role)
 }

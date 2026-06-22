@@ -34,12 +34,14 @@ import {
   uniqueStrings,
 } from './shared.js'
 import { requireWindowNumber } from './types.js'
-import { invokeMacOSChromeOperation } from './atomic-commands.js'
-import type { MacOSChromeOperationCall, MacOSChromeOperationResponse } from './atomic-commands.js'
+import { invokeMacOSChromeOperation } from './chrome-command-sub-workflow.js'
+import type { MacOSChromeOperationCall, MacOSChromeOperationResponse } from './chrome-command-sub-workflow.js'
 
 import { inferObservationSource, normalizeToSurfaceNodes } from './surface-node.js'
 import { checkSafetyGate, detectHardStopSignals, loadProfileConfig } from './safety-gate.js'
 import { TraceStore } from './trace-store.js'
+import type { ChromeObservationScope } from './chrome-window-regions.js'
+import { buildChromeWindowRegionMap, filterNodesByChromeObservationScope } from './chrome-window-regions.js'
 
 export interface MacOSChromeDriverOptions {
   sessionId: string
@@ -63,8 +65,6 @@ interface ForegroundPreflightResult {
 const NORMAL_CHROME_MIN_WIDTH = 480
 const NORMAL_CHROME_MIN_HEIGHT = 300
 const WINDOW_MATCH_TOLERANCE = 8
-const MIN_VIEWPORT_WIDTH = 100
-const MIN_VIEWPORT_HEIGHT = 100
 const FOREGROUND_SETTLE_MS = 300
 
 export class MacOSChromeDriver {
@@ -134,8 +134,9 @@ export class MacOSChromeDriver {
     return checkSafetyGate(context, '', this.#profileConfig)
   }
 
-  async observe(): Promise<ObservationSnapshot> {
+  async observe(input: { scope?: ChromeObservationScope } = {}): Promise<ObservationSnapshot> {
     await this.#ensureChromeContextLease()
+    const observationScope = input.scope ?? 'all'
 
     const snapshotId = `mco_${this.#nextObservationId++}`
     const spanId = `observe_${snapshotId}`
@@ -212,11 +213,13 @@ export class MacOSChromeDriver {
       ? { run_id: this.#runId, artifact_id: ocrRowReportArtifact.artifact_id, span_id: ocrRowReportArtifact.span_id }
       : undefined
 
-    // Compute viewport bounds from the leased Chrome AXWindow when possible.
-    const viewportBounds = findChromeViewportBounds(axSnapshot, chromeContext.window.bounds) ?? chromeContext.window.bounds
+    const regionMap = buildChromeWindowRegionMap({
+      windowBounds: chromeContext.window.bounds,
+      axRoot: axSnapshot?.root,
+    })
 
     // Normalize ALL sources → SurfaceNode[]
-    const nodes = normalizeToSurfaceNodes({
+    const allNodes = normalizeToSurfaceNodes({
       ocrMatches: ocr.matches,
       ocrRows: ocrRows.rows,
       axSnapshot,
@@ -224,10 +227,12 @@ export class MacOSChromeDriver {
       contract: capture.contract,
       runId: this.#runId,
       spanId,
-      viewportBounds,
+      viewportBounds: regionMap.pageViewport?.bounds,
+      regionMap,
       captureArtifact,
       captureContractArtifact,
     })
+    const nodes = filterNodesByChromeObservationScope(allNodes, observationScope)
 
     const source = inferObservationSource(nodes)
     const visibleText = nodes.map(n => n.label ?? '').join('\n')
@@ -265,9 +270,12 @@ export class MacOSChromeDriver {
         ocr_match_count: ocr.matches.length,
         ocr_known_limits: ocr.knownLimits ?? [],
         ocr_rows: ocrRowSummary(ocrRows),
+        chrome_window_regions: regionMap,
+        observation_scope: observationScope,
       },
       known_limits: uniqueStrings([
         this.#chromeContextLease ? 'managed Chrome context lease established' : 'Chrome context lease missing, actions blocked',
+        ...regionMap.knownLimits,
         ...(ocr.knownLimits ?? []),
         ...ocrRows.knownLimits,
       ]),
@@ -759,73 +767,6 @@ function readChromeLocalStateProfileInfo(
     }
   }
   return parsed.profile?.info_cache?.[profileDir]
-}
-
-/**
- * Finds a usable AXWebArea viewport inside the leased Chrome window.
- * Falls back to undefined when no valid AXWebArea intersects the window.
- */
-function findChromeViewportBounds(
-  axSnapshot: AXSnapshot | undefined,
-  windowBounds: Bounds,
-): Bounds | undefined {
-  if (!axSnapshot)
-    return undefined
-
-  const exactWindow = collectAXWindows(axSnapshot)
-    .find(node => node.bounds && boundsNear(node.bounds, windowBounds))
-  if (exactWindow) {
-    const candidate = selectLargestValidWebArea(exactWindow, windowBounds)
-    return candidate
-  }
-
-  return undefined
-}
-
-function selectLargestValidWebArea(root: AXNode, windowBounds: Bounds): Bounds | undefined {
-  const candidates = collectAXWebAreas(root)
-    .map(node => node.bounds ? intersectBounds(node.bounds, windowBounds) : undefined)
-    .filter((bounds): bounds is Bounds => isValidViewportBounds(bounds))
-    .sort((a, b) => areaOfBounds(b) - areaOfBounds(a))
-
-  return candidates[0]
-}
-
-function collectAXWebAreas(root: AXNode): AXNode[] {
-  const webAreas: AXNode[] = []
-  function walk(node: AXNode): void {
-    if (node.role === 'AXWebArea')
-      webAreas.push(node)
-    for (const child of node.children)
-      walk(child)
-  }
-  walk(root)
-  return webAreas
-}
-
-function intersectBounds(a: Bounds, b: Bounds): Bounds | undefined {
-  const x1 = Math.max(a.x, b.x)
-  const y1 = Math.max(a.y, b.y)
-  const x2 = Math.min(a.x + a.width, b.x + b.width)
-  const y2 = Math.min(a.y + a.height, b.y + b.height)
-  if (x2 <= x1 || y2 <= y1)
-    return undefined
-  return {
-    x: x1,
-    y: y1,
-    width: x2 - x1,
-    height: y2 - y1,
-  }
-}
-
-function isValidViewportBounds(bounds: Bounds | undefined): bounds is Bounds {
-  return bounds !== undefined
-    && bounds.width >= MIN_VIEWPORT_WIDTH
-    && bounds.height >= MIN_VIEWPORT_HEIGHT
-}
-
-function areaOfBounds(bounds: Bounds): number {
-  return bounds.width * bounds.height
 }
 
 function emptyOcrTextSnapshot(capture: ChromeWindowCapture, error?: unknown): OcrTextSnapshot {

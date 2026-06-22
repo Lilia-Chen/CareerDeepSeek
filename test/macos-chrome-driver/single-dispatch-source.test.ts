@@ -110,7 +110,7 @@ describe('single dispatch source shape', () => {
   })
 
   it('does not retain removed P2.0.1 command methods in the action path', () => {
-    const source = readSource('src/computer-use/macos-chrome-driver/atomic-commands.ts')
+    const source = readSource('src/computer-use/macos-chrome-driver/chrome-command-sub-workflow.ts')
 
     for (const oldToken of [
       'async clickText(',
@@ -130,7 +130,7 @@ describe('single dispatch source shape', () => {
   })
 
   it('does not use the no-op-prone window-targeted scroll path for scrollRegion', () => {
-    const source = readSource('src/computer-use/macos-chrome-driver/atomic-commands.ts')
+    const source = readSource('src/computer-use/macos-chrome-driver/chrome-command-sub-workflow.ts')
     const scrollRegionBody = source.slice(
       source.indexOf('async scrollRegion(input:'),
       source.indexOf('async #captureWindow('),
